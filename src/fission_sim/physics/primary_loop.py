@@ -246,3 +246,72 @@ class PrimaryLoop:
         dstate[0] = dT_hot_dt
         dstate[1] = dT_cold_dt
         return dstate
+
+    def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return the values consumed by downstream components.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+            ``[T_hot, T_cold]`` in K.
+        inputs : dict, optional
+            Unused for this component (loop outputs depend only on state).
+            Accepted for API uniformity.
+
+        Returns
+        -------
+        dict
+            ``{"T_hot": [K], "T_cold": [K], "T_avg": [K], "T_cool": [K]}``.
+            ``T_cool`` is what the core sees; equals ``T_avg`` at L1.
+        """
+        T_hot = state[0]
+        T_cold = state[1]
+        T_avg = (T_hot + T_cold) / 2
+        return {
+            "T_hot": T_hot,
+            "T_cold": T_cold,
+            "T_avg": T_avg,
+            # SIMPLIFICATION: T_cool seen by the core equals the loop's T_avg.
+            # In reality there's a spatial profile from cold leg → core inlet
+            # → core outlet → hot leg; we collapse that to a single number.
+            "T_cool": T_avg,
+        }
+
+    def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return a rich diagnostic dict for logging and visualization.
+
+        Superset of ``outputs()``. Adds ΔT (the temperature difference between
+        legs) and Q_flow (the heat carried between legs by mass flow). When
+        ``inputs`` is provided, also echoes ``Q_core`` and ``Q_sg``.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+        inputs : dict, optional
+            If provided (with the same keys as ``derivatives``), ``Q_core``
+            and ``Q_sg`` are echoed. If omitted, those keys are reported as
+            None; ``Q_flow`` is always computable from state alone.
+
+        Returns
+        -------
+        dict
+            Keys: ``T_hot``, ``T_cold``, ``T_avg``, ``T_cool``, ``delta_T``,
+            ``Q_core``, ``Q_sg``, ``Q_flow``.
+        """
+        p = self.params
+        T_hot = state[0]
+        T_cold = state[1]
+        delta_T = T_hot - T_cold
+
+        out = self.outputs(state)
+        out["delta_T"] = delta_T
+        # Q_flow depends only on state; always computable.
+        out["Q_flow"] = p.m_dot * p.c_p * delta_T
+
+        if inputs is not None:
+            out["Q_core"] = inputs.get("Q_core")
+            out["Q_sg"] = inputs.get("Q_sg")
+        else:
+            out["Q_core"] = None
+            out["Q_sg"] = None
+        return out
