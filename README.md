@@ -17,13 +17,16 @@ but **not** its time-evolving state. State lives in a numpy vector owned
 by the caller (a driver script for now, the simulation engine later).
 Each component exposes the same surface — a constructor and four methods:
 
-    __init__(params)                          # takes a frozen Params dataclass
+    __init__(params)                            # takes a frozen Params dataclass
     initial_state() -> np.ndarray
     derivatives(state, inputs) -> np.ndarray
-    outputs(state) -> dict
+    outputs(state, inputs=None) -> dict
     telemetry(state, inputs=None) -> dict
 
-plus class attributes ``state_size`` and ``state_labels``.
+plus class attributes ``state_size`` and ``state_labels``. The three
+state-evaluation methods all take the same `(state, inputs)` shape; components
+that don't need inputs (most do not) accept the kwarg and ignore it.
+Algebraic components (e.g. `SteamGenerator`) use it.
 
 All time-evolving state for the whole plant lives in one flat numpy
 vector. Each component declares the slot it owns.
@@ -61,7 +64,7 @@ moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
             "rod_reactivity": float [dimensionless]
             "T_cool":         float [K]
 
-    outputs(state) -> {
+    outputs(state, inputs=None) -> {
         "power_thermal": float [W],
         "T_fuel":        float [K],
     }
@@ -89,6 +92,127 @@ moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
 | `M_fuel`      | kg         | 1.0e5                                  | Lumped fuel mass                 |
 | `c_p_fuel`    | J/(kg·K)   | 300                                    | UO₂                              |
 | `hA_fc`       | W/K        | derived: P_design / (T_f_ref - T_c_ref)| Steady-state energy balance      |
+
+### PrimaryLoop (`src/fission_sim/physics/primary_loop.py`)
+
+L1 lumped primary loop: hot leg + cold leg, constant flow, constant pressure,
+single-phase liquid. See `.docs/design.md` §5.2 for physics.
+
+**Constructor**
+
+    PrimaryLoop(params: LoopParams)
+
+**State vector** (`state_size = 2`)
+
+    state_labels = ("T_hot", "T_cold")
+    units:        K, K
+
+| Index | Name    | Meaning                                           |
+|------:|---------|---------------------------------------------------|
+| 0     | T_hot   | Coolant temperature exiting the core              |
+| 1     | T_cold  | Coolant temperature returning to the core         |
+
+**Methods**
+
+    initial_state() -> np.ndarray
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {"Q_core": float [W], "Q_sg": float [W]}
+
+    outputs(state, inputs=None) -> {
+        "T_hot":  float [K],
+        "T_cold": float [K],
+        "T_avg":  float [K],
+        "T_cool": float [K],   # = T_avg at L1; what the core sees
+    }
+
+    telemetry(state, inputs=None) -> outputs() ∪ {
+        "delta_T", "Q_flow", "Q_core", "Q_sg",
+    }
+        delta_T and Q_flow are computable from state alone.
+        Q_core and Q_sg are echoed from inputs (None when inputs omitted).
+
+**LoopParams (frozen dataclass)**
+
+| Field         | Units    | Default                                | Source / note                          |
+|---------------|----------|----------------------------------------|----------------------------------------|
+| `m_dot`       | kg/s     | 1.7e4                                  | Single equivalent loop, 4-loop PWR     |
+| `c_p`         | J/(kg·K) | 5500                                   | Water at ~300°C, 15.5 MPa              |
+| `M_hot`       | kg       | 1.5e4                                  | Lumped hot-leg water mass              |
+| `M_cold`      | kg       | 1.5e4                                  | Lumped cold-leg water mass             |
+| `Q_design`    | W        | 3.0e9                                  | Match core's P_design                  |
+| `T_avg_ref`   | K        | 580                                    | Match core's T_cool_ref                |
+| `T_hot_ref`   | K        | derived: T_avg_ref + ΔT_design/2 ≈ 596 | ΔT = Q_design/(m_dot·c_p) ≈ 32 K       |
+| `T_cold_ref`  | K        | derived: T_avg_ref − ΔT_design/2 ≈ 564 | (same)                                 |
+
+### SteamGenerator (`src/fission_sim/physics/steam_generator.py`)
+
+L1 algebraic heat exchanger: `Q_sg = UA · (T_primary − T_secondary)`. No state.
+See `.docs/design.md` §5.3 for physics.
+
+**Constructor**
+
+    SteamGenerator(params: SGParams)
+
+**State vector** (`state_size = 0`)
+
+    state_labels = ()
+
+**Methods**
+
+    initial_state() -> np.ndarray         # always np.empty(0)
+    derivatives(state, inputs=None) -> np.ndarray   # always np.empty(0)
+
+    outputs(state, inputs) -> {"Q_sg": float [W]}
+        inputs: {"T_primary":   float [K],
+                 "T_secondary": float [K]}
+        Raises TypeError if inputs is None.
+
+    telemetry(state, inputs=None) -> {"Q_sg", "T_primary", "T_secondary", "delta_T"}
+        Reports None for input-derived keys when inputs is omitted.
+
+**SGParams (frozen dataclass)**
+
+| Field             | Units | Default                                    | Source / note                  |
+|-------------------|-------|--------------------------------------------|--------------------------------|
+| `T_primary_ref`   | K     | 580                                        | Match loop's T_avg_ref         |
+| `T_secondary_ref` | K     | 558                                        | Match sink's T_secondary       |
+| `Q_design`        | W     | 3.0e9                                      | Match core's P_design          |
+| `UA`              | W/K   | derived: Q_design / (T_p_ref − T_s_ref)    | ≈ 1.4e8; closes design steady   |
+
+### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
+
+L1 stand-in for the entire secondary side (turbine + condenser + feedwater).
+Constant `T_secondary`; no state, no inputs. See `.docs/design.md` §5.4.
+
+**Constructor**
+
+    SecondarySink(params: SinkParams)
+
+**State vector** (`state_size = 0`)
+
+    state_labels = ()
+
+**Methods**
+
+    initial_state() -> np.ndarray             # always np.empty(0)
+    derivatives(state, inputs=None) -> np.ndarray  # always np.empty(0)
+    outputs(state, inputs=None) -> {"T_secondary": float [K]}
+    telemetry(state, inputs=None) -> {"T_secondary": float [K]}
+
+**SinkParams (frozen dataclass)**
+
+| Field           | Units | Default | Source / note                                    |
+|-----------------|-------|---------|--------------------------------------------------|
+| `T_secondary`   | K     | 558     | Saturation temp at ~6.9 MPa (typical PWR steam)  |
+
+## Multi-component runners
+
+`examples/run_primary.py` (matplotlib) and `examples/report_primary.py`
+(text/SSH) drive all four components (Core + Loop + SG + Sink) coupled
+together. Each script defines its own ~30-line `f(t, y)` wiring; the
+coupled-system test in `tests/test_primary_plant.py` does the same. The
+duplication is intentional — when slice 3 adds the rod controller, the
+engine slice naturally follows by extracting the wiring once and for all.
 
 ## Roadmap
 
