@@ -6,9 +6,12 @@ Three layers (per spec §5):
   Layer 3 — inhour-equation analytical test
 """
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
+from scipy.optimize import brentq
 
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 
@@ -290,3 +293,82 @@ def test_no_runaway_on_small_step():
     n_final = sol.y[0, -1]
     assert np.isfinite(n_final)
     assert n_final < 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: inhour-equation analytical test
+# ---------------------------------------------------------------------------
+def _inhour_period(rho: float, params: CoreParams) -> float:
+    """Solve the inhour equation for the asymptotic reactor period.
+
+    The point kinetics characteristic equation is:
+
+        rho = omega * Lambda + sum_i [(omega * beta_i) / (omega + lambda_i)]
+
+    For a positive reactivity step rho > 0 (and rho < beta), the largest
+    positive root omega_1 of this equation determines the asymptotic
+    exponential growth rate of the neutron population:
+
+        n(t) ~ exp(omega_1 * t)   (for large t, after the prompt jump)
+
+    The "asymptotic period" is T = 1 / omega_1 — the e-folding time.
+
+    Returns
+    -------
+    float
+        Asymptotic period [s]. Positive for positive reactivity.
+
+    References
+    ----------
+    Lamarsh §7.4 (eq. 7.36-7.39); Duderstadt eq. 6.55.
+    """
+
+    def inhour_residual(omega: float) -> float:
+        return omega * params.Lambda + np.sum((omega * params.beta_i) / (omega + params.lambda_i)) - rho
+
+    # For rho > 0, the largest positive root sits between 0 and the
+    # smallest lambda_i (about 0.0124 1/s). brentq needs a sign change.
+    # Bracket on a tiny positive number and just below the smallest decay
+    # constant.
+    omega_1 = brentq(inhour_residual, 1e-8, params.lambda_i.min() - 1e-6)
+    return 1.0 / omega_1
+
+
+def test_inhour_asymptotic_period_50pcm():
+    """Match the inhour equation for +50 pcm with feedback off, within 1%."""
+    # Feedback off via parameter choice (no flag in production code)
+    p = replace(default_params(), alpha_f=0.0, alpha_m=0.0)
+    core = PointKineticsCore(p)
+    rho = 50e-5  # +50 pcm — small enough to stay well below prompt critical
+
+    def f(t, y):
+        return core.derivatives(y, {"rod_reactivity": rho, "T_cool": p.T_cool_ref})
+
+    sol = solve_ivp(
+        f,
+        (0.0, 300.0),
+        core.initial_state(),
+        method="BDF",
+        dense_output=True,
+        rtol=1e-9,
+        atol=1e-12,
+        max_step=0.5,
+    )
+    assert sol.success
+
+    # Sample the asymptotic region — well past the transient (~first 100 s).
+    # For +50 pcm the asymptotic period is ~137 s, so all transient modes
+    # (faster decaying terms) have died out by t=100 s.
+    t_grid = np.linspace(100.0, 300.0, 200)
+    n_grid = sol.sol(t_grid)[0]
+
+    # log(n) should be linear in t with slope = omega_1
+    slope, _intercept = np.polyfit(t_grid, np.log(n_grid), 1)
+    measured_period = 1.0 / slope
+
+    expected_period = _inhour_period(rho, p)
+    rel_err = abs(measured_period - expected_period) / expected_period
+    assert rel_err < 0.01, (
+        f"Measured period {measured_period:.4f} s vs inhour prediction "
+        f"{expected_period:.4f} s (rel error {rel_err:.4%})"
+    )
