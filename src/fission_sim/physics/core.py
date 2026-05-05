@@ -163,3 +163,75 @@ class CoreParams:
             derived = self.P_design / (self.T_fuel_ref - self.T_cool_ref)
             # Frozen dataclass; bypass the freeze to set the derived default.
             object.__setattr__(self, "hA_fc", derived)
+
+
+class PointKineticsCore:
+    """Point-kinetics PWR core (L1 fidelity).
+
+    Implements the standard point kinetics equations with six delayed
+    neutron groups, a single lumped fuel temperature, and Doppler +
+    moderator temperature feedback.
+
+    The class owns its parameters and equations. It does NOT own
+    time-evolving state. State lives in a numpy array passed in by the
+    caller (a driver script for now, the simulation engine eventually).
+    Every method that needs current-state numbers takes them as an
+    argument.
+
+    Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
+        rod_reactivity : float [dimensionless]
+            Reactivity contribution from control rods. In a real plant,
+            this comes from the rod controller component.
+        T_cool : float [K]
+            Coolant temperature seen by the core. In a real plant, this
+            comes from the primary loop.
+
+    Ports out (returned by ``outputs()``):
+        power_thermal : float [W]
+            Core thermal power, ``n * P_design``.
+        T_fuel : float [K]
+            Average fuel temperature.
+
+    State vector (length ``state_size`` = 8, names in ``state_labels``):
+        index 0     : n        — neutron population [dimensionless,
+                                  normalized so n=1 at design power]
+        index 1..6  : C1..C6   — delayed neutron precursor concentrations
+                                  [dimensionless, same scaling as n]
+        index 7     : T_fuel   — average fuel temperature [K]
+
+    Notes
+    -----
+    The "delayed neutron precursors" Ci are not specific isotopes. Real
+    fission produces hundreds of distinct precursor isotopes; the standard
+    practice (since Keepin 1965) bins them into 6 effective groups by
+    half-life range. Each Ci is the lumped concentration of all real
+    precursors in group i's range. See ``CoreParams`` for the group
+    constants.
+
+    Reactivity convention: stored internally as a dimensionless number
+    (rho = (k - 1)/k). Operators read/write it in pcm = 10⁻⁵ for
+    convenience, but no conversion happens inside the class.
+    """
+
+    state_size: int = 8
+    state_labels: tuple[str, ...] = (
+        "n",
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "T_fuel",
+    )
+
+    def __init__(self, params: CoreParams) -> None:
+        """Construct a core with the given parameters.
+
+        Parameters
+        ----------
+        params : CoreParams
+            Frozen parameter set. Held as ``self.params`` for the lifetime
+            of the object.
+        """
+        self.params = params

@@ -8,7 +8,7 @@ Three layers (per spec §5):
 
 import pytest
 
-from fission_sim.physics.core import CoreParams
+from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
 # ---------------------------------------------------------------------------
@@ -35,3 +35,21 @@ def test_core_params_defaults_are_consistent():
     # Feedback coefficients are negative (stable PWR)
     assert p.alpha_f < 0
     assert p.alpha_m < 0
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: pure derivative tests (no integration)
+# ---------------------------------------------------------------------------
+def test_state_layout_indices():
+    core = PointKineticsCore(default_params())
+    assert core.state_size == 8
+    assert core.state_labels == (
+        "n",
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "T_fuel",
+    )
