@@ -111,3 +111,21 @@ def test_doppler_is_negative_feedback():
     # negative (assuming no other inputs change). With C_i still at the old
     # steady state, the reactivity drop dominates the precursor source.
     assert dstate[0] < 0
+
+
+def test_outputs_returns_power_and_T_fuel():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    out = core.outputs(s)
+    assert out["power_thermal"] == pytest.approx(p.P_design)  # n=1 at design
+    assert out["T_fuel"] == pytest.approx(p.T_fuel_ref)
+
+
+def test_outputs_scales_power_with_n():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    s[0] = 0.5  # half power
+    out = core.outputs(s)
+    assert out["power_thermal"] == pytest.approx(0.5 * p.P_design)

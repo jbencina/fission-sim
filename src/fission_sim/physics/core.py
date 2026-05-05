@@ -353,3 +353,24 @@ class PointKineticsCore:
         dstate[1:7] = dC_dt
         dstate[7] = dT_fuel_dt
         return dstate
+
+    def outputs(self, state: np.ndarray) -> dict:
+        """Return the values consumed by downstream components.
+
+        This is the minimal port-out interface — only what the next
+        component in the plant needs to read. ``telemetry()`` is the
+        richer dict for logging and visualization.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (8,)
+
+        Returns
+        -------
+        dict
+            ``{"power_thermal": float [W], "T_fuel": float [K]}``
+        """
+        return {
+            "power_thermal": state[0] * self.params.P_design,
+            "T_fuel": state[7],
+        }
