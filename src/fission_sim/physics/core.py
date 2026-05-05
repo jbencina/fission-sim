@@ -310,7 +310,7 @@ class PointKineticsCore:
 
         # --- decode the state slice into named locals ---
         n = state[0]
-        C = state[1:7]
+        C = state[1:7]  # view of state, not a copy — do not mutate in-place
         T_fuel = state[7]
 
         # --- decode inputs ---
@@ -373,4 +373,59 @@ class PointKineticsCore:
         return {
             "power_thermal": state[0] * self.params.P_design,
             "T_fuel": state[7],
+        }
+
+    def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return a rich diagnostic dict for logging and visualization.
+
+        Superset of ``outputs()``. Includes the reactivity decomposition
+        (rod, Doppler, moderator, total) and individual precursor
+        concentrations.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (8,)
+        inputs : dict, optional
+            If provided (with the same keys as ``derivatives``), the
+            input-dependent reactivity components are computed. If
+            omitted, ``rho_rod``, ``rho_moderator``, and ``rho_total`` are
+            reported as ``None``; ``rho_doppler`` is always computed
+            because it depends only on state.
+
+        Returns
+        -------
+        dict
+            Keys: ``power_thermal``, ``T_fuel``, ``n``, ``C1``..``C6``,
+            ``rho_total``, ``rho_rod``, ``rho_doppler``, ``rho_moderator``.
+        """
+        p = self.params
+        n = state[0]
+        T_fuel = state[7]
+
+        # Doppler depends only on state and is always reported.
+        rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
+
+        if inputs is not None:
+            rho_rod = inputs["rod_reactivity"]
+            rho_moderator = p.alpha_m * (inputs["T_cool"] - p.T_cool_ref)
+            rho_total = rho_rod + rho_doppler + rho_moderator
+        else:
+            rho_rod = None
+            rho_moderator = None
+            rho_total = None
+
+        return {
+            "power_thermal": n * p.P_design,
+            "T_fuel": T_fuel,
+            "n": n,
+            "C1": state[1],
+            "C2": state[2],
+            "C3": state[3],
+            "C4": state[4],
+            "C5": state[5],
+            "C6": state[6],
+            "rho_total": rho_total,
+            "rho_rod": rho_rod,
+            "rho_doppler": rho_doppler,
+            "rho_moderator": rho_moderator,
         }

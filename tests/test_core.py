@@ -127,5 +127,54 @@ def test_outputs_scales_power_with_n():
     core = PointKineticsCore(p)
     s = core.initial_state()
     s[0] = 0.5  # half power
+    s[7] = p.T_fuel_ref + 100.0  # also vary T_fuel away from reference
     out = core.outputs(s)
     assert out["power_thermal"] == pytest.approx(0.5 * p.P_design)
+    assert out["T_fuel"] == pytest.approx(p.T_fuel_ref + 100.0)
+
+
+def test_telemetry_with_inputs_decomposes_reactivity():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    s[7] = p.T_fuel_ref + 100.0  # raise T_fuel by 100 K
+    inputs = {"rod_reactivity": 200e-5, "T_cool": p.T_cool_ref + 5.0}
+    tele = core.telemetry(s, inputs)
+    # All keys present
+    expected_keys = {
+        "power_thermal",
+        "T_fuel",
+        "n",
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6",
+        "rho_total",
+        "rho_rod",
+        "rho_doppler",
+        "rho_moderator",
+    }
+    assert set(tele.keys()) == expected_keys
+    # Decomposition
+    assert tele["rho_rod"] == pytest.approx(200e-5)
+    assert tele["rho_doppler"] == pytest.approx(p.alpha_f * 100.0)
+    assert tele["rho_moderator"] == pytest.approx(p.alpha_m * 5.0)
+    assert tele["rho_total"] == pytest.approx(tele["rho_rod"] + tele["rho_doppler"] + tele["rho_moderator"])
+
+
+def test_telemetry_without_inputs_reports_none_for_input_dependent_keys():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    tele = core.telemetry(s)
+    # State-only keys still present
+    assert tele["power_thermal"] == pytest.approx(p.P_design)
+    assert tele["T_fuel"] == pytest.approx(p.T_fuel_ref)
+    # Doppler is computable from state alone
+    assert tele["rho_doppler"] == pytest.approx(0.0)
+    # The input-dependent ones are None
+    assert tele["rho_rod"] is None
+    assert tele["rho_moderator"] is None
+    assert tele["rho_total"] is None
