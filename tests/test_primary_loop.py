@@ -6,6 +6,7 @@ Three layers (mirroring the core's test discipline):
   Layer 3 — analytical comparison (energy balance closure at steady state)
 """
 
+import numpy as np
 import pytest
 
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
@@ -38,3 +39,37 @@ def test_initial_state_is_design_steady_state():
     assert s.shape == (2,)
     assert s[0] == pytest.approx(p.T_hot_ref)
     assert s[1] == pytest.approx(p.T_cold_ref)
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: pure derivative tests (no integration)
+# ---------------------------------------------------------------------------
+def _design_inputs(p: LoopParams) -> dict:
+    """Inputs that, with initial_state, yield zero derivatives."""
+    return {"Q_core": p.Q_design, "Q_sg": p.Q_design}
+
+
+def test_design_steady_state_balances():
+    p = default_params()
+    loop = PrimaryLoop(p)
+    dstate = loop.derivatives(loop.initial_state(), _design_inputs(p))
+    # Both leg derivatives should be ~0 at the design point.
+    assert np.allclose(dstate, 0.0, atol=1e-6)
+
+
+def test_more_q_core_heats_hot_leg():
+    """Q_core > Q_flow at design state should produce dT_hot/dt > 0."""
+    p = default_params()
+    loop = PrimaryLoop(p)
+    inputs = _design_inputs(p) | {"Q_core": 1.1 * p.Q_design}
+    dstate = loop.derivatives(loop.initial_state(), inputs)
+    assert dstate[0] > 0  # dT_hot/dt > 0
+
+
+def test_more_q_sg_cools_cold_leg():
+    """Q_sg > Q_flow at design state should produce dT_cold/dt < 0."""
+    p = default_params()
+    loop = PrimaryLoop(p)
+    inputs = _design_inputs(p) | {"Q_sg": 1.1 * p.Q_design}
+    dstate = loop.derivatives(loop.initial_state(), inputs)
+    assert dstate[1] < 0  # dT_cold/dt < 0

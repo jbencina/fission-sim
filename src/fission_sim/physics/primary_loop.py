@@ -181,3 +181,68 @@ class PrimaryLoop:
         """
         p = self.params
         return np.array([p.T_hot_ref, p.T_cold_ref])
+
+    def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
+        """Compute dstate/dt for the two-leg primary loop energy balance.
+
+        Pure function of ``state`` and ``inputs`` — no per-step state on
+        ``self``. The adaptive ODE solver may call this function speculatively
+        many times per step with hypothetical states it later discards.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+            ``[T_hot, T_cold]`` in K.
+        inputs : dict
+            Required keys:
+
+            - ``Q_core`` : float [W] — heat from the core.
+            - ``Q_sg`` : float [W] — heat removed by the SG.
+
+        Returns
+        -------
+        np.ndarray, shape (2,)
+            ``[dT_hot/dt, dT_cold/dt]`` in K/s.
+
+        Notes
+        -----
+        Equations (see ``.docs/design.md`` §5.2 and Todreas eq 6.18):
+
+            M_hot  · c_p · dT_hot/dt  = Q_core − ṁ · c_p · (T_hot − T_cold)
+            M_cold · c_p · dT_cold/dt = ṁ · c_p · (T_hot − T_cold) − Q_sg
+
+        Physically:
+
+        - The hot leg gains heat from the core (Q_core) and loses heat by
+          mixing with cooler return water at rate Q_flow = ṁ · c_p · ΔT.
+        - The cold leg gains Q_flow from the hot leg and loses Q_sg to the SG.
+        - Mass flow ṁ is constant at L1 (no pump dynamics, no coastdown).
+        """
+        p = self.params
+
+        # --- decode the state slice into named locals ---
+        T_hot = state[0]
+        T_cold = state[1]
+
+        # --- decode inputs ---
+        Q_core = inputs["Q_core"]
+        Q_sg = inputs["Q_sg"]
+
+        # --- heat carried from hot leg to cold leg by mass flow ---
+        # ṁ · c_p · ΔT, dimensions [W]. This is the rate at which warm water
+        # flowing out of the hot leg into the cold leg deposits energy.
+        Q_flow = p.m_dot * p.c_p * (T_hot - T_cold)
+
+        # --- hot-leg energy balance ---
+        # SIMPLIFICATION: lumped (well-mixed) hot leg. Real piping has plug
+        # flow with transport delay (water takes seconds to traverse the legs).
+        dT_hot_dt = (Q_core - Q_flow) / (p.M_hot * p.c_p)
+
+        # --- cold-leg energy balance ---
+        dT_cold_dt = (Q_flow - Q_sg) / (p.M_cold * p.c_p)
+
+        # --- assemble derivative vector matching state layout ---
+        dstate = np.empty(self.state_size)
+        dstate[0] = dT_hot_dt
+        dstate[1] = dT_cold_dt
+        return dstate
