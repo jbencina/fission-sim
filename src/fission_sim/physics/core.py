@@ -235,3 +235,30 @@ class PointKineticsCore:
             of the object.
         """
         self.params = params
+
+    def initial_state(self) -> np.ndarray:
+        """Return the design-point steady-state vector.
+
+        At the design point all derivatives are zero by construction:
+
+        - ``n = 1`` (normalized neutron population at design power)
+        - ``C_i = beta_i / (Lambda * lambda_i)`` (precursor steady state
+          from setting ``dC_i/dt = 0``)
+        - ``T_fuel = T_fuel_ref`` (so Doppler reactivity is zero)
+
+        The coolant temperature seen by the core at this steady state is
+        ``T_cool_ref`` (provided by the caller via ``inputs``); the moderator
+        and rod reactivities are zero at design conditions.
+
+        Returns
+        -------
+        np.ndarray, shape (8,)
+            State vector laid out as ``state_labels``.
+        """
+        p = self.params
+        s = np.empty(self.state_size)
+        s[0] = 1.0
+        # Precursor steady state from dC_i/dt = (beta_i/Lambda)*n - lambda_i*C_i = 0
+        s[1:7] = p.beta_i / (p.Lambda * p.lambda_i)
+        s[7] = p.T_fuel_ref
+        return s

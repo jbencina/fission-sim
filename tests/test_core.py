@@ -53,3 +53,18 @@ def test_state_layout_indices():
         "C6",
         "T_fuel",
     )
+
+
+def test_initial_state_is_design_steady_state():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+
+    assert s.shape == (8,)
+    # n = 1 (normalized to design power)
+    assert s[0] == pytest.approx(1.0)
+    # C_i steady state: C_i = beta_i / (Lambda * lambda_i) at n=1
+    expected_C = p.beta_i / (p.Lambda * p.lambda_i)
+    assert s[1:7] == pytest.approx(expected_C)
+    # T_fuel at reference
+    assert s[7] == pytest.approx(p.T_fuel_ref)
