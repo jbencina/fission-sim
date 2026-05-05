@@ -1,0 +1,20 @@
+# User-policy ignores (kept local for now)
+.docs
+CLAUDE.md
+docs/
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenv and tooling caches
+.venv/
+.python-version
+.pytest_cache/
+.ruff_cache/
+
+# Build outputs
+build/
+dist/
+*.egg-info/

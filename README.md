@@ -15,9 +15,9 @@ the code currently exposes.
 Every component is a Python class that owns its parameters and equations
 but **not** its time-evolving state. State lives in a numpy vector owned
 by the caller (a driver script for now, the simulation engine later).
-Components conform to a five-method public API:
+Each component exposes the same surface — a constructor and four methods:
 
-    __init__(params)                            # constructor takes a frozen Params dataclass
+    __init__(params)                          # takes a frozen Params dataclass
     initial_state() -> np.ndarray
     derivatives(state, inputs) -> np.ndarray
     outputs(state) -> dict
