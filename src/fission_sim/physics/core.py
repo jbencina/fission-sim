@@ -354,7 +354,7 @@ class PointKineticsCore:
         dstate[7] = dT_fuel_dt
         return dstate
 
-    def outputs(self, state: np.ndarray) -> dict:
+    def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
         """Return the values consumed by downstream components.
 
         This is the minimal port-out interface — only what the next
@@ -364,6 +364,10 @@ class PointKineticsCore:
         Parameters
         ----------
         state : np.ndarray, shape (8,)
+        inputs : dict, optional
+            Unused for this component (the core's outputs depend only on
+            state). Accepted for API uniformity with components whose
+            outputs depend on inputs (e.g. ``SteamGenerator``).
 
         Returns
         -------
