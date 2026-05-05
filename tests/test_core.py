@@ -6,6 +6,7 @@ Three layers (per spec §5):
   Layer 3 — inhour-equation analytical test
 """
 
+import numpy as np
 import pytest
 
 from fission_sim.physics.core import CoreParams, PointKineticsCore
@@ -68,3 +69,45 @@ def test_initial_state_is_design_steady_state():
     assert s[1:7] == pytest.approx(expected_C)
     # T_fuel at reference
     assert s[7] == pytest.approx(p.T_fuel_ref)
+
+
+def _design_inputs(p: CoreParams) -> dict:
+    """Inputs that, with initial_state, yield zero derivatives."""
+    return {"rod_reactivity": 0.0, "T_cool": p.T_cool_ref}
+
+
+def test_design_steady_state_balances():
+    p = default_params()
+    core = PointKineticsCore(p)
+    dstate = core.derivatives(core.initial_state(), _design_inputs(p))
+    # At design steady state every derivative should be ~0
+    assert np.allclose(dstate, 0.0, atol=1e-9)
+
+
+def test_positive_reactivity_grows_n():
+    p = default_params()
+    core = PointKineticsCore(p)
+    inputs = _design_inputs(p) | {"rod_reactivity": 100e-5}  # +100 pcm
+    dstate = core.derivatives(core.initial_state(), inputs)
+    assert dstate[0] > 0  # dn/dt > 0
+
+
+def test_negative_reactivity_shrinks_n():
+    p = default_params()
+    core = PointKineticsCore(p)
+    inputs = _design_inputs(p) | {"rod_reactivity": -100e-5}  # -100 pcm
+    dstate = core.derivatives(core.initial_state(), inputs)
+    assert dstate[0] < 0  # dn/dt < 0
+
+
+def test_doppler_is_negative_feedback():
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    s[7] = p.T_fuel_ref + 50.0  # raise fuel temperature 50 K
+    inputs = _design_inputs(p)
+    dstate = core.derivatives(s, inputs)
+    # Higher fuel temp -> negative Doppler reactivity -> dn/dt should be
+    # negative (assuming no other inputs change). With C_i still at the old
+    # steady state, the reactivity drop dominates the precursor source.
+    assert dstate[0] < 0

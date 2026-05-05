@@ -262,3 +262,94 @@ class PointKineticsCore:
         s[1:7] = p.beta_i / (p.Lambda * p.lambda_i)
         s[7] = p.T_fuel_ref
         return s
+
+    def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
+        """Compute dstate/dt for the point kinetics + fuel thermal model.
+
+        This is a **pure function** of ``state`` and ``inputs`` — it must
+        not read or write any per-step state on ``self``. The adaptive ODE
+        solver may call this function speculatively many times per step
+        with hypothetical states it later discards.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (8,)
+            Current state vector laid out as ``state_labels``.
+        inputs : dict
+            Required keys:
+
+            - ``rod_reactivity`` : float [dimensionless] — reactivity from
+              control rods.
+            - ``T_cool`` : float [K] — coolant temperature seen by the core.
+
+        Returns
+        -------
+        np.ndarray, shape (8,)
+            ``dstate/dt`` matching the indices of ``state``.
+
+        Notes
+        -----
+        Equations (see ``.docs/design.md`` §5.1 and Lamarsh §7):
+
+            dn/dt    = ((rho - beta) / Lambda) * n  +  sum_i lambda_i * C_i
+            dC_i/dt  = (beta_i / Lambda) * n  -  lambda_i * C_i
+            dT_f/dt  = (P_thermal - Q_to_coolant) / (M_fuel * c_p_fuel)
+
+        with total reactivity:
+
+            rho = rod_reactivity
+                + alpha_f * (T_fuel - T_fuel_ref)        [Doppler]
+                + alpha_m * (T_cool - T_cool_ref)        [moderator]
+
+        and:
+
+            P_thermal    = n * P_design
+            Q_to_coolant = hA_fc * (T_fuel - T_cool)
+        """
+        p = self.params
+
+        # --- decode the state slice into named locals ---
+        n = state[0]
+        C = state[1:7]
+        T_fuel = state[7]
+
+        # --- decode inputs ---
+        rod_reactivity = inputs["rod_reactivity"]
+        T_cool = inputs["T_cool"]
+
+        # --- total reactivity (Lamarsh eq 9.39) ---
+        # rho is dimensionless. "pcm" (per cent mille = 1e-5) is just a
+        # display unit; nothing internal uses it.
+        rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
+        rho_moderator = p.alpha_m * (T_cool - p.T_cool_ref)
+        rho = rod_reactivity + rho_doppler + rho_moderator
+
+        # --- point kinetics equations (Lamarsh eq 7.26-7.28) ---
+        # dn/dt has two parts:
+        #   1) ((rho - beta) / Lambda) * n: net effect of prompt neutrons
+        #      (becomes positive only when rho > beta = "prompt critical",
+        #      i.e. the runaway threshold; we stay well below it)
+        #   2) sum(lambda_i * C_i): delayed neutrons being released by
+        #      precursor decay
+        beta_total = p.beta_i.sum()
+        dn_dt = ((rho - beta_total) / p.Lambda) * n + np.sum(p.lambda_i * C)
+
+        # dC_i/dt: each precursor group is produced from fission at rate
+        # (beta_i / Lambda) * n, and decays at its own rate lambda_i.
+        dC_dt = (p.beta_i / p.Lambda) * n - p.lambda_i * C
+
+        # --- fuel thermal energy balance (single lumped node) ---
+        # SIMPLIFICATION: lumped fuel temperature. Real fuel pellets have a
+        # large radial gradient (centerline can be ~1500 K hotter than the
+        # surface). One average T_fuel loses that detail; sufficient for
+        # bulk dynamics but not for predicting fuel failure.
+        P_thermal = n * p.P_design
+        Q_to_coolant = p.hA_fc * (T_fuel - T_cool)
+        dT_fuel_dt = (P_thermal - Q_to_coolant) / (p.M_fuel * p.c_p_fuel)
+
+        # --- assemble derivative vector matching state layout ---
+        dstate = np.empty(self.state_size)
+        dstate[0] = dn_dt
+        dstate[1:7] = dC_dt
+        dstate[7] = dT_fuel_dt
+        return dstate
