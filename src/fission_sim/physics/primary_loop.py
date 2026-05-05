@@ -1,0 +1,183 @@
+"""Lumped primary loop (L1 fidelity).
+
+The water circuit that carries heat from the reactor core to the steam generator.
+Held at high pressure (~155 bar) so it stays liquid at 290–325°C. At L1 the loop
+is two well-mixed lumps: a hot leg (water exiting the core) and a cold leg (water
+returning to the core). Constant flow, constant pressure, single-phase liquid.
+
+Physics specification: see ``.docs/design.md`` §5.2.
+
+References
+----------
+Lamarsh, J. R. and Baratta, A. J. *Introduction to Nuclear Engineering*, 3rd ed.,
+Prentice Hall, 2001. (PWR primary loop, Ch. 4.)
+
+Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed., CRC Press,
+2012. (Energy balance, Ch. 6.)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class LoopParams:
+    """Parameters for the L1 lumped primary loop.
+
+    All defaults represent a generic large 4-loop PWR (~3000 MWth). The
+    reference temperatures (``T_hot_ref``, ``T_cold_ref``) are derived from
+    steady-state self-consistency unless explicitly supplied.
+
+    Parameters
+    ----------
+    m_dot : float
+        Total mass flow rate [kg/s] (single equivalent loop).
+    c_p : float
+        Specific heat of primary water at average conditions [J/(kg·K)].
+    M_hot : float
+        Lumped water mass on the hot-leg side [kg].
+    M_cold : float
+        Lumped water mass on the cold-leg side [kg].
+    Q_design : float
+        Design heat flow through the loop [W] (= core's P_design).
+    T_avg_ref : float
+        Design average primary temperature [K]. Should match the core's
+        ``T_cool_ref`` so that the moderator-feedback term is zero at the
+        coupled design point.
+    T_hot_ref : float, optional
+        Hot-leg reference temperature [K]. If None, derived in __post_init__
+        as ``T_avg_ref + ΔT_design / 2`` where
+        ``ΔT_design = Q_design / (m_dot * c_p)``.
+    T_cold_ref : float, optional
+        Cold-leg reference temperature [K]. If None, derived as
+        ``T_avg_ref - ΔT_design / 2``.
+
+    Notes
+    -----
+    The class is frozen, but ``__post_init__`` uses ``object.__setattr__`` to
+    fill in the derived ``T_hot_ref`` and ``T_cold_ref`` defaults. Standard
+    pattern for frozen dataclasses with derived fields.
+    """
+
+    # SIMPLIFICATION: single equivalent loop. Real PWRs have 2-4 parallel loops;
+    # we model their combined behavior as one lumped circuit.
+
+    # Mass flow rate. Source: typical 4-loop PWR (e.g., Westinghouse 4-loop) is
+    # ~17000 kg/s combined.
+    m_dot: float = 1.7e4  # [kg/s]
+
+    # Specific heat. Source: water at ~300°C and 15.5 MPa, IAPWS-97 (would come
+    # from CoolProp at L2). The high value reflects the high-pressure liquid
+    # condition.
+    c_p: float = 5500.0  # [J/(kg·K)]
+
+    # Lumped water masses on each leg. Order of magnitude estimate for a 4-loop
+    # PWR primary inventory (~270 m³ of water at ~720 kg/m³ ≈ 200000 kg total,
+    # split roughly evenly between hot side and cold side legs).
+    M_hot: float = 1.5e4  # [kg]
+    M_cold: float = 1.5e4  # [kg]
+
+    # Design heat flow. Match the core's P_design.
+    Q_design: float = 3.0e9  # [W]
+
+    # Design average temperature. Match the core's T_cool_ref so moderator
+    # feedback is zero at the coupled design point.
+    T_avg_ref: float = 580.0  # [K] (~307 °C)
+
+    # Reference leg temperatures. None means "derive from energy balance".
+    T_hot_ref: float | None = None  # [K]
+    T_cold_ref: float | None = None  # [K]
+
+    def __post_init__(self) -> None:
+        """Derive ``T_hot_ref`` and ``T_cold_ref`` from steady-state self-consistency.
+
+        At the design point both temperature derivatives are zero, which means
+        ``Q_core = ṁ · c_p · (T_hot − T_cold)``. Solving for ΔT and centering
+        on ``T_avg_ref`` gives:
+
+            ΔT_design  = Q_design / (m_dot * c_p)
+            T_hot_ref  = T_avg_ref + ΔT_design / 2
+            T_cold_ref = T_avg_ref − ΔT_design / 2
+
+        With defaults (Q=3 GW, ṁ=17000 kg/s, c_p=5500 J/(kg·K)), ΔT ≈ 32 K
+        giving ``T_hot_ref ≈ 596 K`` (~323 °C) and ``T_cold_ref ≈ 564 K``
+        (~291 °C) — the textbook PWR temperatures.
+        """
+        if self.T_hot_ref is None or self.T_cold_ref is None:
+            delta_T = self.Q_design / (self.m_dot * self.c_p)
+            T_hot = self.T_avg_ref + delta_T / 2
+            T_cold = self.T_avg_ref - delta_T / 2
+            # Frozen dataclass; bypass the freeze to set the derived defaults.
+            object.__setattr__(self, "T_hot_ref", T_hot)
+            object.__setattr__(self, "T_cold_ref", T_cold)
+
+
+class PrimaryLoop:
+    """Lumped primary loop (L1 fidelity).
+
+    The class owns its parameters and equations. It does NOT own time-evolving
+    state. State lives in a numpy array passed in by the caller (a driver
+    script for now, the simulation engine eventually). Every method that needs
+    current-state numbers takes them as an argument.
+
+    Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
+        Q_core : float [W]
+            Heat added to the loop by the reactor core (= core's
+            ``power_thermal``).
+        Q_sg : float [W]
+            Heat removed from the loop by the steam generator.
+
+    Ports out (returned by ``outputs()``):
+        T_hot : float [K]
+            Hot-leg temperature (water leaving the core).
+        T_cold : float [K]
+            Cold-leg temperature (water returning to the core).
+        T_avg : float [K]
+            Average primary temperature, ``(T_hot + T_cold) / 2``.
+        T_cool : float [K]
+            What the core sees as coolant temperature (= ``T_avg`` at L1).
+
+    State vector (length ``state_size`` = 2, names in ``state_labels``):
+        index 0 : T_hot  — hot-leg temperature [K]
+        index 1 : T_cold — cold-leg temperature [K]
+
+    Notes
+    -----
+    The hot/cold split tracks the temperature difference (~32 K at design)
+    that, multiplied by mass flow and specific heat, equals the heat being
+    moved through the loop: ``Q = ṁ · c_p · (T_hot − T_cold)``. This is the
+    energy-balance closure that becomes M1 success criterion #4 once the loop
+    is coupled to the core and SG.
+    """
+
+    state_size: int = 2
+    state_labels: tuple[str, ...] = ("T_hot", "T_cold")
+
+    def __init__(self, params: LoopParams) -> None:
+        """Construct a loop with the given parameters.
+
+        Parameters
+        ----------
+        params : LoopParams
+            Frozen parameter set. Held as ``self.params`` for the lifetime of
+            the object.
+        """
+        self.params = params
+
+    def initial_state(self) -> np.ndarray:
+        """Return the design-point steady-state vector.
+
+        At the design point both temperature derivatives are zero by
+        construction (``LoopParams.__post_init__`` derives ``T_hot_ref`` and
+        ``T_cold_ref`` to make this true).
+
+        Returns
+        -------
+        np.ndarray, shape (2,)
+            ``[T_hot_ref, T_cold_ref]`` in K.
+        """
+        p = self.params
+        return np.array([p.T_hot_ref, p.T_cold_ref])
