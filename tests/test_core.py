@@ -8,6 +8,7 @@ Three layers (per spec §5):
 
 import numpy as np
 import pytest
+from scipy.integrate import solve_ivp
 
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 
@@ -178,3 +179,114 @@ def test_telemetry_without_inputs_reports_none_for_input_dependent_keys():
     assert tele["rho_rod"] is None
     assert tele["rho_moderator"] is None
     assert tele["rho_total"] is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: short-integration behavior tests
+# ---------------------------------------------------------------------------
+def _integrate(core, rod_fn, T_cool_fn, t_end, t_start=0.0, max_step=0.5):
+    """Integrate the core from initial_state under input functions of t.
+
+    Parameters
+    ----------
+    core : PointKineticsCore
+    rod_fn : Callable[[float], float]
+        Returns rod_reactivity at time t.
+    T_cool_fn : Callable[[float], float]
+        Returns T_cool [K] at time t.
+    t_end : float
+        Final simulated time [s].
+    """
+
+    def f(t, y):
+        return core.derivatives(
+            y,
+            {
+                "rod_reactivity": rod_fn(t),
+                "T_cool": T_cool_fn(t),
+            },
+        )
+
+    return solve_ivp(
+        f,
+        (t_start, t_end),
+        core.initial_state(),
+        method="BDF",
+        dense_output=True,
+        rtol=1e-6,
+        atol=1e-9,
+        max_step=max_step,
+    )
+
+
+def test_steady_state_holds_for_60s():
+    p = default_params()
+    core = PointKineticsCore(p)
+    sol = _integrate(
+        core,
+        rod_fn=lambda t: 0.0,
+        T_cool_fn=lambda t: p.T_cool_ref,
+        t_end=60.0,
+    )
+    assert sol.success
+    n_final = sol.y[0, -1]
+    assert n_final == pytest.approx(1.0, abs=1e-3)
+
+
+def test_doppler_levels_off_power():
+    """+200 pcm step with constant T_cool — Doppler should plateau power."""
+    p = default_params()
+    core = PointKineticsCore(p)
+    sol = _integrate(
+        core,
+        rod_fn=lambda t: 200e-5,  # +200 pcm from t=0
+        T_cool_fn=lambda t: p.T_cool_ref,
+        t_end=100.0,
+    )
+    assert sol.success
+    # Sample late in the run; power should be plateauing
+    t_late = np.linspace(80.0, 100.0, 50)
+    n_late = sol.sol(t_late)[0]
+    assert n_late.min() > 1.0  # rose above unity
+    assert n_late.max() < 100.0  # but did not run away
+
+    # Plateau check: relative change over the last 20 s is small
+    rel_change = abs(n_late[-1] - n_late[0]) / n_late[0]
+    assert rel_change < 0.05
+
+
+def test_scram_drops_power_then_decays():
+    """Scram at t=10 — prompt drop, then slow delayed-neutron tail."""
+    p = default_params()
+    core = PointKineticsCore(p)
+
+    def rod_fn(t):
+        return -7000e-5 if t >= 10.0 else 0.0
+
+    sol = _integrate(
+        core,
+        rod_fn=rod_fn,
+        T_cool_fn=lambda t: p.T_cool_ref,
+        t_end=300.0,
+    )
+    assert sol.success
+    # Prompt drop: n at t=11 should be well below initial
+    assert sol.sol(11.0)[0] < 0.1
+    # Delayed-neutron tail: still nonzero at t=300 (long-lived precursors)
+    assert sol.sol(300.0)[0] > 1e-4
+
+
+def test_no_runaway_on_small_step():
+    """Small +50 pcm step should give a tame, bounded response."""
+    p = default_params()
+    core = PointKineticsCore(p)
+    sol = _integrate(
+        core,
+        rod_fn=lambda t: 50e-5,
+        T_cool_fn=lambda t: p.T_cool_ref,
+        t_end=60.0,
+    )
+    assert sol.success
+    n_final = sol.y[0, -1]
+    assert np.isfinite(n_final)
+    assert n_final < 1000.0
