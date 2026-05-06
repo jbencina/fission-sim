@@ -250,7 +250,7 @@ plus linear (L1) rod-worth function. Bridges operator decisions
 |--------------------------|---------------|--------------------------|-----------------------------------------------------|
 | `tau`                    | s             | 10.0                     | First-order lag time constant                       |
 | `v_normal`               | 1/s           | 0.01                     | Normal motion speed (~1%/s typical PWR drive rate)  |
-| `v_scram`                | 1/s           | 0.5                      | Scram speed (full insert in ~2 s)                   |
+| `v_scram`                | 1/s           | 0.5                      | Scram speed limit; rate-cap (see code comment for dynamics nuance) |
 | `rho_total_worth`        | dimensionless | 0.14                     | Reactivity slope per unit position; scram from design (0.5→0) gives −7000 pcm |
 | `rod_position_design`    | dimensionless | 0.5                      | Position at coupled-plant design steady state       |
 | `rod_position_critical`  | dimensionless | derived: `= rod_position_design` | Position where rod produces zero reactivity         |

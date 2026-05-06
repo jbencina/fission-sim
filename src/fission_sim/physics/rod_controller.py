@@ -75,8 +75,15 @@ class RodParams:
     # ~1 inch/s on a ~12 ft (3.66 m) core gives ~1%/s in fractional units.
     v_normal: float = 0.01  # [1/s]
 
-    # Scram speed limit. Real plants use gravity-drop scrams that fully
-    # insert in ~1.5–2.5 s; 0.5/s gives 2 s for full travel.
+    # Scram speed limit (rate cap). Real plants use gravity-drop scrams that
+    # fully insert in ~1.5–2.5 s. With v_scram=0.5/s the *constant-velocity*
+    # full-travel time is 2 s — but the controller's clip-then-lag dynamics
+    # mean the actual scram trajectory is "constant velocity until error
+    # drops to v_scram·τ, then exponential decay with time constant τ".
+    # With default τ=10s, full insertion (pos < 0.05) from a typical design
+    # position takes ~10–15 s; the rate cap mostly governs the early portion
+    # of the scram. To exercise pure rate-clipped scram in tests, override
+    # τ to a small value (e.g. RodParams(tau=1.0)).
     v_scram: float = 0.5  # [1/s]
 
     # Reactivity slope per unit rod position. Positive: withdrawal raises
