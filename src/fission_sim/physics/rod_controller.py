@@ -180,3 +180,73 @@ class RodController:
             ``[rod_position_design]``
         """
         return np.array([self.params.rod_position_design])
+
+    def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
+        """Compute drod_position/dt with rate-limited first-order tracking.
+
+        Pure function of ``state`` and ``inputs`` — no per-step state on
+        ``self``. The adaptive ODE solver may call this function
+        speculatively many times per step with hypothetical states it later
+        discards.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (1,)
+            ``[rod_position]`` in dimensionless 0–1.
+        inputs : dict
+            Required keys:
+
+            - ``rod_command`` : float [dimensionless, 0–1] — operator's
+              setpoint for rod position.
+            - ``scram`` : bool — if True, forces effective command to 0
+              and lets the rate clip allow scram speed.
+
+        Returns
+        -------
+        np.ndarray, shape (1,)
+            ``[drod_position/dt]`` in 1/s.
+
+        Notes
+        -----
+        Equation (.docs/design.md §5.5):
+
+            rod_command_effective = 0 if scram else rod_command
+            drod_position/dt = clip((rod_command_effective − rod_position) / τ,
+                                     −v_scram, +v_normal)
+
+        Two regimes:
+
+        - **Lag region** (small |error|): rate is ``error / τ``, smooth
+          first-order tracking toward the commanded position.
+        - **Saturation region** (large |error|): rate is clipped to
+          ``±v_normal`` or ``−v_scram``, constant velocity.
+
+        The crossover happens when ``|error| / τ`` exceeds the velocity
+        limit. For default parameters (τ=10s, v_normal=0.01/s), crossover
+        is at |error| = 0.1 — i.e. 10% mismatch between command and
+        position.
+        """
+        p = self.params
+        rod_position = state[0]
+        rod_command = inputs["rod_command"]
+        scram = inputs["scram"]
+
+        # Scram forces the effective command to fully-inserted (0).
+        # SIMPLIFICATION: scram is binary in the model. Real scrams have
+        # small finite ramp times for relay closure, breaker opening, and
+        # gravity-drop initiation — typically <100 ms total. We treat as
+        # instantaneous.
+        rod_command_effective = 0.0 if scram else rod_command
+
+        # First-order lag with rate clipping.
+        # SIMPLIFICATION: the clip() introduces a kink in drod/dt at the
+        # boundary between lag and saturation regimes. Real actuators have
+        # smoother transitions between drive-mode and free-fall (for
+        # gravity scrams) but the discontinuity is small in magnitude and
+        # BDF handles it fine with max_step=0.5.
+        raw_rate = (rod_command_effective - rod_position) / p.tau
+        rate = np.clip(raw_rate, -p.v_scram, p.v_normal)
+
+        dstate = np.empty(self.state_size)
+        dstate[0] = rate
+        return dstate
