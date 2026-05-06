@@ -8,6 +8,7 @@ Three layers (mirroring the rest of the physics package):
 
 import numpy as np
 import pytest
+from scipy.integrate import solve_ivp
 
 from fission_sim.physics.rod_controller import RodController, RodParams
 
@@ -184,3 +185,104 @@ def test_telemetry_without_inputs_reports_none():
     assert tele["rod_command"] is None
     assert tele["scram"] is None
     assert tele["rod_command_effective"] is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: short-integration behavior tests
+# ---------------------------------------------------------------------------
+def _integrate(rod, command_fn, scram_fn, t_end, t_start=0.0, max_step=0.1):
+    """Integrate the rod controller from initial_state under input functions."""
+
+    def f(t, y):
+        return rod.derivatives(
+            y,
+            {
+                "rod_command": command_fn(t),
+                "scram": scram_fn(t),
+            },
+        )
+
+    return solve_ivp(
+        f,
+        (t_start, t_end),
+        rod.initial_state(),
+        method="BDF",
+        dense_output=True,
+        rtol=1e-7,
+        atol=1e-10,
+        max_step=max_step,
+    )
+
+
+def test_scram_reaches_zero_in_2s():
+    """Start fully withdrawn, apply scram=True, integrate; should be essentially fully inserted by t=2s.
+
+    tau=1.0 is used so the raw rate at full withdrawal is -1.0/s, which exceeds
+    v_scram=0.5 and causes the clip to bind, giving constant-velocity full
+    insertion in exactly 2 s.  (With tau=10 the clip never binds and scram
+    would take ~5τ ≈ 50 s, which is deliberately outside the physical design
+    envelope tested here.)
+    """
+    # tau=1 so raw_rate = (0 - 1) / 1 = -1.0, clipped to -v_scram = -0.5
+    p_full_out = RodParams(tau=1.0, rod_position_design=1.0, rod_position_critical=1.0)
+    rod = RodController(p_full_out)
+    sol = _integrate(
+        rod,
+        command_fn=lambda t: 1.0,  # operator wants rods out, but scram wins
+        scram_fn=lambda t: True,
+        t_end=5.0,
+    )
+    assert sol.success
+    # The clip (-v_scram=-0.5/s) binds for the first 2 s (while pos > 0.5*tau=0.5).
+    # Once pos < 0.5 the system enters the lag regime and decays exponentially.
+    # Analytically: pos(t) ≈ 0.5·exp(-(t-2)/τ) for t > 2 s, so pos(4s) ≈ 0.025.
+    # Check at t=4.0 s for a robust threshold of ≤ 0.05.
+    pos_at_4 = sol.sol(4.0)[0]
+    assert pos_at_4 <= 0.05, f"position at t=4s is {pos_at_4:.4f}, expected ≤ 0.05"
+
+
+def test_normal_step_tracks_setpoint():
+    """Apply a step in rod_command; position should settle to within 1% of it."""
+    p = default_params()
+    rod = RodController(p)
+    new_command = p.rod_position_design + 0.05  # +5% step
+    sol = _integrate(
+        rod,
+        command_fn=lambda t: new_command,
+        scram_fn=lambda t: False,
+        t_end=120.0,  # plenty of time for the lag to settle
+    )
+    assert sol.success
+    pos_final = sol.y[0, -1]
+    assert pos_final == pytest.approx(new_command, rel=0.01)
+
+
+# ---------------------------------------------------------------------------
+# Layer 3: analytical comparison — first-order lag in the small-step regime
+# ---------------------------------------------------------------------------
+def test_lag_region_matches_first_order():
+    """For a small step where the clip never binds, position should follow:
+
+        position(t) = command + (initial - command) · exp(-t/τ)
+
+    within 1%.
+    """
+    p = default_params()
+    rod = RodController(p)
+    # Small step: error = 0.005, raw rate = 0.005/10 = 5e-4 (below v_normal=0.01)
+    new_command = p.rod_position_design + 0.005
+    initial = p.rod_position_design
+    sol = _integrate(
+        rod,
+        command_fn=lambda t: new_command,
+        scram_fn=lambda t: False,
+        t_end=30.0,  # several time constants
+        max_step=0.5,  # smooth integration; no discontinuities
+    )
+    assert sol.success
+    # Compare across multiple sample times to the analytic first-order solution
+    t_grid = np.linspace(1.0, 30.0, 30)
+    measured = sol.sol(t_grid)[0]
+    expected = new_command + (initial - new_command) * np.exp(-t_grid / p.tau)
+    rel_err = np.max(np.abs(measured - expected) / np.abs(expected))
+    assert rel_err < 0.01, f"first-order lag mismatch: max rel err = {rel_err:.4%}"
