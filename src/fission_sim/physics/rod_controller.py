@@ -250,3 +250,78 @@ class RodController:
         dstate = np.empty(self.state_size)
         dstate[0] = rate
         return dstate
+
+    def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return rod_reactivity from rod position via linear worth.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (1,)
+            ``[rod_position]``.
+        inputs : dict, optional
+            Unused for this component (rod reactivity depends only on
+            position). Accepted for API uniformity.
+
+        Returns
+        -------
+        dict
+            ``{"rod_reactivity": float [dimensionless]}``
+
+        Notes
+        -----
+        SIMPLIFICATION (also called out in the RodParams docstring):
+        linear rod worth. Real reactor rods have an S-shaped
+        position-to-reactivity curve because absorbed neutrons are weighted
+        by local flux (cosine-shaped along the core's vertical axis). Top
+        and bottom of the core have low flux, so rod motion there does
+        little; the middle does almost all the work. The L1 linear
+        approximation is wrong in detail but right at the endpoints.
+        """
+        p = self.params
+        rod_position = state[0]
+        rod_reactivity = p.rho_total_worth * (rod_position - p.rod_position_critical)
+        return {"rod_reactivity": rod_reactivity}
+
+    def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return a rich diagnostic dict for logging and visualization.
+
+        Superset of ``outputs()``. Adds ``rod_position`` (the raw state
+        value) and, when ``inputs`` is provided, echoes the operator
+        commands plus the resolved ``rod_command_effective`` (= 0 if
+        scram, else rod_command).
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (1,)
+        inputs : dict, optional
+            If provided (with the same keys as ``derivatives``), echoes
+            ``rod_command``, ``scram``, and the resolved
+            ``rod_command_effective``. If omitted, those keys are reported
+            as None.
+
+        Returns
+        -------
+        dict
+            Keys: ``rod_position``, ``rod_reactivity``, ``rod_command``,
+            ``scram``, ``rod_command_effective``.
+        """
+        p = self.params
+        rod_position = state[0]
+        rod_reactivity = p.rho_total_worth * (rod_position - p.rod_position_critical)
+
+        out = {
+            "rod_position": rod_position,
+            "rod_reactivity": rod_reactivity,
+        }
+        if inputs is not None:
+            cmd = inputs.get("rod_command")
+            scram = inputs.get("scram")
+            out["rod_command"] = cmd
+            out["scram"] = scram
+            # rod_command_effective = 0 if scram else rod_command
+            out["rod_command_effective"] = 0.0 if scram else cmd
+        else:
+            out["rod_command"] = None
+            out["scram"] = None
+            out["rod_command_effective"] = None
+        return out
