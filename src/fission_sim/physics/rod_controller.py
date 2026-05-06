@@ -1,0 +1,182 @@
+"""Rod controller (rod position + manual scram) — fidelity level L1.
+
+Models the operator interface: a commanded rod position is tracked by an
+actual rod position via a rate-limited first-order lag. The actual position
+is converted to reactivity via a linear (L1) rod-worth function.
+
+This component is the bridge between human decisions (rod_command, scram)
+and the physics (rod_reactivity into the core). After this component lands,
+the only "fake" inputs in the simulator are the operator's keystrokes —
+which is exactly what they should be (we don't model human decisions).
+
+Physics specification: see ``.docs/design.md`` §5.5.
+
+References
+----------
+Lamarsh, J. R. and Baratta, A. J. *Introduction to Nuclear Engineering*,
+3rd ed., Prentice Hall, 2001. (Control rod theory and rod worth, Ch. 7-8.)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+
+
+@dataclass(frozen=True)
+class RodParams:
+    """Parameters for the L1 rod controller.
+
+    All defaults are illustrative for a generic large PWR. The reference
+    position (``rod_position_critical``) is derived from
+    ``rod_position_design`` unless explicitly supplied.
+
+    Parameters
+    ----------
+    tau : float
+        First-order lag time constant [s]. Sets the timescale for small
+        rod motions in the lag regime.
+    v_normal : float
+        Maximum normal motion speed [1/s]. Typical PWR rod drive rates
+        are ~1%/s, hence the 0.01 default.
+    v_scram : float
+        Maximum scram speed [1/s]. Default 0.5 corresponds to full
+        insertion from fully-withdrawn in ~2 s, matching real PWR scram
+        timing.
+    rho_total_worth : float
+        Reactivity slope per unit rod position [dimensionless]. Positive:
+        increasing rod_position (withdrawing rods) raises reactivity.
+        With the default value 0.14 and design position 0.5, scram
+        (pos → 0) delivers exactly −7000 pcm of reactivity.
+    rod_position_design : float
+        Position [dimensionless, 0–1] where the bank sits at the
+        coupled-plant design steady state. Default 0.5 (halfway) gives
+        symmetric room for both withdrawal and insertion.
+    rod_position_critical : float, optional
+        Position [dimensionless] where the rod produces zero reactivity.
+        If None, derived in ``__post_init__`` to equal
+        ``rod_position_design`` so that at the coupled-plant design point
+        the rod contribution to total reactivity is exactly zero (matching
+        the core's Doppler/moderator zero-by-construction).
+
+    Notes
+    -----
+    The class is frozen, but ``__post_init__`` uses ``object.__setattr__``
+    to fill in the derived ``rod_position_critical`` default. Standard
+    pattern for frozen dataclasses with derived fields.
+    """
+
+    # First-order lag time constant. Small rod motions follow
+    # exp(-t/tau) decay toward the commanded position.
+    tau: float = 10.0  # [s]
+
+    # Normal motion speed limit. Sources: typical PWR rod drive rate
+    # ~1 inch/s on a ~12 ft (3.66 m) core gives ~1%/s in fractional units.
+    v_normal: float = 0.01  # [1/s]
+
+    # Scram speed limit. Real plants use gravity-drop scrams that fully
+    # insert in ~1.5–2.5 s; 0.5/s gives 2 s for full travel.
+    v_scram: float = 0.5  # [1/s]
+
+    # Reactivity slope per unit rod position. Positive: withdrawal raises
+    # reactivity. The total swing (pos=0 vs pos=1) is rho_total_worth, so
+    # 0.14 = ±14000 pcm full swing. With design at 0.5, scram (0.5 → 0)
+    # delivers 0.14 * 0.5 = 0.07 = +7000 pcm of negative reactivity (the
+    # change in rod_reactivity is -7000 pcm).
+    #
+    # SIMPLIFICATION: linear rod worth. Real reactor rods have an S-shaped
+    # position-to-reactivity curve because absorbed neutrons are weighted
+    # by local flux (cosine-shaped along the core's vertical axis). Top
+    # and bottom of the core have low flux, so rod motion there does
+    # little; the middle does almost all the work. The L1 linear
+    # approximation is wrong in detail but right at the endpoints (zero
+    # at critical position, full negative when fully inserted).
+    rho_total_worth: float = 0.14  # [dimensionless]
+
+    # Design position. Halfway gives equal scram/withdrawal margin.
+    rod_position_design: float = 0.5  # [dimensionless, 0..1]
+
+    # Derived in __post_init__ so design state has zero rod reactivity.
+    rod_position_critical: float | None = None  # [dimensionless]
+
+    def __post_init__(self) -> None:
+        """Derive ``rod_position_critical`` so design state has zero rod reactivity.
+
+        At the coupled-plant design point, the core requires
+        ``rho_rod = 0`` (because Doppler and moderator are also zero by
+        their own reference choices). The rod controller's output is
+        ``rho_total_worth · (rod_position − rod_position_critical)``. For
+        this to be zero at ``rod_position = rod_position_design``, we
+        need ``rod_position_critical = rod_position_design``.
+        """
+        if self.rod_position_critical is None:
+            # Frozen dataclass; bypass the freeze to set the derived default.
+            object.__setattr__(self, "rod_position_critical", self.rod_position_design)
+
+
+class RodController:
+    """L1 rod controller with rate-limited motion and linear worth.
+
+    The class owns its parameters and equations. It does NOT own
+    time-evolving state. State (the actual rod position) lives in a numpy
+    array passed in by the caller (a driver script for now, the simulation
+    engine eventually).
+
+    This component is the bridge between operator decisions and physics:
+    operator commands (``rod_command``, ``scram``) come in as inputs; the
+    actual rod position evolves under rate-limited tracking; the position
+    is converted to reactivity in ``outputs()``.
+
+    Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
+        rod_command : float [dimensionless, 0–1]
+            Operator's setpoint for rod position. 0 = fully inserted,
+            1 = fully withdrawn.
+        scram : bool
+            If True, the controller forces the effective command to 0
+            (fully inserted) and the rate clip allows scram speed.
+
+    Ports out (returned by ``outputs()``):
+        rod_reactivity : float [dimensionless]
+            Reactivity contribution of the rod bank at the current
+            position. Zero at design; positive when withdrawn, negative
+            when inserted (relative to design).
+
+    State vector (length ``state_size`` = 1, names in ``state_labels``):
+        index 0 : rod_position — actual rod position [dimensionless, 0–1]
+
+    Notes
+    -----
+    The actual rod position can in principle drift outside [0, 1] if the
+    integrator overshoots, but with the rate-clip and physically-reasonable
+    inputs (rod_command in [0, 1], scram boolean) this does not occur in
+    practice. We do not enforce hard bounds on the state vector at L1.
+    """
+
+    state_size: int = 1
+    state_labels: tuple[str, ...] = ("rod_position",)
+
+    def __init__(self, params: RodParams) -> None:
+        """Construct a rod controller with the given parameters.
+
+        Parameters
+        ----------
+        params : RodParams
+            Frozen parameter set. Held as ``self.params`` for the lifetime
+            of the object.
+        """
+        self.params = params
+
+    def initial_state(self) -> np.ndarray:
+        """Return the design-point initial state.
+
+        At t=0 the rod position is at the design steady-state position.
+        Combined with ``rod_command = rod_position_design`` and
+        ``scram = False``, the initial derivative is zero by construction.
+
+        Returns
+        -------
+        np.ndarray, shape (1,)
+            ``[rod_position_design]``
+        """
+        return np.array([self.params.rod_position_design])
