@@ -205,14 +205,65 @@ Constant `T_secondary`; no state, no inputs. See `.docs/design.md` §5.4.
 |-----------------|-------|---------|--------------------------------------------------|
 | `T_secondary`   | K     | 558     | Saturation temp at ~6.9 MPa (typical PWR steam)  |
 
+### RodController (`src/fission_sim/physics/rod_controller.py`)
+
+L1 rod controller: rate-limited first-order tracking of operator commands
+plus linear (L1) rod-worth function. Bridges operator decisions
+(rod_command, scram) to physics (rod_reactivity into the core). See
+`.docs/design.md` §5.5 for physics.
+
+**Constructor**
+
+    RodController(params: RodParams)
+
+**State vector** (`state_size = 1`)
+
+    state_labels = ("rod_position",)
+    units:        dimensionless (0=fully inserted, 1=fully withdrawn)
+
+| Index | Name         | Meaning                                                 |
+|------:|--------------|---------------------------------------------------------|
+| 0     | rod_position | Actual rod position; lags rod_command via rate-limited tracking |
+
+**Methods**
+
+    initial_state() -> np.ndarray
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {"rod_command": float [0..1, dimensionless],
+                 "scram":       bool}
+
+    outputs(state, inputs=None) -> {
+        "rod_reactivity": float [dimensionless],
+            # = rho_total_worth * (rod_position - rod_position_critical)
+    }
+
+    telemetry(state, inputs=None) -> outputs() ∪ {
+        "rod_position", "rod_command", "scram", "rod_command_effective",
+    }
+        rod_position is computable from state alone.
+        rod_command, scram, rod_command_effective are echoed/derived from
+        inputs (None when inputs omitted).
+
+**RodParams (frozen dataclass)**
+
+| Field                    | Units         | Default                  | Source / note                                       |
+|--------------------------|---------------|--------------------------|-----------------------------------------------------|
+| `tau`                    | s             | 10.0                     | First-order lag time constant                       |
+| `v_normal`               | 1/s           | 0.01                     | Normal motion speed (~1%/s typical PWR drive rate)  |
+| `v_scram`                | 1/s           | 0.5                      | Scram speed (full insert in ~2 s)                   |
+| `rho_total_worth`        | dimensionless | 0.14                     | Reactivity slope per unit position; scram from design (0.5→0) gives −7000 pcm |
+| `rod_position_design`    | dimensionless | 0.5                      | Position at coupled-plant design steady state       |
+| `rod_position_critical`  | dimensionless | derived: `= rod_position_design` | Position where rod produces zero reactivity         |
+
 ## Multi-component runners
 
-`examples/run_primary.py` (matplotlib) and `examples/report_primary.py`
-(text/SSH) drive all four components (Core + Loop + SG + Sink) coupled
-together. Each script defines its own ~30-line `f(t, y)` wiring; the
-coupled-system test in `tests/test_primary_plant.py` does the same. The
-duplication is intentional — when slice 3 adds the rod controller, the
-engine slice naturally follows by extracting the wiring once and for all.
+`examples/run_primary.py` (matplotlib), `examples/report_primary.py`
+(text/SSH), and `examples/dump_state.py` (full state + telemetry dump)
+drive all five components (Core + Loop + SG + Sink + RodController)
+coupled together. Each script defines its own ~35-line `f(t, y)` wiring;
+the coupled-system test in `tests/test_primary_plant.py` does the same.
+After this slice there are four copies of essentially the same wiring;
+the engine slice (slice 4) will deduplicate them.
 
 ## Roadmap
 
