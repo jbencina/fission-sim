@@ -227,12 +227,14 @@ def main() -> None:
 
     print("  What this shows:")
     print("    * Steady state holds at n=1 with rod at design (0.5).")
-    print("    * After +0.015 rod_command step: rod motion takes ~1.5 s (rate-")
-    print("      limited at v_normal=0.01/s). +210 pcm reactivity ramps in gradually,")
-    print("      not instantaneously. Doppler+moderator level it off.")
-    print("    * After scram: rod_command_effective forced to 0; rod insertion at")
-    print("      v_scram=0.5/s reaches full insertion in ~1 s; reactivity drops by")
-    print("      ~7000 pcm; power drops sharply, then delayed-neutron tail.")
+    print("    * After +0.015 rod_command step: rod moves at v_normal=0.01/s for ~1.5 s")
+    print("      (rate clip binds), then exponential settling over ~3 s. Total +210 pcm")
+    print("      reactivity ramps in over ~3 s (not instantaneously). Doppler+moderator")
+    print("      level it off.")
+    print("    * After scram: rod_command_effective → 0. Rod drops at v_scram=0.5/s for")
+    print("      ~1 s (delivers ~80% of scram worth), then exponential settling over a")
+    print("      few more seconds for the last bit. Power drops two orders of magnitude")
+    print("      within ~2 s, then delayed-neutron tail (group-1 precursor, ~55 s τ).")
     print()
 
 

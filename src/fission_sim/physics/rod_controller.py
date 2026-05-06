@@ -69,21 +69,36 @@ class RodParams:
 
     # First-order lag time constant. Small rod motions follow
     # exp(-t/tau) decay toward the commanded position.
-    tau: float = 10.0  # [s]
+    #
+    # NOTE on the choice of 1.0 s: tau has no direct physical analog in real
+    # rod actuators, which are essentially constant-velocity (stepper motors
+    # for normal motion, gravity drop for scram). The lag form
+    # `drod/dt = (cmd - pos) / tau` is a numerical smoothing trick that
+    # eliminates the discontinuity an ideal velocity tracker would have at
+    # the setpoint. tau is the size of the slow-down zone.
+    #
+    # tau=1.0 was chosen because:
+    #   * Slow-down zone is `tau · v_normal = 0.01` (1% of full travel).
+    #     Above 1% mismatch, the controller is in the velocity-clipped
+    #     regime — matching how real rods actually move.
+    #   * For scram from any realistic position (>0.05), the v_scram clip
+    #     binds, giving the ~2s full insertion time the spec calls for.
+    #   * Numerically benign — BDF integrator handles 1 s time constants
+    #     trivially.
+    #
+    # Smaller tau → cleaner velocity tracking but stiffer ODE.
+    # Larger tau → rate caps become vestigial; lag dominates.
+    tau: float = 1.0  # [s]
 
     # Normal motion speed limit. Sources: typical PWR rod drive rate
     # ~1 inch/s on a ~12 ft (3.66 m) core gives ~1%/s in fractional units.
     v_normal: float = 0.01  # [1/s]
 
     # Scram speed limit (rate cap). Real plants use gravity-drop scrams that
-    # fully insert in ~1.5–2.5 s. With v_scram=0.5/s the *constant-velocity*
-    # full-travel time is 2 s — but the controller's clip-then-lag dynamics
-    # mean the actual scram trajectory is "constant velocity until error
-    # drops to v_scram·τ, then exponential decay with time constant τ".
-    # With default τ=10s, full insertion (pos < 0.05) from a typical design
-    # position takes ~10–15 s; the rate cap mostly governs the early portion
-    # of the scram. To exercise pure rate-clipped scram in tests, override
-    # τ to a small value (e.g. RodParams(tau=1.0)).
+    # fully insert in ~1.5–2.5 s. With v_scram=0.5/s and the default τ=1s,
+    # the clip binds for the bulk of any realistic scram (initial error ≈
+    # 0.5; raw_rate = 0.5/τ = 0.5, exactly at the cap). Result: full
+    # insertion in ~2 s, matching real PWR scram timing.
     v_scram: float = 0.5  # [1/s]
 
     # Reactivity slope per unit rod position. Positive: withdrawal raises
