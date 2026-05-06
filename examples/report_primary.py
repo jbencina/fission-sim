@@ -1,4 +1,4 @@
-"""Text-only diagnostic for the coupled primary plant.
+"""Text-only diagnostic for the coupled primary plant + rod controller.
 
 SSH-friendly sibling of ``run_primary.py``. Same scenario; output is a
 printed table at key time points plus ASCII charts of n, T_avg, and
@@ -7,10 +7,10 @@ Q_core/Q_sg over time. No matplotlib.
 Run:
     uv run python examples/report_primary.py
 
-Note on intentional duplication: this script holds its own copy of the plant
-wiring, identical in shape to those in ``run_primary.py`` and
-``tests/test_primary_plant.py``. See the spec at
-``docs/superpowers/specs/2026-05-04-primary-loop-and-secondary-design.md`` §10.
+Note on intentional duplication: this script holds its own copy of the
+plant wiring, identical in shape to ``run_primary.py``,
+``tests/test_primary_plant.py``, and ``dump_state.py``. See the spec at
+``docs/superpowers/specs/2026-05-04-rod-controller-design.md`` §9.
 """
 
 from __future__ import annotations
@@ -20,16 +20,19 @@ from scipy.integrate import solve_ivp
 
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
+from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
 
-def rod_reactivity_fn(t: float) -> float:
+def rod_command_fn(t: float) -> float:
     if t < 10.0:
-        return 0.0
-    if t < 60.0:
-        return 200e-5
-    return -7000e-5
+        return 0.5
+    return 0.515
+
+
+def scram_fn(t: float) -> bool:
+    return t >= 60.0
 
 
 def ascii_log_chart(times, values, width=50, vmin=None, vmax=None, label="value"):
@@ -85,16 +88,17 @@ def ascii_linear_chart(times, values, width=50, label="value", unit=""):
 
 
 def main() -> None:
-    # --- assemble plant ---
     core = PointKineticsCore(CoreParams())
     loop = PrimaryLoop(LoopParams())
     sg = SteamGenerator(SGParams())
     sink = SecondarySink(SinkParams())
-    y0 = np.concatenate([core.initial_state(), loop.initial_state()])
+    rod = RodController(RodParams())
+    y0 = np.concatenate([core.initial_state(), loop.initial_state(), rod.initial_state()])
 
     def f(t, y):
         s_core = y[0:8]
         s_loop = y[8:10]
+        s_rod = y[10:11]
         out_sink = sink.outputs(np.empty(0))
         out_loop = loop.outputs(s_loop)
         out_sg = sg.outputs(
@@ -105,11 +109,12 @@ def main() -> None:
             },
         )
         out_core = core.outputs(s_core)
+        out_rod = rod.outputs(s_rod)
         dy = np.empty_like(y)
         dy[0:8] = core.derivatives(
             s_core,
             inputs={
-                "rod_reactivity": rod_reactivity_fn(t),
+                "rod_reactivity": out_rod["rod_reactivity"],
                 "T_cool": out_loop["T_cool"],
             },
         )
@@ -118,6 +123,13 @@ def main() -> None:
             inputs={
                 "Q_core": out_core["power_thermal"],
                 "Q_sg": out_sg["Q_sg"],
+            },
+        )
+        dy[10:11] = rod.derivatives(
+            s_rod,
+            inputs={
+                "rod_command": rod_command_fn(t),
+                "scram": scram_fn(t),
             },
         )
         return dy
@@ -136,51 +148,54 @@ def main() -> None:
         raise RuntimeError(f"solve_ivp failed: {sol.message}")
 
     print()
-    print("=" * 80)
-    print("  Coupled Primary Plant  —  default scenario  (text report)")
-    print("=" * 80)
+    print("=" * 84)
+    print("  Coupled Primary Plant + Rod Controller  —  default scenario  (text report)")
+    print("=" * 84)
     print()
     print("  Scenario:")
-    print("    t = 0..10 s   steady state at design power")
-    print("    t = 10 s      rod step  +200 pcm")
+    print("    t = 0..10 s   steady state at design (rod_command = 0.5)")
+    print("    t = 10 s      rod_command raised by +0.015 (gradual withdraw ~1.5 s)")
     print("    t = 10..60 s  Doppler AND moderator feedback level power off")
-    print("    t = 60 s      scram  -7000 pcm")
+    print("    t = 60 s      scram (rod_command_effective → 0)")
     print("    t = 60..300 s delayed-neutron tail; loop water cools")
     print()
 
-    # --- table at key time points ---
-    sample_t = np.array([0, 5, 10, 10.5, 12, 30, 60, 60.5, 80, 150, 300])
+    sample_t = np.array([0, 5, 10, 11, 12, 30, 60, 60.5, 62, 80, 150, 300])
     Y = sol.sol(sample_t)
     n = Y[0]
     T_fuel = Y[7]
     T_hot = Y[8]
     T_cold = Y[9]
     T_avg = (T_hot + T_cold) / 2
+    rod_position = Y[10]
 
     print("  Time-series at key points:")
-    header = "    ------------------------------------------------------------------------------"
+    header = "    -----------------------------------------------------------------------------------"
     print(header)
-    print("       t[s]      n       T_fuel    T_hot    T_cold   T_avg    Q_core   Q_sg")
-    print("                            [K]      [K]      [K]     [K]    [GW]   [GW]")
+    print("       t[s]      n       T_fuel    T_avg    rod_pos   rho_rod   Q_core   Q_sg")
+    print("                            [K]      [K]              [pcm]    [GW]    [GW]")
     print(header)
     p_core = core.params
+    p_rod = rod.params
     UA = sg.params.UA
     T_sec = sink.params.T_secondary
-    for ti, ni, Tfi, Thi, Tci, Tavi in zip(sample_t, n, T_fuel, T_hot, T_cold, T_avg):
+    PCM = 1e5
+    for ti, ni, Tfi, Tavi, posi in zip(sample_t, n, T_fuel, T_avg, rod_position):
         Q_core_v = ni * p_core.P_design
         Q_sg_v = UA * (Tavi - T_sec)
+        rho_rod_v = p_rod.rho_total_worth * (posi - p_rod.rod_position_critical) * PCM
         print(
-            f"    {ti:6.1f}  {ni:8.3e}  {Tfi:7.2f}  {Thi:7.2f}  {Tci:7.2f}"
-            f"  {Tavi:6.2f}  {Q_core_v / 1e9:6.3f}  {Q_sg_v / 1e9:6.3f}"
+            f"    {ti:6.1f}  {ni:8.3e}  {Tfi:7.2f}  {Tavi:6.2f}  {posi:6.4f}"
+            f"  {rho_rod_v:+7.1f}  {Q_core_v / 1e9:6.3f}  {Q_sg_v / 1e9:6.3f}"
         )
     print(header)
     print()
 
-    # --- charts ---
-    chart_t = np.array([0, 2, 5, 10, 10.5, 13, 30, 60, 60.5, 80, 150, 300])
+    chart_t = np.array([0, 2, 5, 10, 11, 13, 30, 60, 60.5, 65, 80, 150, 300])
     chart_Y = sol.sol(chart_t)
     chart_n = chart_Y[0]
     chart_Tavg = (chart_Y[8] + chart_Y[9]) / 2
+    chart_rod = chart_Y[10]
 
     print("  Neutron population n  (log scale, n=1 at design power):")
     print()
@@ -190,6 +205,11 @@ def main() -> None:
     print("  Loop average temperature T_avg [K]:")
     print()
     ascii_linear_chart(chart_t, chart_Tavg, width=52, label="T_avg", unit="K")
+    print()
+
+    print("  Rod position (0=fully inserted, 1=fully withdrawn):")
+    print()
+    ascii_linear_chart(chart_t, chart_rod, width=52, label="rod_pos", unit="")
     print()
 
     print("  Energy balance check (Q_core vs Q_sg at key times, both in GW):")
@@ -206,15 +226,13 @@ def main() -> None:
     print()
 
     print("  What this shows:")
-    print("    * Steady state holds at n=1 with Q_core == Q_sg by construction.")
-    print("    * After +200 pcm rod step: power rises, fuel and loop water both heat.")
-    print("      Doppler AND moderator feedback both push back; new equilibrium is")
-    print("      reached at slightly higher power than at start.")
-    print("    * After scram (-7000 pcm): power drops fast; loop water cools more")
-    print("      slowly because of its larger thermal mass (~30000 kg of water at")
-    print("      c_p=5500 J/kg/K is more inertial than ~100000 kg fuel at 300 J/kg/K).")
-    print("    * Energy balance gap (Q_core − Q_sg) is the rate at which the loop")
-    print("      water is gaining or losing thermal energy — closes to zero at steady.")
+    print("    * Steady state holds at n=1 with rod at design (0.5).")
+    print("    * After +0.015 rod_command step: rod motion takes ~1.5 s (rate-")
+    print("      limited at v_normal=0.01/s). +210 pcm reactivity ramps in gradually,")
+    print("      not instantaneously. Doppler+moderator level it off.")
+    print("    * After scram: rod_command_effective forced to 0; rod insertion at")
+    print("      v_scram=0.5/s reaches full insertion in ~1 s; reactivity drops by")
+    print("      ~7000 pcm; power drops sharply, then delayed-neutron tail.")
     print()
 
 
