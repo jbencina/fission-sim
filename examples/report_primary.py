@@ -1,4 +1,4 @@
-"""Text-only diagnostic for the coupled primary plant + rod controller.
+"""Text-only diagnostic for the coupled primary plant + rod controller — engine-driven.
 
 SSH-friendly sibling of ``run_primary.py``. Same scenario; output is a
 printed table at key time points plus ASCII charts of n, T_avg, and
@@ -6,33 +6,18 @@ Q_core/Q_sg over time. No matplotlib.
 
 Run:
     uv run python examples/report_primary.py
-
-Note on intentional duplication: this script holds its own copy of the
-plant wiring, identical in shape to ``run_primary.py``,
-``tests/test_primary_plant.py``, and ``dump_state.py``. See the spec at
-``docs/superpowers/specs/2026-05-04-rod-controller-design.md`` §9.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from scipy.integrate import solve_ivp
 
+from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
-
-
-def rod_command_fn(t: float) -> float:
-    if t < 10.0:
-        return 0.5
-    return 0.515
-
-
-def scram_fn(t: float) -> bool:
-    return t >= 60.0
 
 
 def ascii_log_chart(times, values, width=50, vmin=None, vmax=None, label="value"):
@@ -88,64 +73,35 @@ def ascii_linear_chart(times, values, width=50, label="value", unit=""):
 
 
 def main() -> None:
-    core = PointKineticsCore(CoreParams())
-    loop = PrimaryLoop(LoopParams())
-    sg = SteamGenerator(SGParams())
-    sink = SecondarySink(SinkParams())
-    rod = RodController(RodParams())
-    y0 = np.concatenate([core.initial_state(), loop.initial_state(), rod.initial_state()])
+    core_params = CoreParams()
+    loop_params = LoopParams()
+    sg_params = SGParams()
+    sink_params = SinkParams()
+    rod_params = RodParams()
 
-    def f(t, y):
-        s_core = y[0:8]
-        s_loop = y[8:10]
-        s_rod = y[10:11]
-        out_sink = sink.outputs(np.empty(0))
-        out_loop = loop.outputs(s_loop)
-        out_sg = sg.outputs(
-            np.empty(0),
-            inputs={
-                "T_avg": out_loop["T_avg"],
-                "T_secondary": out_sink["T_secondary"],
-            },
-        )
-        out_core = core.outputs(s_core)
-        out_rod = rod.outputs(s_rod)
-        dy = np.empty_like(y)
-        dy[0:8] = core.derivatives(
-            s_core,
-            inputs={
-                "rho_rod": out_rod["rho_rod"],
-                "T_cool": out_loop["T_cool"],
-            },
-        )
-        dy[8:10] = loop.derivatives(
-            s_loop,
-            inputs={
-                "power_thermal": out_core["power_thermal"],
-                "Q_sg": out_sg["Q_sg"],
-            },
-        )
-        dy[10:11] = rod.derivatives(
-            s_rod,
-            inputs={
-                "rod_command": rod_command_fn(t),
-                "scram": scram_fn(t),
-            },
-        )
-        return dy
+    engine = SimEngine()
+    rod = engine.module(RodController(rod_params), name="rod")
+    core = engine.module(PointKineticsCore(core_params), name="core")
+    loop = engine.module(PrimaryLoop(loop_params), name="loop")
+    sg = engine.module(SteamGenerator(sg_params), name="sg")
+    sink = engine.module(SecondarySink(sink_params), name="sink")
 
-    sol = solve_ivp(
-        f,
-        (0.0, 300.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.5,
-    )
-    if not sol.success:
-        raise RuntimeError(f"solve_ivp failed: {sol.message}")
+    rod_cmd = engine.input("rod_command", default=0.5)
+    scram = engine.input("scram", default=False)
+
+    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    T_sec = sink()
+    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    loop(power_thermal=core.power_thermal, Q_sg=Q_sg_sig)
+
+    def scenario(t: float) -> dict:
+        return {
+            "rod_command": 0.5 if t < 10.0 else 0.515,
+            "scram": t >= 60.0,
+        }
+
+    _final, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
 
     print()
     print("=" * 84)
@@ -161,13 +117,7 @@ def main() -> None:
     print()
 
     sample_t = np.array([0, 5, 10, 11, 12, 30, 60, 60.5, 62, 80, 150, 300])
-    Y = sol.sol(sample_t)
-    n = Y[0]
-    T_fuel = Y[7]
-    T_hot = Y[8]
-    T_cold = Y[9]
-    T_avg = (T_hot + T_cold) / 2
-    rod_position = Y[10]
+    snaps = [dense.at(float(ti)) for ti in sample_t]
 
     print("  Time-series at key points:")
     header = "    -----------------------------------------------------------------------------------"
@@ -175,15 +125,15 @@ def main() -> None:
     print("       t[s]      n       T_fuel    T_avg    rod_pos   rho_rod   Q_core   Q_sg")
     print("                            [K]      [K]              [pcm]    [GW]    [GW]")
     print(header)
-    p_core = core.params
-    p_rod = rod.params
-    UA = sg.params.UA
-    T_sec = sink.params.T_secondary
     PCM = 1e5
-    for ti, ni, Tfi, Tavi, posi in zip(sample_t, n, T_fuel, T_avg, rod_position):
-        Q_core_v = ni * p_core.P_design
-        Q_sg_v = UA * (Tavi - T_sec)
-        rho_rod_v = p_rod.rho_total_worth * (posi - p_rod.rod_position_critical) * PCM
+    for ti, snap in zip(sample_t, snaps):
+        ni = snap["core"]["n"]
+        Tfi = snap["core"]["T_fuel"]
+        Tavi = (snap["loop"]["T_hot"] + snap["loop"]["T_cold"]) / 2.0
+        posi = snap["rod"]["rod_position"]
+        rho_rod_v = snap["signals"]["rho_rod"] * PCM
+        Q_core_v = snap["signals"]["power_thermal"]
+        Q_sg_v = snap["signals"]["Q_sg"]
         print(
             f"    {ti:6.1f}  {ni:8.3e}  {Tfi:7.2f}  {Tavi:6.2f}  {posi:6.4f}"
             f"  {rho_rod_v:+7.1f}  {Q_core_v / 1e9:6.3f}  {Q_sg_v / 1e9:6.3f}"
@@ -192,10 +142,11 @@ def main() -> None:
     print()
 
     chart_t = np.array([0, 2, 5, 10, 11, 13, 30, 60, 60.5, 65, 80, 150, 300])
-    chart_Y = sol.sol(chart_t)
-    chart_n = chart_Y[0]
-    chart_Tavg = (chart_Y[8] + chart_Y[9]) / 2
-    chart_rod = chart_Y[10]
+    chart_n = dense.signal("power_thermal", chart_t) / core_params.P_design
+    chart_Tavg = np.array(
+        [(dense.at(float(ti))["loop"]["T_hot"] + dense.at(float(ti))["loop"]["T_cold"]) / 2 for ti in chart_t]
+    )
+    chart_rod = np.array([dense.at(float(ti))["rod"]["rod_position"] for ti in chart_t])
 
     print("  Neutron population n  (log scale, n=1 at design power):")
     print()
@@ -216,11 +167,9 @@ def main() -> None:
     print()
     print("                  Q_core       Q_sg      ΔQ        rel")
     for ti in [0.0, 30.0, 100.0, 300.0]:
-        Y_t = sol.sol(np.array([ti]))
-        n_t = Y_t[0, 0]
-        Tav_t = (Y_t[8, 0] + Y_t[9, 0]) / 2
-        Qc = n_t * p_core.P_design
-        Qs = UA * (Tav_t - T_sec)
+        snap_t = dense.at(float(ti))
+        Qc = snap_t["signals"]["power_thermal"]
+        Qs = snap_t["signals"]["Q_sg"]
         rel = abs(Qc - Qs) / max(abs(Qc), 1.0)
         print(f"    t = {ti:5.1f} s  {Qc / 1e9:6.3f}     {Qs / 1e9:6.3f}     {(Qc - Qs) / 1e9:7.4f}   {rel:8.2%}")
     print()
