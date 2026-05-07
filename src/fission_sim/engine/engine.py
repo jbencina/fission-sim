@@ -250,17 +250,72 @@ class SimEngine:
     def finalize(self) -> None:
         """Validate the wiring graph and allocate the state vector.
 
-        After this call, the engine is ready to ``step()`` or ``run()``. The
-        topology is locked.
+        Validations performed:
+        - Every consumer port (kwarg in a module's __call__) has either a
+          producer module's output Signal feeding it, or it's an external.
+        - Every external declared via input() is consumed at least once.
+        - No two modules name the same canonical output signal (i.e., no
+          two modules produce a port with the same name AND that signal is
+          consumed somewhere).
+        - Every module's required input_ports are wired (call dict covers
+          all entries in component.input_ports).
         """
         if self._finalized:
             return  # idempotent
 
-        # Allocate state vector and record per-module offsets.
+        # 1. Build set of all consumed signals across all modules.
+        consumed_signals: set[Signal] = set()
+        for m in self._modules:
+            for sig in m._inputs.values():
+                consumed_signals.add(sig)
+
+        # 2. Detect two-producers conflict: a signal name that has been
+        # consumed and is published by more than one module. Iterate over
+        # modules in registration order (rather than over the consumed_signals
+        # set) so that when multiple collisions exist, the same one wins
+        # deterministically across runs.
+        producer_signals: dict[str, set[str]] = {}  # signal name → producer module names
+        for m in self._modules:
+            for sig in m._inputs.values():
+                if sig.is_external:
+                    continue
+                producer_signals.setdefault(sig.name, set()).add(sig.producer_module)
+
+        for sig_name, producers in producer_signals.items():
+            if len(producers) > 1:
+                raise EngineWiringError(
+                    f"signal '{sig_name}' has more than one producer: "
+                    f"modules {sorted(producers)!r} all expose an output "
+                    f"port named '{sig_name}'. Rename one in its component's "
+                    f"output_ports declaration."
+                )
+
+        # 3. Check each module's input_ports are all wired.
+        for m in self._modules:
+            for required_port in m._input_ports:
+                if required_port not in m._inputs:
+                    raise EngineWiringError(
+                        f"module '{m.name}' input '{required_port}' was not "
+                        f"connected; either wire it via "
+                        f"{m.name}({required_port}=signal) or declare it as an "
+                        f"external via engine.input('{required_port}', default=...)"
+                    )
+
+        # 4. Check every declared external is consumed.
+        consumed_external_names = {sig.name for sig in consumed_signals if sig.is_external}
+        for ext_name in self._externals:
+            if ext_name not in consumed_external_names:
+                raise EngineWiringError(
+                    f"external '{ext_name}' declared but never consumed; "
+                    f"either wire it into some module's input or remove the "
+                    f"engine.input('{ext_name}', ...) call"
+                )
+
+        # 5. Allocate state vector and record per-module offsets.
         offset = 0
         chunks: list[np.ndarray] = []
         for m in self._modules:
-            m._state_offset = offset
+            object.__setattr__(m, "_state_offset", offset)
             init = np.asarray(m._component.initial_state(), dtype=float)
             if init.shape != (m._state_size,):
                 raise EngineWiringError(

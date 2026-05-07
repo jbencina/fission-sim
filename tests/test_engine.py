@@ -39,12 +39,11 @@ class _ScalarIntegrator:
 def test_state_layout_concatenates() -> None:
     """Two modules with state_size 1 → engine.state has shape (2,) after finalize."""
     engine = SimEngine()
-    engine.module(_ScalarIntegrator(x0=1.0), name="a")
-    engine.module(_ScalarIntegrator(x0=2.0), name="b")
-    engine.input("rate", default=0.0)
-    # No wiring needed for this layout test — finalize() should still allocate
-    # the state vector. Note: this test currently expects unwired inputs to be
-    # tolerated; that gets tightened in Task 7.
+    a = engine.module(_ScalarIntegrator(x0=1.0), name="a")
+    b = engine.module(_ScalarIntegrator(x0=2.0), name="b")
+    rate = engine.input("rate", default=0.0)
+    a(rate=rate)
+    b(rate=rate)
     engine.finalize()
     assert engine.state.shape == (2,)
 
@@ -52,11 +51,11 @@ def test_state_layout_concatenates() -> None:
 def test_initial_state_assembled_from_modules() -> None:
     """engine.state matches concatenated module initial_state() values."""
     engine = SimEngine()
-    a = _ScalarIntegrator(x0=3.0)
-    b = _ScalarIntegrator(x0=5.0)
-    engine.module(a, name="a")
-    engine.module(b, name="b")
-    engine.input("rate", default=0.0)
+    a = engine.module(_ScalarIntegrator(x0=3.0), name="a")
+    b = engine.module(_ScalarIntegrator(x0=5.0), name="b")
+    rate = engine.input("rate", default=0.0)
+    a(rate=rate)
+    b(rate=rate)
     engine.finalize()
     np.testing.assert_array_equal(engine.state, np.array([3.0, 5.0]))
 
@@ -64,8 +63,9 @@ def test_initial_state_assembled_from_modules() -> None:
 def test_t_starts_at_zero() -> None:
     """engine.t == 0.0 immediately after finalize()."""
     engine = SimEngine()
-    engine.module(_ScalarIntegrator(), name="a")
-    engine.input("rate", default=0.0)
+    m = engine.module(_ScalarIntegrator(), name="a")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
     engine.finalize()
     assert engine.t == 0.0
 
@@ -177,3 +177,71 @@ def test_call_twice_with_same_port_raises() -> None:
     m(rate=rate1)
     with pytest.raises(EngineWiringError, match="already wired"):
         m(rate=rate1)
+
+
+def test_dangling_input_raises() -> None:
+    """A module with an unwired input → EngineWiringError at finalize."""
+    engine = SimEngine()
+    engine.module(_ScalarIntegrator(), name="m")  # has input 'rate' — never wired
+    with pytest.raises(EngineWiringError, match="module 'm' input 'rate' was not connected"):
+        engine.finalize()
+
+
+def test_two_producers_for_same_signal_raises() -> None:
+    """Two modules whose output port has the same canonical name → error."""
+
+    class _Consumer:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("foo",)
+        output_ports = ()
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs=None):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    # _ScalarIntegrator's only output is named "x". Wire each module's "x"
+    # into a dedicated consumer to make both producers visible.
+    engine = SimEngine()
+    a = engine.module(_ScalarIntegrator(), name="a")
+    b = engine.module(_ScalarIntegrator(), name="b")
+    rate_a = engine.input("rate_a", default=0.0)
+    rate_b = engine.input("rate_b", default=0.0)
+    a(rate=rate_a)
+    b(rate=rate_b)
+    c1 = engine.module(_Consumer(), name="c1")
+    c2 = engine.module(_Consumer(), name="c2")
+    c1(foo=a.x)
+    c2(foo=b.x)
+    with pytest.raises(EngineWiringError, match="signal 'x' has more than one producer"):
+        engine.finalize()
+
+
+def test_unused_external_raises() -> None:
+    """An external declared but never consumed → EngineWiringError at finalize."""
+    engine = SimEngine()
+    engine.input("ghost", default=1.0)  # never used
+    # Need at least one wired module to make the rest of finalize valid.
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    with pytest.raises(EngineWiringError, match="external 'ghost' declared but never consumed"):
+        engine.finalize()
+
+
+def test_finalize_succeeds_for_minimal_valid_graph() -> None:
+    """A trivially valid graph (one module + one external wired in) finalizes cleanly."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()  # no raise
+    assert engine.state.shape == (1,)
