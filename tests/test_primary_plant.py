@@ -1,17 +1,21 @@
-"""Coupled-system tests for the assembled primary plant.
+"""Coupled primary-plant tests — wired through SimEngine.
 
-Exercises all five components wired together: core + loop + SG + sink + rod
-controller. The wiring helper ``_assemble_plant`` is duplicated (in shape)
-by the matplotlib runner ``examples/run_primary.py``, the text runner
-``examples/report_primary.py``, and ``examples/dump_state.py``. The
-duplication is intentional and accumulates the signal that the engine
-should be extracted in slice 4.
+Replaces the pre-slice-4 _assemble_plant helper that built the f(t, y) function
+manually. The engine version is declarative; these tests assert that the
+coupled plant satisfies the four properties the M1 spec calls out:
+
+1. Steady-state holds at design.
+2. Rod withdrawal raises power, then Doppler+moderator level it off.
+3. Scram with rod motion drops power gradually.
+4. Energy balance closes (Q_core ≈ Q_sg).
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.integrate import solve_ivp
 
+from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -19,224 +23,109 @@ from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
 
-# ---------------------------------------------------------------------------
-# Wiring: assemble all five components, build the global state vector, and
-# return the f(t, y) glue function suitable for solve_ivp.
-# ---------------------------------------------------------------------------
-def _assemble_plant(rod_command_fn, scram_fn):
-    """Construct the five-component primary plant.
+def _assemble_plant():
+    """Build the M1 plant via the engine and return (engine, modules) ready
+    for run() with a scenario_fn.
 
-    Parameters
-    ----------
-    rod_command_fn : Callable[[float], float]
-        Function mapping simulated time t [s] to operator's rod_command
-        setpoint [dimensionless, 0–1].
-    scram_fn : Callable[[float], bool]
-        Function mapping simulated time t [s] to operator's scram flag.
-
-    Returns
-    -------
-    components : dict
-        Maps name to instance: ``{"core", "loop", "sg", "sink", "rod"}``.
-    y0 : np.ndarray, shape (11,)
-        Initial global state vector: core's 8 + loop's 2 + rod's 1.
-    f : Callable[[float, np.ndarray], np.ndarray]
-        The derivative function for solve_ivp.
+    Module registration order is rod, core, loop, sg, sink — matching
+    tests/test_engine.py::_assemble_full_plant for cross-test consistency.
     """
-    core = PointKineticsCore(CoreParams())
-    loop = PrimaryLoop(LoopParams())
-    sg = SteamGenerator(SGParams())
-    sink = SecondarySink(SinkParams())
-    rod = RodController(RodParams())
+    engine = SimEngine()
+    rod = engine.module(RodController(RodParams()), name="rod")
+    core = engine.module(PointKineticsCore(CoreParams()), name="core")
+    loop = engine.module(PrimaryLoop(LoopParams()), name="loop")
+    sg = engine.module(SteamGenerator(SGParams()), name="sg")
+    sink = engine.module(SecondarySink(SinkParams()), name="sink")
 
-    y0 = np.concatenate([core.initial_state(), loop.initial_state(), rod.initial_state()])
+    rod_cmd = engine.input("rod_command", default=0.5)
+    scram = engine.input("scram", default=False)
 
-    def f(t, y):
-        # Slice the global state vector
-        s_core = y[0:8]
-        s_loop = y[8:10]
-        s_rod = y[10:11]
-
-        # Compute outputs in dependency order
-        out_sink = sink.outputs(np.empty(0))
-        out_loop = loop.outputs(s_loop)
-        out_sg = sg.outputs(
-            np.empty(0),
-            inputs={
-                "T_avg": out_loop["T_avg"],
-                "T_secondary": out_sink["T_secondary"],
-            },
-        )
-        out_core = core.outputs(s_core)
-        out_rod = rod.outputs(s_rod)
-
-        # Compute derivatives, threading outputs through inputs
-        dy = np.empty_like(y)
-        dy[0:8] = core.derivatives(
-            s_core,
-            inputs={
-                "rho_rod": out_rod["rho_rod"],
-                "T_cool": out_loop["T_cool"],
-            },
-        )
-        dy[8:10] = loop.derivatives(
-            s_loop,
-            inputs={
-                "power_thermal": out_core["power_thermal"],
-                "Q_sg": out_sg["Q_sg"],
-            },
-        )
-        dy[10:11] = rod.derivatives(
-            s_rod,
-            inputs={
-                "rod_command": rod_command_fn(t),
-                "scram": scram_fn(t),
-            },
-        )
-        return dy
-
-    return ({"core": core, "loop": loop, "sg": sg, "sink": sink, "rod": rod}, y0, f)
+    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    T_sec = sink()
+    Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    loop(power_thermal=core.power_thermal, Q_sg=Q_sg)
+    engine.finalize()
+    return engine, {"rod": rod, "core": core, "loop": loop, "sg": sg, "sink": sink}
 
 
-# ---------------------------------------------------------------------------
-# Coupled-system tests
-# ---------------------------------------------------------------------------
-def test_coupled_steady_state_holds():
+def test_coupled_steady_state_holds() -> None:
     """All five components at design conditions: state should not drift over 60s."""
-    components, y0, f = _assemble_plant(
-        rod_command_fn=lambda t: 0.5,  # at design position
-        scram_fn=lambda t: False,
-    )
-    sol = solve_ivp(
-        f,
-        (0.0, 60.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.5,
-    )
-    assert sol.success
+    engine, modules = _assemble_plant()
+    snap = engine.run(t_end=60.0)
     # n stays at 1
-    assert sol.y[0, -1] == pytest.approx(1.0, abs=1e-3)
+    assert snap["core"]["n"] == pytest.approx(1.0, abs=1e-3)
     # Loop temps stay at reference
-    p_loop = components["loop"].params
-    assert sol.y[8, -1] == pytest.approx(p_loop.T_hot_ref, abs=0.05)
-    assert sol.y[9, -1] == pytest.approx(p_loop.T_cold_ref, abs=0.05)
+    p_loop = modules["loop"]._component.params
+    assert snap["loop"]["T_hot"] == pytest.approx(p_loop.T_hot_ref, abs=0.05)
+    assert snap["loop"]["T_cold"] == pytest.approx(p_loop.T_cold_ref, abs=0.05)
     # Rod stays at design position
-    p_rod = components["rod"].params
-    assert sol.y[10, -1] == pytest.approx(p_rod.rod_position_design, abs=1e-4)
+    p_rod = modules["rod"]._component.params
+    assert snap["rod"]["rod_position"] == pytest.approx(p_rod.rod_position_design, abs=1e-4)
 
 
-def test_coupled_doppler_plus_moderator_levels_off():
+def test_coupled_doppler_plus_moderator_levels_off() -> None:
     """Withdraw rod by 0.015 (=+210 pcm step) at t=10 s. Power should plateau,
     loop should heat up, both Doppler and moderator feedback should be active."""
     p_rod = RodParams()
-    components, y0, f = _assemble_plant(
-        rod_command_fn=lambda t: p_rod.rod_position_design + (0.015 if t >= 10.0 else 0.0),
-        scram_fn=lambda t: False,
-    )
+    engine, modules = _assemble_plant()
+
+    def scenario(t: float) -> dict:
+        return {
+            "rod_command": p_rod.rod_position_design + (0.015 if t >= 10.0 else 0.0),
+            "scram": False,
+        }
+
     # +5 s relative to slice 2 to allow the ~1.5 s rod-motion delay before Doppler kicks in
-    sol = solve_ivp(
-        f,
-        (0.0, 205.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.5,
-    )
-    assert sol.success
+    snap, dense = engine.run(t_end=205.0, scenario_fn=scenario, dense=True)
     # Sample late: power has plateaued
     t_late = np.linspace(155.0, 205.0, 50)
-    n_late = sol.sol(t_late)[0]
+    n_late = dense.signal("n", t_late)
     rel_change = abs(n_late[-1] - n_late[0]) / n_late[0]
     assert rel_change < 0.05, "power not plateaued"
     # Loop's T_avg has risen
-    p_loop = components["loop"].params
-    T_avg_final = (sol.y[8, -1] + sol.y[9, -1]) / 2
+    p_loop = modules["loop"]._component.params
+    T_avg_final = (snap["loop"]["T_hot"] + snap["loop"]["T_cold"]) / 2
     assert T_avg_final > p_loop.T_avg_ref, "loop did not heat up"
     # Power is bounded
     assert n_late.max() < 100.0
 
 
-def test_coupled_energy_balance_closes_at_steady():
+def test_coupled_energy_balance_closes_at_steady() -> None:
     """At steady state with no rod movement, Q_core ≈ Q_sg within 0.1%.
 
     This is M1 success criterion #4 from .docs/design.md §4.
     """
-    components, y0, f = _assemble_plant(
-        rod_command_fn=lambda t: 0.5,
-        scram_fn=lambda t: False,
-    )
-    sol = solve_ivp(
-        f,
-        (0.0, 120.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-7,
-        atol=1e-10,
-        max_step=0.5,
-    )
-    assert sol.success
-
-    s_core = sol.y[0:8, -1]
-    s_loop = sol.y[8:10, -1]
-
-    core = components["core"]
-    loop = components["loop"]
-    sg = components["sg"]
-    sink = components["sink"]
-
-    Q_core = core.outputs(s_core)["power_thermal"]
-    out_loop = loop.outputs(s_loop)
-    out_sink = sink.outputs(np.empty(0))
-    Q_sg = sg.outputs(
-        np.empty(0),
-        inputs={
-            "T_avg": out_loop["T_avg"],
-            "T_secondary": out_sink["T_secondary"],
-        },
-    )["Q_sg"]
-
+    engine, _ = _assemble_plant()
+    snap = engine.run(t_end=120.0, max_step=0.5)
+    Q_core = snap["signals"]["power_thermal"]
+    Q_sg = snap["signals"]["Q_sg"]
     rel_err = abs(Q_core - Q_sg) / Q_core
     assert rel_err < 1e-3, (
         f"Energy balance not closed: Q_core={Q_core:.4e} W, Q_sg={Q_sg:.4e} W (rel err {rel_err:.4%})"
     )
 
 
-def test_coupled_scram_drops_power_with_rod_motion():
+def test_coupled_scram_drops_power_with_rod_motion() -> None:
     """Hold steady to t=10, then scram. Power should drop dramatically as rods
     insert (rod motion takes ~1 s), then continue to fall via the delayed-neutron
     tail. Verifies the genuine scram-via-rod-motion coupling end to end."""
-    components, y0, f = _assemble_plant(
-        rod_command_fn=lambda t: 0.5,
-        scram_fn=lambda t: t >= 10.0,
-    )
-    sol = solve_ivp(
-        f,
-        (0.0, 60.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.1,  # tighter for the scram transient
-    )
-    assert sol.success
+    engine, _ = _assemble_plant()
+
+    def scenario(t: float) -> dict:
+        return {"rod_command": 0.5, "scram": t >= 10.0}
+
+    snap, dense = engine.run(t_end=60.0, scenario_fn=scenario, dense=True, max_step=0.1)
     # Pre-scram: holding steady at n=1
-    n_pre = sol.sol(9.0)[0]
+    n_pre = dense.signal("n", np.array([9.0]))[0]
     assert n_pre == pytest.approx(1.0, abs=1e-3)
     # Post-scram + rod insertion + prompt drop: by t=15s (5 s after scram),
     # rods have fully inserted and the prompt drop is well under way.
-    n_post = sol.sol(15.0)[0]
+    n_post = dense.signal("n", np.array([15.0]))[0]
     assert n_post < 0.15, f"power didn't drop: n(15) = {n_post:.4f}"
     # Late: delayed-neutron tail still nonzero
-    n_late = sol.sol(60.0)[0]
+    n_late = dense.signal("n", np.array([60.0]))[0]
     assert n_late > 1e-4, f"delayed-neutron tail vanished too fast: n(60) = {n_late:.4e}"
     # Verify rod actually moved (not just power dropped from feedback)
-    rod_pos_final = sol.y[10, -1]
+    rod_pos_final = snap["rod"]["rod_position"]
     assert rod_pos_final < 0.05, f"rod did not fully insert: rod_position(60) = {rod_pos_final:.4f}"
