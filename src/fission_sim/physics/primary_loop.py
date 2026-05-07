@@ -124,9 +124,9 @@ class PrimaryLoop:
     current-state numbers takes them as an argument.
 
     Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
-        Q_core : float [W]
+        power_thermal : float [W]
             Heat added to the loop by the reactor core (= core's
-            ``power_thermal``).
+            ``power_thermal`` output; same name used to enable auto-wiring).
         Q_sg : float [W]
             Heat removed from the loop by the steam generator.
 
@@ -155,7 +155,7 @@ class PrimaryLoop:
 
     state_size: int = 2
     state_labels: tuple[str, ...] = ("T_hot", "T_cold")
-    input_ports: tuple[str, ...] = ("Q_core", "Q_sg")
+    input_ports: tuple[str, ...] = ("power_thermal", "Q_sg")
     output_ports: tuple[str, ...] = ("T_hot", "T_cold", "T_avg", "T_cool")
 
     def __init__(self, params: LoopParams) -> None:
@@ -198,7 +198,8 @@ class PrimaryLoop:
         inputs : dict
             Required keys:
 
-            - ``Q_core`` : float [W] — heat from the core.
+            - ``power_thermal`` : float [W] — heat from the core (matches the
+              core's ``power_thermal`` output port name for auto-wiring).
             - ``Q_sg`` : float [W] — heat removed by the SG.
 
         Returns
@@ -227,7 +228,7 @@ class PrimaryLoop:
         T_cold = state[1]
 
         # --- decode inputs ---
-        Q_core = inputs["Q_core"]
+        power_thermal = inputs["power_thermal"]  # heat from core [W]
         Q_sg = inputs["Q_sg"]
 
         # --- heat carried from hot leg to cold leg by mass flow ---
@@ -236,9 +237,12 @@ class PrimaryLoop:
         Q_flow = p.m_dot * p.c_p * (T_hot - T_cold)
 
         # --- hot-leg energy balance ---
+        # Equation: M_hot · c_p · dT_hot/dt = Q_core − ṁ · c_p · (T_hot − T_cold)
+        # where Q_core is the physics symbol for heat from the reactor core
+        # (carried in the port named power_thermal).
         # SIMPLIFICATION: lumped (well-mixed) hot leg. Real piping has plug
         # flow with transport delay (water takes seconds to traverse the legs).
-        dT_hot_dt = (Q_core - Q_flow) / (p.M_hot * p.c_p)
+        dT_hot_dt = (power_thermal - Q_flow) / (p.M_hot * p.c_p)
 
         # --- cold-leg energy balance ---
         dT_cold_dt = (Q_flow - Q_sg) / (p.M_cold * p.c_p)
@@ -284,21 +288,22 @@ class PrimaryLoop:
 
         Superset of ``outputs()``. Adds ΔT (the temperature difference between
         legs) and Q_flow (the heat carried between legs by mass flow). When
-        ``inputs`` is provided, also echoes ``Q_core`` and ``Q_sg``.
+        ``inputs`` is provided, also echoes ``power_thermal`` and ``Q_sg``.
 
         Parameters
         ----------
         state : np.ndarray, shape (2,)
         inputs : dict, optional
-            If provided (with the same keys as ``derivatives``), ``Q_core``
-            and ``Q_sg`` are echoed. If omitted, those keys are reported as
-            None; ``Q_flow`` is always computable from state alone.
+            If provided (with the same keys as ``derivatives``),
+            ``power_thermal`` and ``Q_sg`` are echoed. If omitted, those keys
+            are reported as None; ``Q_flow`` is always computable from state
+            alone.
 
         Returns
         -------
         dict
             Keys: ``T_hot``, ``T_cold``, ``T_avg``, ``T_cool``, ``delta_T``,
-            ``Q_core``, ``Q_sg``, ``Q_flow``.
+            ``power_thermal``, ``Q_sg``, ``Q_flow``.
         """
         p = self.params
         T_hot = state[0]
@@ -311,9 +316,9 @@ class PrimaryLoop:
         out["Q_flow"] = p.m_dot * p.c_p * delta_T
 
         if inputs is not None:
-            out["Q_core"] = inputs.get("Q_core")
+            out["power_thermal"] = inputs.get("power_thermal")
             out["Q_sg"] = inputs.get("Q_sg")
         else:
-            out["Q_core"] = None
+            out["power_thermal"] = None
             out["Q_sg"] = None
         return out

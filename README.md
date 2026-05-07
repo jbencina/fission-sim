@@ -61,8 +61,8 @@ moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
 
     derivatives(state, inputs) -> np.ndarray
         Pure function. inputs:
-            "rod_reactivity": float [dimensionless]
-            "T_cool":         float [K]
+            "rho_rod": float [dimensionless]
+            "T_cool":  float [K]
 
     outputs(state, inputs=None) -> {
         "power_thermal": float [W],
@@ -116,7 +116,7 @@ single-phase liquid. See `.docs/design.md` §5.2 for physics.
 
     initial_state() -> np.ndarray
     derivatives(state, inputs) -> np.ndarray
-        inputs: {"Q_core": float [W], "Q_sg": float [W]}
+        inputs: {"power_thermal": float [W], "Q_sg": float [W]}
 
     outputs(state, inputs=None) -> {
         "T_hot":  float [K],
@@ -126,10 +126,10 @@ single-phase liquid. See `.docs/design.md` §5.2 for physics.
     }
 
     telemetry(state, inputs=None) -> outputs() ∪ {
-        "delta_T", "Q_flow", "Q_core", "Q_sg",
+        "delta_T", "Q_flow", "power_thermal", "Q_sg",
     }
         delta_T and Q_flow are computable from state alone.
-        Q_core and Q_sg are echoed from inputs (None when inputs omitted).
+        power_thermal and Q_sg are echoed from inputs (None when inputs omitted).
 
 **LoopParams (frozen dataclass)**
 
@@ -209,7 +209,7 @@ Constant `T_secondary`; no state, no inputs. See `.docs/design.md` §5.4.
 
 L1 rod controller: rate-limited first-order tracking of operator commands
 plus linear (L1) rod-worth function. Bridges operator decisions
-(rod_command, scram) to physics (rod_reactivity into the core). See
+(rod_command, scram) to physics (rho_rod into the core). See
 `.docs/design.md` §5.5 for physics.
 
 **Constructor**
@@ -233,7 +233,7 @@ plus linear (L1) rod-worth function. Bridges operator decisions
                  "scram":       bool}
 
     outputs(state, inputs=None) -> {
-        "rod_reactivity": float [dimensionless],
+        "rho_rod": float [dimensionless],
             # = rho_total_worth * (rod_position - rod_position_critical)
     }
 

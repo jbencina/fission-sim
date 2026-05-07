@@ -47,7 +47,7 @@ def test_initial_state_is_design_steady_state():
 # ---------------------------------------------------------------------------
 def _design_inputs(p: LoopParams) -> dict:
     """Inputs that, with initial_state, yield zero derivatives."""
-    return {"Q_core": p.Q_design, "Q_sg": p.Q_design}
+    return {"power_thermal": p.Q_design, "Q_sg": p.Q_design}
 
 
 def test_design_steady_state_balances():
@@ -62,7 +62,7 @@ def test_more_q_core_heats_hot_leg():
     """Q_core > Q_flow at design state should produce dT_hot/dt > 0."""
     p = default_params()
     loop = PrimaryLoop(p)
-    inputs = _design_inputs(p) | {"Q_core": 1.1 * p.Q_design}
+    inputs = _design_inputs(p) | {"power_thermal": 1.1 * p.Q_design}
     dstate = loop.derivatives(loop.initial_state(), inputs)
     assert dstate[0] > 0  # dT_hot/dt > 0
 
@@ -105,7 +105,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
     p = default_params()
     loop = PrimaryLoop(p)
     s = np.array([600.0, 570.0])
-    inputs = {"Q_core": 2.5e9, "Q_sg": 2.5e9}
+    inputs = {"power_thermal": 2.5e9, "Q_sg": 2.5e9}
     tele = loop.telemetry(s, inputs)
     expected_keys = {
         "T_hot",
@@ -113,14 +113,14 @@ def test_telemetry_includes_delta_t_and_q_flow():
         "T_avg",
         "T_cool",
         "delta_T",
-        "Q_core",
+        "power_thermal",
         "Q_sg",
         "Q_flow",
     }
     assert set(tele.keys()) == expected_keys
     assert tele["delta_T"] == pytest.approx(30.0)
     assert tele["Q_flow"] == pytest.approx(p.m_dot * p.c_p * 30.0)
-    assert tele["Q_core"] == pytest.approx(2.5e9)
+    assert tele["power_thermal"] == pytest.approx(2.5e9)
     assert tele["Q_sg"] == pytest.approx(2.5e9)
 
 
@@ -134,7 +134,7 @@ def test_telemetry_without_inputs_reports_none_for_input_keys():
     # Q_flow is computable from state alone
     assert tele["Q_flow"] is not None
     # Input-dependent keys are None
-    assert tele["Q_core"] is None
+    assert tele["power_thermal"] is None
     assert tele["Q_sg"] is None
 
 
@@ -148,7 +148,7 @@ def _integrate(loop, q_core_fn, q_sg_fn, t_end, t_start=0.0, max_step=0.5):
         return loop.derivatives(
             y,
             {
-                "Q_core": q_core_fn(t),
+                "power_thermal": q_core_fn(t),
                 "Q_sg": q_sg_fn(t),
             },
         )
@@ -244,7 +244,7 @@ def test_loop_energy_balance_at_steady_70pct():
     assert sol.success
     # Verify steady state: derivatives near zero at the end
     final_state = sol.y[:, -1]
-    final_inputs = {"Q_core": Q, "Q_sg": Q}
+    final_inputs = {"power_thermal": Q, "Q_sg": Q}
     final_dstate = loop.derivatives(final_state, final_inputs)
     assert np.allclose(final_dstate, 0.0, atol=1e-3)
     # Now check the analytical prediction

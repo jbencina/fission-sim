@@ -82,7 +82,7 @@ def _assemble_plant(rod_command_fn, scram_fn):
         dy[8:10] = loop.derivatives(
             s_loop,
             inputs={
-                "Q_core": out_core["power_thermal"],
+                "power_thermal": out_core["power_thermal"],
                 "Q_sg": out_sg["Q_sg"],
             },
         )

@@ -121,7 +121,7 @@ def main() -> None:
         dy[8:10] = loop.derivatives(
             s_loop,
             inputs={
-                "Q_core": out_core["power_thermal"],
+                "power_thermal": out_core["power_thermal"],
                 "Q_sg": out_sg["Q_sg"],
             },
         )

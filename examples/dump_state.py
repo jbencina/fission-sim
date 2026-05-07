@@ -63,7 +63,7 @@ def main() -> None:
         out_rod = rod.outputs(s_rod)
         dy = np.empty_like(y)
         dy[0:8] = core.derivatives(s_core, inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]})
-        dy[8:10] = loop.derivatives(s_loop, inputs={"Q_core": out_core["power_thermal"], "Q_sg": out_sg["Q_sg"]})
+        dy[8:10] = loop.derivatives(s_loop, inputs={"power_thermal": out_core["power_thermal"], "Q_sg": out_sg["Q_sg"]})
         dy[10:11] = rod.derivatives(s_rod, inputs={"rod_command": rod_command_fn(t), "scram": scram_fn(t)})
         return dy
 
@@ -99,7 +99,7 @@ def main() -> None:
         out_rod = rod.outputs(s_rod)
 
         core_tele = core.telemetry(s_core, inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]})
-        loop_tele = loop.telemetry(s_loop, inputs={"Q_core": core_tele["power_thermal"], "Q_sg": out_sg["Q_sg"]})
+        loop_tele = loop.telemetry(s_loop, inputs={"power_thermal": core_tele["power_thermal"], "Q_sg": out_sg["Q_sg"]})
         sg_tele = sg.telemetry(
             np.empty(0),
             inputs={"T_primary": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
@@ -141,7 +141,7 @@ def main() -> None:
         print(f"    T_avg          = {loop_tele['T_avg']:9.4f} K")
         print(f"    T_cool         = {loop_tele['T_cool']:9.4f} K")
         print(f"    delta_T        = {loop_tele['delta_T']:9.4f} K")
-        print(f"    Q_core         = {loop_tele['Q_core'] / 1e9:9.4f} GW")
+        print(f"    power_thermal  = {loop_tele['power_thermal'] / 1e9:9.4f} GW")
         print(f"    Q_sg           = {loop_tele['Q_sg'] / 1e9:9.4f} GW")
         print(f"    Q_flow         = {loop_tele['Q_flow'] / 1e9:9.4f} GW")
 
