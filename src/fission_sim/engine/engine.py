@@ -13,10 +13,12 @@ rules.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+from scipy.integrate import solve_ivp
 
 # A snapshot is a plain dict — we use a TypeAlias for documentation.
 Snapshot = dict[str, Any]
@@ -237,6 +239,11 @@ class SimEngine:
         # Frozen at finalize: list of (kind, name) tuples describing the
         # eval order each f(t, y) replays. Set by finalize().
         self._eval_order: list[tuple[str, str]] = []
+        # Frozen at finalize: which signals are actually consumed by the
+        # graph. Used by snapshot/step/run to filter the signals dict to
+        # wired entries only. O(1) lookup vs. linear scan.
+        self._consumed_externals: frozenset[str] = frozenset()
+        self._consumed_module_outputs: frozenset[tuple[str, str]] = frozenset()
 
     # ----- Construction -----
 
@@ -306,6 +313,13 @@ class SimEngine:
         for m in self._modules:
             for sig in m._inputs.values():
                 consumed_signals.add(sig)
+
+        # 1b. Precompute which externals and module-output ports are consumed.
+        # snapshot/step/run use these for O(1) "is this signal wired?" tests.
+        self._consumed_externals = frozenset(sig.name for sig in consumed_signals if sig.is_external)
+        self._consumed_module_outputs = frozenset(
+            (sig.producer_module, sig.producer_port) for sig in consumed_signals if not sig.is_external
+        )
 
         # 2. Detect two-producers conflict: a signal name that has been
         # consumed and is published by more than one module. Iterate over
@@ -491,14 +505,11 @@ class SimEngine:
             elif kind == "output":
                 m = self._modules_by_name[name]
                 state_slice = y[m._state_offset : m._state_offset + m._state_size]
-                # Same heuristic as classification: try outputs(state) first;
-                # fall back to outputs(state, inputs=...) if the component
-                # signals it needs inputs.
-                try:
-                    out = m._component.outputs(state_slice)
-                except TypeError:
-                    inputs = self._inputs_for_module(m, signal_values, externals)
-                    out = m._component.outputs(state_slice, inputs=inputs)
+                out = self._call_outputs(
+                    m,
+                    state_slice,
+                    lambda m=m, sv=signal_values, ex=externals: self._inputs_for_module(m, sv, ex),
+                )
                 # Publish each consumed output port as a signal.
                 for port_name, value in out.items():
                     if self._is_module_output_consumed(m.name, port_name):
@@ -524,35 +535,169 @@ class SimEngine:
         return inputs
 
     def _is_external_consumed(self, name: str) -> bool:
-        for m in self._modules:
-            for sig in m._inputs.values():
-                if sig.is_external and sig.name == name:
-                    return True
-        return False
+        return name in self._consumed_externals
 
     def _is_module_output_consumed(self, module_name: str, port_name: str) -> bool:
-        for m in self._modules:
-            for sig in m._inputs.values():
-                if not sig.is_external and sig.producer_module == module_name and sig.producer_port == port_name:
-                    return True
-        return False
+        return (module_name, port_name) in self._consumed_module_outputs
 
-    def _build_snapshot(self, y: np.ndarray, signal_values: dict[str, Any]) -> Snapshot:
+    def _call_outputs(
+        self,
+        m: SimModule,
+        state_slice: np.ndarray,
+        inputs_factory: Callable[[], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Call ``component.outputs()`` with or without inputs as needed.
+
+        State-derived components accept ``outputs(state)``; computed
+        components raise TypeError when called without ``inputs=``. We try
+        the cheap form first and fall back to the full form on TypeError.
+        ``inputs_factory`` is a zero-arg callable that builds the inputs
+        dict on demand — avoids the build cost for state-derived modules.
+        """
+        try:
+            return m._component.outputs(state_slice)
+        except TypeError:
+            return m._component.outputs(state_slice, inputs=inputs_factory())
+
+    def _build_snapshot(
+        self,
+        y: np.ndarray,
+        signal_values: dict[str, Any],
+        externals: dict[str, Any] | None = None,
+    ) -> Snapshot:
         """Assemble the full snapshot dict from the resolved signal values.
 
         Uses the engine's current ``self._t`` for the ``"t"`` field. Each
         module's telemetry is computed by calling ``component.telemetry(
         state_slice, inputs=...)`` with the same input dict that derivatives
-        would see.
+        would see — passing the kwargs-merged externals (if provided),
+        otherwise the declared defaults.
+
+        Parameters
+        ----------
+        y : np.ndarray
+            Global state vector to read state slices from.
+        signal_values : dict[str, Any]
+            Pre-resolved signal values for the wiring graph.
+        externals : dict[str, Any] | None
+            Active external values for this snapshot. If None, declared
+            defaults (``self._externals``) are used. step() and run() pass
+            their merged dicts so telemetry sees the same external values
+            that drove the integration; ``snapshot()`` (no override context)
+            passes None and gets defaults.
         """
+        if externals is None:
+            externals = self._current_external_values()
         snap: Snapshot = {"t": self._t, "signals": dict(signal_values)}
-        externals = self._current_external_values()
         for m in self._modules:
             state_slice = y[m._state_offset : m._state_offset + m._state_size]
             inputs = self._inputs_for_module(m, signal_values, externals)
             tele = m._component.telemetry(state_slice, inputs=inputs)
             snap[m.name] = dict(tele) if tele is not None else {}
         return snap
+
+    # ----- Execution -----
+
+    def step(self, dt: float, **externals: Any) -> Snapshot:
+        """Advance the simulation by ``dt`` seconds and return a snapshot.
+
+        Parameters
+        ----------
+        dt : float
+            How far to advance. Must be > 0.
+        **externals
+            Per-step overrides for declared external inputs. Any keyword not
+            in ``self._externals`` raises ``TypeError``. Only affects this
+            single step; subsequent ``step()`` calls revert to the declared
+            defaults unless re-provided.
+
+        Returns
+        -------
+        Snapshot
+            Engine state after the step (uses the new t and y).
+        """
+        if not self._finalized:
+            self.finalize()
+
+        if not (dt > 0):
+            raise ValueError(f"step() requires dt > 0, got {dt!r}")
+
+        for k in externals:
+            if k not in self._externals:
+                raise TypeError(f"engine has no external named '{k}'")
+
+        # Merge defaults + per-step overrides.
+        current_externals = dict(self._externals)
+        current_externals.update(externals)
+
+        f = self._build_f(current_externals_provider=lambda t: current_externals)
+
+        sol = solve_ivp(
+            f,
+            (self._t, self._t + dt),
+            self._state,
+            method="BDF",
+            rtol=1e-6,
+            atol=1e-9,
+            max_step=0.5,
+        )
+        if not sol.success:
+            raise RuntimeError(f"solve_ivp failed in step(): {sol.message}")
+
+        self._state = sol.y[:, -1].astype(float, copy=True)
+        self._t = float(sol.t[-1])
+
+        signal_values = self._resolve_signal_values(self._state, current_externals)
+        return self._build_snapshot(self._state, signal_values, current_externals)
+
+    def _build_f(
+        self, current_externals_provider: Callable[[float], dict[str, Any]]
+    ) -> Callable[[float, np.ndarray], np.ndarray]:
+        """Build the ``f(t, y)`` closure passed to ``solve_ivp``.
+
+        The closure replays the frozen ``_eval_order`` to compute outputs and
+        derivatives. ``current_externals_provider(t)`` returns the active
+        external dict at simulation time t — for ``step()`` it ignores t
+        (constant per call); for ``run()`` it merges ``scenario_fn(t)`` onto
+        defaults.
+        """
+        eval_order = self._eval_order
+        modules_by_name = self._modules_by_name
+        modules = self._modules
+
+        def f(t: float, y: np.ndarray) -> np.ndarray:
+            externals = current_externals_provider(t)
+            signal_values: dict[str, Any] = {}
+
+            # Replay outputs in eval_order.
+            for kind, name in eval_order:
+                if kind == "external":
+                    if self._is_external_consumed(name):
+                        signal_values[name] = externals.get(name, self._externals[name])
+                elif kind == "output":
+                    m = modules_by_name[name]
+                    state_slice = y[m._state_offset : m._state_offset + m._state_size]
+                    out = self._call_outputs(
+                        m,
+                        state_slice,
+                        lambda m=m, sv=signal_values, ex=externals: self._inputs_for_module(m, sv, ex),
+                    )
+                    for port_name, value in out.items():
+                        if self._is_module_output_consumed(m.name, port_name):
+                            signal_values[port_name] = value
+
+            # Compute derivatives for each module.
+            dy = np.empty_like(y)
+            for m in modules:
+                if m._state_size == 0:
+                    continue
+                state_slice = y[m._state_offset : m._state_offset + m._state_size]
+                inputs = self._inputs_for_module(m, signal_values, externals)
+                d = m._component.derivatives(state_slice, inputs=inputs)
+                dy[m._state_offset : m._state_offset + m._state_size] = d
+            return dy
+
+        return f
 
 
 class DenseSolution:

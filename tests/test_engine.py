@@ -580,3 +580,132 @@ def test_snapshot_for_stateless_module_has_empty_telemetry_dict() -> None:
     engine.finalize()
     snap = engine.snapshot()
     assert snap["e"] == {}
+
+
+def test_step_advances_time_by_dt() -> None:
+    """One step(dt=...) advances engine.t by exactly dt."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=1.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.step(dt=0.5)
+    assert snap["t"] == pytest.approx(0.5)
+    assert engine.t == pytest.approx(0.5)
+
+
+def test_step_integrates_state() -> None:
+    """An integrator with rate=2.0 and dt=3.0 advances state by 6.0."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=2.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.step(dt=3.0)
+    assert snap["m"]["x"] == pytest.approx(6.0, rel=1e-5)
+
+
+def test_step_external_default_used_when_missing() -> None:
+    """If step() doesn't provide a kwarg, the declared default is used."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=4.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.step(dt=1.0)
+    assert snap["m"]["x"] == pytest.approx(4.0, rel=1e-5)
+
+
+def test_step_kwarg_overrides_default() -> None:
+    """If step() provides a kwarg, that value is used instead of the default."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=4.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.step(dt=1.0, rate=10.0)
+    assert snap["m"]["x"] == pytest.approx(10.0, rel=1e-5)
+
+
+def test_step_unknown_external_kwarg_raises_typeerror() -> None:
+    """step(foo=...) with unknown external → TypeError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    with pytest.raises(TypeError, match="no external named 'foo'"):
+        engine.step(dt=0.1, foo=1.0)
+
+
+def test_step_kwarg_only_affects_one_step() -> None:
+    """A kwarg passed to step() does NOT persist; the next step uses the default."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=1.0)
+    m(rate=rate)
+    engine.finalize()
+    engine.step(dt=1.0, rate=10.0)  # x advances by ~10
+    snap = engine.step(dt=1.0)  # next step uses default rate=1.0
+    # Total advancement: 10 + 1 = 11.
+    assert snap["m"]["x"] == pytest.approx(11.0, rel=1e-5)
+
+
+def test_step_telemetry_sees_overridden_external() -> None:
+    """telemetry() during step(rate=X) should see rate=X, not the default.
+
+    Regression guard: snapshots returned by step() must thread the
+    kwargs-merged externals through to per-module telemetry, so a component
+    whose telemetry echoes its inputs sees the values that actually drove
+    the integration.
+    """
+
+    class _RateEcho:
+        """Stateless: telemetry echoes the rate input."""
+
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("rate",)
+        output_ports = ()
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs=None):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {}
+
+        def telemetry(self, state, inputs=None):
+            return {"rate_seen": float(inputs["rate"]) if inputs else None}
+
+    engine = SimEngine()
+    echo = engine.module(_RateEcho(), name="echo")
+    rate = engine.input("rate", default=1.0)
+    echo(rate=rate)
+    engine.finalize()
+    snap = engine.step(dt=0.1, rate=42.0)
+    assert snap["echo"]["rate_seen"] == pytest.approx(42.0)
+
+
+def test_step_zero_dt_raises() -> None:
+    """step(dt=0) raises ValueError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    with pytest.raises(ValueError, match="dt > 0"):
+        engine.step(dt=0.0)
+
+
+def test_step_negative_dt_raises() -> None:
+    """step(dt<0) raises ValueError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    with pytest.raises(ValueError, match="dt > 0"):
+        engine.step(dt=-0.5)
