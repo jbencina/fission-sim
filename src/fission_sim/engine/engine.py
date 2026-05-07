@@ -699,9 +699,225 @@ class SimEngine:
 
         return f
 
+    def run(
+        self,
+        t_end: float,
+        scenario_fn: Callable[[float], dict[str, Any]] | None = None,
+        *,
+        max_step: float = 0.5,
+        dense: bool = False,
+    ) -> "Snapshot | tuple[Snapshot, DenseSolution]":
+        """Integrate from current time to ``t_end`` with one ``solve_ivp`` call.
+
+        Parameters
+        ----------
+        t_end : float
+            Target simulation time. Must be > ``self.t``.
+        scenario_fn : callable, optional
+            ``scenario_fn(t) -> dict`` returns a partial mapping of external
+            names to values. Missing keys fall back to declared defaults.
+            If None, externals stay at their defaults for the whole run.
+        max_step : float, default 0.5
+            Forwarded to ``solve_ivp``'s BDF integrator.
+        dense : bool, default False
+            If True, also return a :class:`DenseSolution` wrapper for
+            evaluating the trajectory at intermediate times.
+
+        Returns
+        -------
+        Snapshot or tuple[Snapshot, DenseSolution]
+            The post-integration snapshot. If ``dense=True``, also a
+            :class:`DenseSolution` for sampling the trajectory.
+        """
+        if not self._finalized:
+            self.finalize()
+        if not (t_end > self._t):
+            raise ValueError(f"run() requires t_end > current t ({self._t}); got t_end={t_end!r}")
+
+        defaults = self._externals
+
+        def make_externals(t: float) -> dict[str, Any]:
+            current = dict(defaults)
+            if scenario_fn is not None:
+                provided = scenario_fn(t)
+                for k in provided:
+                    if k not in defaults:
+                        raise TypeError(f"scenario_fn returned unknown external '{k}'")
+                current.update(provided)
+            return current
+
+        f = self._build_f(current_externals_provider=make_externals)
+
+        sol = solve_ivp(
+            f,
+            (self._t, t_end),
+            self._state,
+            method="BDF",
+            rtol=1e-6,
+            atol=1e-9,
+            max_step=max_step,
+            dense_output=dense,
+        )
+        if not sol.success:
+            raise RuntimeError(f"solve_ivp failed in run(): {sol.message}")
+
+        self._state = sol.y[:, -1].astype(float, copy=True)
+        self._t = float(sol.t[-1])
+
+        externals = make_externals(self._t)
+        signal_values = self._resolve_signal_values(self._state, externals)
+        snap = self._build_snapshot(self._state, signal_values, externals)
+
+        if dense:
+            return snap, DenseSolution(
+                ode_solution=sol.sol,
+                engine=self,
+                make_externals=make_externals,
+            )
+        return snap
+
 
 class DenseSolution:
-    """Stub; populated in Task 11."""
+    """Adapter from scipy's :class:`OdeSolution` to the engine's snapshot vocabulary.
+
+    Returned by :meth:`SimEngine.run` when called with ``dense=True``. Lets
+    callers query the integrated trajectory at arbitrary intermediate times
+    (within the run's interval) without re-integrating.
+    """
+
+    def __init__(
+        self,
+        ode_solution,
+        engine: SimEngine,
+        make_externals: Callable[[float], dict[str, Any]],
+    ) -> None:
+        self._sol = ode_solution
+        self._engine = engine
+        self._make_externals = make_externals
+
+    def at(self, t: "float | np.ndarray") -> "Snapshot | list[Snapshot]":
+        """Return a snapshot (or list of snapshots) at the given time(s).
+
+        Parameters
+        ----------
+        t : float or 1D array of floats
+            Target evaluation time(s). Must lie within the run's interval.
+
+        Returns
+        -------
+        Snapshot or list[Snapshot]
+            Single snapshot if t is a scalar; list of snapshots if t is an
+            array.
+        """
+        scalar = np.isscalar(t)
+        ts = np.atleast_1d(np.asarray(t, dtype=float))
+        snaps: list[Snapshot] = []
+        for ti in ts:
+            y = self._sol(float(ti))
+            externals = self._make_externals(float(ti))
+            signal_values = self._engine._resolve_signal_values(y, externals)
+            # Temporarily set engine.t for snapshot's t field; restore after.
+            saved_t = self._engine._t
+            saved_state = self._engine._state
+            self._engine._t = float(ti)
+            self._engine._state = y
+            try:
+                snap = self._engine._build_snapshot(y, signal_values, externals)
+            finally:
+                self._engine._t = saved_t
+                self._engine._state = saved_state
+            snaps.append(snap)
+        return snaps[0] if scalar else snaps
+
+    def signal(self, name: str, t: np.ndarray) -> np.ndarray:
+        """Return a 1D array of values for a named quantity at the given times.
+
+        Resolution order:
+
+        1. Wired signals from the graph (entries in ``snapshot["signals"]``):
+           externals plus module outputs that have at least one consumer.
+           This is the strict wiring-graph case.
+        2. Per-module telemetry keys (entries in
+           ``snapshot["<module>"]``). Useful for sampling unwired outputs
+           or internal-state quantities (e.g. a state variable exposed
+           via ``telemetry()``) for plotting / inspection.
+
+        If multiple modules expose the same telemetry key, lookup raises
+        ``KeyError`` with the candidate modules listed — to avoid silent
+        ambiguity. Wire the signal explicitly into a consumer (or query
+        with the module-qualified form ``snap['<module>']['<name>']``)
+        if you need a specific one.
+
+        Parameters
+        ----------
+        name : str
+            Signal or telemetry key.
+        t : 1D array of floats
+            Evaluation times. Must lie within the run's interval.
+
+        Returns
+        -------
+        np.ndarray, shape (len(t),)
+            Float array of values.
+
+        Raises
+        ------
+        KeyError
+            If the name is not found in any signal or telemetry, or if it
+            appears in multiple modules' telemetry (ambiguous).
+        """
+        ts = np.atleast_1d(np.asarray(t, dtype=float))
+        result = np.empty(ts.shape, dtype=float)
+        for i, ti in enumerate(ts):
+            y = self._sol(float(ti))
+            externals = self._make_externals(float(ti))
+            signal_values = self._engine._resolve_signal_values(y, externals)
+
+            if name in signal_values:
+                result[i] = float(signal_values[name])
+                continue
+
+            # Fallback: per-module telemetry. Detect ambiguity (same key in
+            # multiple modules) and raise rather than silently picking one.
+            saved_t = self._engine._t
+            saved_state = self._engine._state
+            self._engine._t = float(ti)
+            self._engine._state = y
+            try:
+                snap = self._engine._build_snapshot(y, signal_values, externals)
+            finally:
+                self._engine._t = saved_t
+                self._engine._state = saved_state
+
+            candidates = [
+                module_name
+                for module_name in self._engine._modules_by_name
+                if isinstance(snap.get(module_name), dict) and name in snap[module_name]
+            ]
+            if not candidates:
+                all_tele_keys = sorted(
+                    {
+                        k
+                        for m in self._engine._modules
+                        for k in m._component.telemetry(
+                            y[m._state_offset : m._state_offset + m._state_size],
+                            inputs=self._engine._inputs_for_module(m, signal_values, externals),
+                        )
+                    }
+                )
+                raise KeyError(
+                    f"signal '{name}' not found at t={float(ti)}; "
+                    f"available signals: {sorted(signal_values)!r}; "
+                    f"available module telemetry keys: {all_tele_keys!r}"
+                )
+            if len(candidates) > 1:
+                raise KeyError(
+                    f"signal '{name}' is ambiguous at t={float(ti)} — "
+                    f"appears in modules {candidates!r}. Use snap['<module>']['{name}'] "
+                    f"to disambiguate, or wire one as a graph signal."
+                )
+            result[i] = float(snap[candidates[0]][name])
+        return result
 
 
 __all__ = [

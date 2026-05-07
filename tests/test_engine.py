@@ -709,3 +709,146 @@ def test_step_negative_dt_raises() -> None:
     engine.finalize()
     with pytest.raises(ValueError, match="dt > 0"):
         engine.step(dt=-0.5)
+
+
+def test_run_advances_to_t_end() -> None:
+    """run(t_end) advances engine.t to exactly t_end."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=1.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.run(t_end=5.0)
+    assert snap["t"] == pytest.approx(5.0)
+    assert engine.t == pytest.approx(5.0)
+
+
+def test_run_integrates_with_default_externals() -> None:
+    """run() with default externals produces the expected integrated state."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=2.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.run(t_end=5.0)
+    assert snap["m"]["x"] == pytest.approx(10.0, rel=1e-5)
+
+
+def test_run_with_scenario_fn() -> None:
+    """scenario_fn(t) → dict overrides externals during integration."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+
+    # rate = 1.0 for t < 5, 3.0 for t >= 5. Total over [0,10]:
+    # 5 * 1.0 + 5 * 3.0 = 20.0.
+    def scenario(t: float) -> dict:
+        return {"rate": 1.0 if t < 5.0 else 3.0}
+
+    snap = engine.run(t_end=10.0, scenario_fn=scenario)
+    assert snap["m"]["x"] == pytest.approx(20.0, rel=1e-3)
+
+
+def test_run_dense_returns_dense_solution() -> None:
+    """run(dense=True) returns (snapshot, DenseSolution)."""
+    from fission_sim.engine import DenseSolution
+
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=1.0)
+    m(rate=rate)
+    engine.finalize()
+    result = engine.run(t_end=5.0, dense=True)
+    assert isinstance(result, tuple)
+    snap, dense = result
+    assert isinstance(snap, dict)
+    assert isinstance(dense, DenseSolution)
+
+
+def test_dense_at_returns_snapshot() -> None:
+    """DenseSolution.at(t) returns a snapshot evaluated at intermediate time t."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=1.0)
+    m(rate=rate)
+    engine.finalize()
+    _, dense = engine.run(t_end=10.0, dense=True)
+    mid = dense.at(5.0)
+    assert mid["t"] == pytest.approx(5.0)
+    assert mid["m"]["x"] == pytest.approx(5.0, rel=1e-3)
+
+
+def test_dense_signal_returns_array() -> None:
+    """DenseSolution.signal(name, t_array) returns a 1D array of values."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=2.0)
+    m(rate=rate)
+    engine.finalize()
+    _, dense = engine.run(t_end=10.0, dense=True)
+    ts = np.array([0.0, 5.0, 10.0])
+    xs = dense.signal("x", ts)
+    np.testing.assert_allclose(xs, np.array([0.0, 10.0, 20.0]), rtol=1e-3, atol=1e-5)
+
+
+def test_run_unknown_external_in_scenario_raises() -> None:
+    """If scenario_fn returns a dict with an undeclared external, raise TypeError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+
+    def bad_scenario(t):
+        return {"rate": 1.0, "ghost": 99.0}
+
+    with pytest.raises(TypeError, match="unknown external 'ghost'"):
+        engine.run(t_end=1.0, scenario_fn=bad_scenario)
+
+
+def test_dense_signal_unwired_output_via_telemetry() -> None:
+    """signal() falls back to module telemetry when a name isn't in the wiring graph.
+
+    Documented escape hatch for plotting unwired outputs / internal-state
+    quantities. The telemetry must contain exactly one match — ambiguous
+    keys raise.
+    """
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=0.0), name="m")
+    rate = engine.input("rate", default=2.0)
+    m(rate=rate)
+    engine.finalize()
+    _, dense = engine.run(t_end=4.0, dense=True)
+    # 'x' is _ScalarIntegrator's output (unwired here) AND its only
+    # telemetry key. The fallback resolves it.
+    xs = dense.signal("x", np.array([0.0, 2.0, 4.0]))
+    np.testing.assert_allclose(xs, np.array([0.0, 4.0, 8.0]), rtol=1e-3, atol=1e-5)
+
+
+def test_dense_signal_ambiguous_telemetry_raises() -> None:
+    """Two modules with the same telemetry key → signal() raises KeyError."""
+    engine = SimEngine()
+    a = engine.module(_ScalarIntegrator(x0=1.0), name="a")
+    b = engine.module(_ScalarIntegrator(x0=2.0), name="b")
+    rate = engine.input("rate", default=0.0)
+    a(rate=rate)
+    b(rate=rate)
+    engine.finalize()
+    _, dense = engine.run(t_end=1.0, dense=True)
+    # Both 'a' and 'b' expose telemetry key 'x'; neither is wired.
+    with pytest.raises(KeyError, match="ambiguous"):
+        dense.signal("x", np.array([0.5]))
+
+
+def test_dense_signal_unknown_name_raises() -> None:
+    """signal() with a name nowhere in signals or telemetry → KeyError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    _, dense = engine.run(t_end=1.0, dense=True)
+    with pytest.raises(KeyError, match="not found"):
+        dense.signal("zzz_nonexistent", np.array([0.5]))
