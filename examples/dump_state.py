@@ -57,7 +57,7 @@ def main() -> None:
         out_loop = loop.outputs(s_loop)
         out_sg = sg.outputs(
             np.empty(0),
-            inputs={"T_primary": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
+            inputs={"T_avg": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
         )
         out_core = core.outputs(s_core)
         out_rod = rod.outputs(s_rod)
@@ -94,7 +94,7 @@ def main() -> None:
         out_loop = loop.outputs(s_loop)
         out_sg = sg.outputs(
             np.empty(0),
-            inputs={"T_primary": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
+            inputs={"T_avg": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
         )
         out_rod = rod.outputs(s_rod)
 
@@ -102,7 +102,7 @@ def main() -> None:
         loop_tele = loop.telemetry(s_loop, inputs={"power_thermal": core_tele["power_thermal"], "Q_sg": out_sg["Q_sg"]})
         sg_tele = sg.telemetry(
             np.empty(0),
-            inputs={"T_primary": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
+            inputs={"T_avg": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
         )
         sink_tele = sink.telemetry(np.empty(0))
         rod_tele = rod.telemetry(s_rod, inputs={"rod_command": rod_cmd, "scram": scr})
@@ -147,7 +147,7 @@ def main() -> None:
 
         print()
         print("  SteamGenerator.telemetry:")
-        print(f"    T_primary      = {sg_tele['T_primary']:9.4f} K")
+        print(f"    T_avg          = {sg_tele['T_avg']:9.4f} K")
         print(f"    T_secondary    = {sg_tele['T_secondary']:9.4f} K")
         print(f"    delta_T        = {sg_tele['delta_T']:9.4f} K")
         print(f"    Q_sg           = {sg_tele['Q_sg'] / 1e9:9.4f} GW")

@@ -1,7 +1,7 @@
 """Steam generator (heat exchanger only) — fidelity level L1.
 
 Models the heat exchanger between the primary and secondary loops as a single
-algebraic relation: Q_sg = UA * (T_primary - T_secondary). No state, no thermal
+algebraic relation: Q_sg = UA * (T_avg - T_secondary). No state, no thermal
 lag, no two-phase modeling. The entire vessel — typically containing thousands
 of tubes the size of a small office building — collapses to one equation.
 
@@ -86,13 +86,13 @@ class SGParams:
 class SteamGenerator:
     """L1 steam generator: pure algebraic heat exchanger.
 
-    Implements ``Q_sg = UA * (T_primary - T_secondary)``. No state, no thermal
+    Implements ``Q_sg = UA * (T_avg - T_secondary)``. No state, no thermal
     lag, no two-phase secondary side. Heat removal is determined entirely by the
     instantaneous primary-secondary temperature difference and the lumped UA.
 
     Ports in (passed via the ``inputs`` dict to ``outputs()`` and ``telemetry()``):
-        T_primary : float [K]
-            Primary-side temperature, typically the loop's T_avg.
+        T_avg : float [K]
+            Primary-side average temperature, produced by the primary loop.
         T_secondary : float [K]
             Secondary-side temperature, typically the sink's T_secondary.
 
@@ -121,7 +121,7 @@ class SteamGenerator:
 
     state_size: int = 0
     state_labels: tuple[str, ...] = ()
-    input_ports: tuple[str, ...] = ("T_primary", "T_secondary")
+    input_ports: tuple[str, ...] = ("T_avg", "T_secondary")
     output_ports: tuple[str, ...] = ("Q_sg",)
 
     def __init__(self, params: SGParams) -> None:
@@ -151,7 +151,7 @@ class SteamGenerator:
         inputs : dict
             Required keys:
 
-            - ``T_primary`` : float [K] — primary-side temperature
+            - ``T_avg`` : float [K] — primary-side average temperature
             - ``T_secondary`` : float [K] — secondary-side temperature
 
         Returns
@@ -167,13 +167,13 @@ class SteamGenerator:
             If ``inputs`` is missing required keys.
         """
         if inputs is None:
-            raise TypeError("SteamGenerator.outputs requires `inputs` with T_primary and T_secondary")
+            raise TypeError("SteamGenerator.outputs requires `inputs` with T_avg and T_secondary")
         # SIMPLIFICATION: Q = UA * ΔT (single average ΔT, not log mean).
         # Real heat exchangers use LMTD = (ΔT_in − ΔT_out) / ln(ΔT_in / ΔT_out)
         # which is more accurate when the ΔT varies along the tube length.
-        T_primary = inputs["T_primary"]
+        T_avg = inputs["T_avg"]
         T_secondary = inputs["T_secondary"]
-        Q_sg = self.params.UA * (T_primary - T_secondary)
+        Q_sg = self.params.UA * (T_avg - T_secondary)
         return {"Q_sg": Q_sg}
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
@@ -185,21 +185,21 @@ class SteamGenerator:
         Returns
         -------
         dict
-            Keys: ``Q_sg``, ``T_primary``, ``T_secondary``, ``delta_T``.
+            Keys: ``Q_sg``, ``T_avg``, ``T_secondary``, ``delta_T``.
         """
         if inputs is None:
             return {
                 "Q_sg": None,
-                "T_primary": None,
+                "T_avg": None,
                 "T_secondary": None,
                 "delta_T": None,
             }
-        T_primary = inputs["T_primary"]
+        T_avg = inputs["T_avg"]
         T_secondary = inputs["T_secondary"]
-        delta_T = T_primary - T_secondary
+        delta_T = T_avg - T_secondary
         return {
             "Q_sg": self.params.UA * delta_T,
-            "T_primary": T_primary,
+            "T_avg": T_avg,
             "T_secondary": T_secondary,
             "delta_T": delta_T,
         }

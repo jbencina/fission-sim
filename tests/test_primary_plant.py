@@ -63,7 +63,7 @@ def _assemble_plant(rod_command_fn, scram_fn):
         out_sg = sg.outputs(
             np.empty(0),
             inputs={
-                "T_primary": out_loop["T_avg"],
+                "T_avg": out_loop["T_avg"],
                 "T_secondary": out_sink["T_secondary"],
             },
         )
@@ -197,7 +197,7 @@ def test_coupled_energy_balance_closes_at_steady():
     Q_sg = sg.outputs(
         np.empty(0),
         inputs={
-            "T_primary": out_loop["T_avg"],
+            "T_avg": out_loop["T_avg"],
             "T_secondary": out_sink["T_secondary"],
         },
     )["Q_sg"]

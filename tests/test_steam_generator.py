@@ -1,6 +1,6 @@
 """Tests for src/fission_sim/physics/steam_generator.py.
 
-The L1 SG is purely algebraic: Q_sg = UA * (T_primary - T_secondary). Layers 2
+The L1 SG is purely algebraic: Q_sg = UA * (T_avg - T_secondary). Layers 2
 (short-integration) and 3 (textbook formula comparison) do not apply — the
 implementation IS the formula, and there is no time evolution to integrate.
 """
@@ -18,7 +18,7 @@ def default_params() -> SGParams:
 
 def _design_inputs(p: SGParams) -> dict:
     """Inputs that, with default params, yield Q_sg == Q_design."""
-    return {"T_primary": p.T_primary_ref, "T_secondary": p.T_secondary_ref}
+    return {"T_avg": p.T_primary_ref, "T_secondary": p.T_secondary_ref}
 
 
 def test_state_layout_indices():
@@ -39,7 +39,7 @@ def test_derivatives_returns_empty():
 
 
 def test_design_q_matches():
-    """At reference T_primary and T_secondary, Q_sg should equal Q_design."""
+    """At reference T_avg and T_secondary, Q_sg should equal Q_design."""
     p = default_params()
     sg = SteamGenerator(p)
     out = sg.outputs(np.empty(0), inputs=_design_inputs(p))
@@ -47,21 +47,21 @@ def test_design_q_matches():
 
 
 def test_q_scales_with_delta_t():
-    """Doubling (T_primary - T_secondary) should exactly double Q_sg."""
+    """Doubling (T_avg - T_secondary) should exactly double Q_sg."""
     p = default_params()
     sg = SteamGenerator(p)
     delta_T_design = p.T_primary_ref - p.T_secondary_ref
     out_1 = sg.outputs(
         np.empty(0),
         inputs={
-            "T_primary": p.T_secondary_ref + delta_T_design,
+            "T_avg": p.T_secondary_ref + delta_T_design,
             "T_secondary": p.T_secondary_ref,
         },
     )
     out_2 = sg.outputs(
         np.empty(0),
         inputs={
-            "T_primary": p.T_secondary_ref + 2 * delta_T_design,
+            "T_avg": p.T_secondary_ref + 2 * delta_T_design,
             "T_secondary": p.T_secondary_ref,
         },
     )
@@ -69,13 +69,13 @@ def test_q_scales_with_delta_t():
 
 
 def test_zero_delta_t_zero_q():
-    """T_primary == T_secondary should give Q_sg == 0."""
+    """T_avg == T_secondary should give Q_sg == 0."""
     p = default_params()
     sg = SteamGenerator(p)
     out = sg.outputs(
         np.empty(0),
         inputs={
-            "T_primary": 600.0,
+            "T_avg": 600.0,
             "T_secondary": 600.0,
         },
     )

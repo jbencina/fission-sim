@@ -146,7 +146,7 @@ single-phase liquid. See `.docs/design.md` §5.2 for physics.
 
 ### SteamGenerator (`src/fission_sim/physics/steam_generator.py`)
 
-L1 algebraic heat exchanger: `Q_sg = UA · (T_primary − T_secondary)`. No state.
+L1 algebraic heat exchanger: `Q_sg = UA · (T_avg − T_secondary)`. No state.
 See `.docs/design.md` §5.3 for physics.
 
 **Constructor**
@@ -163,11 +163,11 @@ See `.docs/design.md` §5.3 for physics.
     derivatives(state, inputs=None) -> np.ndarray   # always np.empty(0)
 
     outputs(state, inputs) -> {"Q_sg": float [W]}
-        inputs: {"T_primary":   float [K],
+        inputs: {"T_avg":       float [K],
                  "T_secondary": float [K]}
         Raises TypeError if inputs is None.
 
-    telemetry(state, inputs=None) -> {"Q_sg", "T_primary", "T_secondary", "delta_T"}
+    telemetry(state, inputs=None) -> {"Q_sg", "T_avg", "T_secondary", "delta_T"}
         Reports None for input-derived keys when inputs is omitted.
 
 **SGParams (frozen dataclass)**

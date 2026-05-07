@@ -75,7 +75,7 @@ def main() -> None:
         out_sg = sg.outputs(
             np.empty(0),
             inputs={
-                "T_primary": out_loop["T_avg"],
+                "T_avg": out_loop["T_avg"],
                 "T_secondary": out_sink["T_secondary"],
             },
         )
