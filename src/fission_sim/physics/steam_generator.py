@@ -121,6 +121,8 @@ class SteamGenerator:
 
     state_size: int = 0
     state_labels: tuple[str, ...] = ()
+    input_ports: tuple[str, ...] = ("T_primary", "T_secondary")
+    output_ports: tuple[str, ...] = ("Q_sg",)
 
     def __init__(self, params: SGParams) -> None:
         """Construct a steam generator with the given parameters.

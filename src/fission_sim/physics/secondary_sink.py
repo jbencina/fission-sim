@@ -64,6 +64,8 @@ class SecondarySink:
 
     state_size: int = 0
     state_labels: tuple[str, ...] = ()
+    input_ports: tuple[str, ...] = ()
+    output_ports: tuple[str, ...] = ("T_secondary",)
 
     def __init__(self, params: SinkParams) -> None:
         """Construct a sink with the given parameters.

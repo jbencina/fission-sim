@@ -225,6 +225,13 @@ class PointKineticsCore:
         "T_fuel",
     )
 
+    # Port metadata used by the simulation engine.
+    # See docs/superpowers/specs/2026-05-07-simulation-engine-design.md §4.
+    # NOTE: input port names use the *current* names; Task 2 renames
+    # rod_reactivity → rho_rod.
+    input_ports: tuple[str, ...] = ("rod_reactivity", "T_cool")
+    output_ports: tuple[str, ...] = ("power_thermal", "T_fuel")
+
     def __init__(self, params: CoreParams) -> None:
         """Construct a core with the given parameters.
 

@@ -155,6 +155,8 @@ class PrimaryLoop:
 
     state_size: int = 2
     state_labels: tuple[str, ...] = ("T_hot", "T_cold")
+    input_ports: tuple[str, ...] = ("Q_core", "Q_sg")
+    output_ports: tuple[str, ...] = ("T_hot", "T_cold", "T_avg", "T_cool")
 
     def __init__(self, params: LoopParams) -> None:
         """Construct a loop with the given parameters.

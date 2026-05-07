@@ -177,6 +177,8 @@ class RodController:
 
     state_size: int = 1
     state_labels: tuple[str, ...] = ("rod_position",)
+    input_ports: tuple[str, ...] = ("rod_command", "scram")
+    output_ports: tuple[str, ...] = ("rod_reactivity",)
 
     def __init__(self, params: RodParams) -> None:
         """Construct a rod controller with the given parameters.
