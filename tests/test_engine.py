@@ -245,3 +245,168 @@ def test_finalize_succeeds_for_minimal_valid_graph() -> None:
     m(rate=rate)
     engine.finalize()  # no raise
     assert engine.state.shape == (1,)
+
+
+def test_topological_order_is_stable() -> None:
+    """Building the same graph twice produces the same eval order."""
+
+    def build():
+        engine = SimEngine()
+        a = engine.module(_ScalarIntegrator(), name="a")
+        rate = engine.input("rate", default=0.0)
+        a(rate=rate)
+        engine.finalize()
+        return engine
+
+    e1 = build()
+    e2 = build()
+    assert e1._eval_order == e2._eval_order
+
+
+def test_topological_order_state_derived_before_computed() -> None:
+    """State-derived outputs come before computed outputs in eval order."""
+
+    class _Computed:
+        """Reads an input and produces a computed output."""
+
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("upstream",)
+        output_ports = ("y",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError("requires inputs")
+            return {"y": float(inputs["upstream"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    a = engine.module(_ScalarIntegrator(), name="a")  # state-derived output 'x'
+    c = engine.module(_Computed(), name="c")  # computed output 'y'
+    rate = engine.input("rate", default=0.0)
+    a(rate=rate)
+    c(upstream=a.x)
+    engine.finalize()
+
+    a_pos = next(i for i, e in enumerate(engine._eval_order) if e == ("output", "a"))
+    c_pos = next(i for i, e in enumerate(engine._eval_order) if e == ("output", "c"))
+    assert a_pos < c_pos
+
+
+def test_cycle_in_computed_outputs_raises() -> None:
+    """A cycle through computed outputs (stateless modules) → EngineWiringError."""
+
+    class _ComputedAB:
+        """Stateless: output 'a' depends on input 'b'."""
+
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("b",)
+        output_ports = ("a",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError("requires inputs")
+            return {"a": float(inputs["b"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    class _ComputedBA:
+        """Stateless: output 'b' depends on input 'a'. Closes the cycle."""
+
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("a",)
+        output_ports = ("b",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError("requires inputs")
+            return {"b": float(inputs["a"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    m1 = engine.module(_ComputedAB(), name="m1")
+    m2 = engine.module(_ComputedBA(), name="m2")
+    m1(b=m2.b)
+    m2(a=m1.a)
+    with pytest.raises(EngineWiringError, match="cycle detected"):
+        engine.finalize()
+
+
+def test_cycle_error_message_shows_path() -> None:
+    """The cycle error message lists the actual path, not just participants."""
+
+    class _ComputedAB:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("b",)
+        output_ports = ("a",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError
+            return {"a": float(inputs["b"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    class _ComputedBA:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("a",)
+        output_ports = ("b",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError
+            return {"b": float(inputs["a"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    m1 = engine.module(_ComputedAB(), name="m1")
+    m2 = engine.module(_ComputedBA(), name="m2")
+    m1(b=m2.b)
+    m2(a=m1.a)
+    with pytest.raises(EngineWiringError) as exc_info:
+        engine.finalize()
+    msg = str(exc_info.value)
+    # The message should mention both modules and use the → arrow:
+    assert "m1" in msg and "m2" in msg and "→" in msg

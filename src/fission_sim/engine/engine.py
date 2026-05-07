@@ -62,6 +62,41 @@ class Signal:
     producer_port: str | None = None
 
 
+def _find_cycle(remaining: dict[str, set[str]]) -> list[str]:
+    """Recover a concrete cycle from a topological-sort residual.
+
+    After Kahn's algorithm leaves nodes in ``remaining`` (each still has at
+    least one unsatisfied dependency), walk the dep edges to surface a
+    closed cycle for the user. Used to format an actionable error message.
+
+    Parameters
+    ----------
+    remaining : dict[str, set[str]]
+        Map of node names to their unresolved dependency sets, post-Kahn.
+
+    Returns
+    -------
+    list[str]
+        Names of nodes forming the cycle, with the start name repeated at
+        the end (e.g. ``["m1", "m2", "m1"]`` for an m1→m2→m1 cycle).
+    """
+    # Pick any starting node and walk one of its remaining deps repeatedly
+    # until we revisit a node — that closing arc is the cycle. Determinism:
+    # iterate `sorted(remaining)` and `sorted(remaining[node])` so the same
+    # graph always produces the same reported cycle.
+    start = sorted(remaining)[0]
+    path: list[str] = [start]
+    seen = {start}
+    while True:
+        deps = remaining[path[-1]]
+        nxt = sorted(deps)[0]
+        if nxt in seen:
+            i = path.index(nxt)
+            return path[i:] + [nxt]
+        path.append(nxt)
+        seen.add(nxt)
+
+
 def _snake_case(camel: str) -> str:
     """Convert a CamelCase class name to snake_case.
 
@@ -199,6 +234,9 @@ class SimEngine:
         self._state: np.ndarray | None = None
         self._t: float = 0.0
         self._finalized: bool = False
+        # Frozen at finalize: list of (kind, name) tuples describing the
+        # eval order each f(t, y) replays. Set by finalize().
+        self._eval_order: list[tuple[str, str]] = []
 
     # ----- Construction -----
 
@@ -328,6 +366,73 @@ class SimEngine:
             self._state = np.concatenate(chunks).astype(float, copy=True)
         else:
             self._state = np.empty(0, dtype=float)
+
+        # 6. Classify modules by their outputs() *signature* (not by the math
+        # they compute). A module is "state-derived" if outputs(state) — i.e.
+        # the call without an inputs kwarg — succeeds; "computed" if it
+        # raises TypeError. The eval order treats state-derived modules as
+        # having no input dependencies (they're evaluated in registration
+        # order before any computed modules).
+        #
+        # Note: this calls component.outputs() once per module at finalize
+        # time. Components must keep outputs(state) side-effect-free and
+        # cheap (no I/O, no logging) — the call may also be repeated in the
+        # snapshot/step paths.
+        state_derived: list[SimModule] = []
+        computed: list[SimModule] = []
+        for m in self._modules:
+            try:
+                state_slice = m._component.initial_state()
+                m._component.outputs(state_slice)
+                state_derived.append(m)
+            except TypeError:
+                computed.append(m)
+
+        # 7. Topological sort over the computed modules: each computed module
+        # depends on its inputs' producer modules (state-derived dependencies
+        # are trivially satisfied because they precede all computed evals).
+        computed_names = {m.name for m in computed}
+        deps: dict[str, set[str]] = {m.name: set() for m in computed}
+        for m in computed:
+            for sig in m._inputs.values():
+                if sig.is_external:
+                    continue
+                producer = sig.producer_module
+                if producer in computed_names and producer != m.name:
+                    deps[m.name].add(producer)
+
+        # Kahn's algorithm — sorted ready set for deterministic ordering.
+        ordered_computed: list[str] = []
+        remaining = {name: set(d) for name, d in deps.items()}
+        ready = sorted(name for name, d in remaining.items() if not d)
+        while ready:
+            name = ready.pop(0)
+            ordered_computed.append(name)
+            del remaining[name]
+            newly_ready: list[str] = []
+            for other_name, other_deps in remaining.items():
+                if name in other_deps:
+                    other_deps.discard(name)
+                    if not other_deps:
+                        newly_ready.append(other_name)
+            ready.extend(newly_ready)
+            ready.sort()
+        if remaining:
+            cycle = _find_cycle(remaining)
+            raise EngineWiringError(f"cycle detected: {' → '.join(cycle)}")
+
+        # 8. Build the frozen eval_order:
+        #    - ('external', name) for each external (declaration order)
+        #    - ('output', module_name) for each state-derived module (registration order)
+        #    - ('output', module_name) for each computed module (topological order)
+        eval_order: list[tuple[str, str]] = []
+        for ext_name in self._externals:
+            eval_order.append(("external", ext_name))
+        for m in state_derived:
+            eval_order.append(("output", m.name))
+        for name in ordered_computed:
+            eval_order.append(("output", name))
+        self._eval_order = eval_order
 
         self._finalized = True
 
