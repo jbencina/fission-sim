@@ -255,15 +255,111 @@ plus linear (L1) rod-worth function. Bridges operator decisions
 | `rod_position_design`    | dimensionless | 0.5                      | Position at coupled-plant design steady state       |
 | `rod_position_critical`  | dimensionless | derived: `= rod_position_design` | Position where rod produces zero reactivity         |
 
+## Simulation engine
+
+`SimEngine` (in `src/fission_sim/engine/engine.py`) is the graph runner
+that owns global state, wires components, and steps time. It has zero
+physics imports — all it knows is components, ports, and ODEs.
+
+### API
+
+```python
+from fission_sim.engine import SimEngine
+
+engine = SimEngine()
+
+# 1. Register components — name defaults to snake_case of class name.
+rod  = engine.module(RodController(RodParams()),     name="rod")
+core = engine.module(PointKineticsCore(CoreParams()), name="core")
+loop = engine.module(PrimaryLoop(LoopParams()),      name="loop")
+sg   = engine.module(SteamGenerator(SGParams()),     name="sg")
+sink = engine.module(SecondarySink(SinkParams()),    name="sink")
+
+# 2. Declare external operator inputs (signals not produced by any module).
+rod_cmd = engine.input("rod_command", default=0.5)
+scram   = engine.input("scram", default=False)
+
+# 3. Wire by calling — the engine traces these calls to build the DAG.
+rho_rod = rod(rod_command=rod_cmd, scram=scram)
+T_sec   = sink()
+Q_sg    = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+core(rho_rod=rho_rod, T_cool=loop.T_cool)
+loop(power_thermal=core.power_thermal, Q_sg=Q_sg)
+
+# 4. Finalize (validates the graph and allocates state).
+engine.finalize()  # optional — auto-called on first step()/run()
+
+# 5a. Step-at-a-time (live/interactive use).
+snap = engine.step(dt=0.5, rod_command=0.515)
+print(snap["core"]["n"], snap["signals"]["power_thermal"])
+
+# 5b. Or run the whole scenario (batch use).
+def scenario(t):
+    return {"rod_command": 0.5 if t < 10 else 0.515, "scram": t >= 60.0}
+
+final = engine.run(t_end=300.0, scenario_fn=scenario)
+```
+
+### Snapshot dict shape
+
+Returned by `step()`, `run()`, and `engine.snapshot()`:
+
+```python
+{
+  "t": 5.0,
+  "signals": {
+    "rho_rod": 0.0, "T_cool": 563.2, "power_thermal": 3.0e9,
+    "Q_sg": 3.0e9, "T_avg": 581.0, "T_secondary": 558.0,
+    "rod_command": 0.5, "scram": False,
+  },
+  "core": {"n": 1.0, "T_fuel": 812.0, ...},
+  "loop": {"T_hot": 598.0, "T_cold": 563.0, ...},
+  "rod":  {"rod_position": 0.5, "rho_rod": 0.0, ...},
+  "sg":   {...},
+  "sink": {},
+}
+```
+
+`signals` contains every wired signal by canonical name (externals +
+module outputs that have at least one consumer). Each `<module_name>` key
+holds that module's `telemetry()` dict.
+
+### Wiring rules
+
+- **Globally unique signal names.** Two modules cannot expose an output
+  port with the same name (caught at finalize).
+- **State-derived vs computed outputs.** State-derived outputs (e.g.,
+  `loop.T_avg`) are accessible as attributes before the module is called.
+  Computed outputs (e.g., `Q_sg = sg(...)`) come from the call return.
+- **Single output → call returns the Signal; multiple outputs → call
+  returns None.** Use attribute access for multi-output components.
+- **External defaults.** Externals not provided in `step()` /
+  `scenario_fn(t)` fall back to the declared default.
+
+### What gets validated at `finalize()`
+
+`EngineWiringError` is raised for: dangling inputs, signal name
+collisions, unused externals, unknown ports in `module(...)` calls, and
+cycles among computed-output modules.
+
+### `run(dense=True)`
+
+```python
+final, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
+mid = dense.at(150.0)            # snapshot at t = 150
+n_traj = dense.signal("power_thermal", np.linspace(0, 300, 1500)) / core_params.P_design
+```
+
+`dense.at(t)` returns a snapshot at the given time(s); `dense.signal(name,
+t_array)` returns a 1D array of values, falling back to module telemetry
+if the name isn't a wired signal.
+
 ## Multi-component runners
 
-`examples/run_primary.py` (matplotlib), `examples/report_primary.py`
-(text/SSH), and `examples/dump_state.py` (full state + telemetry dump)
-drive all five components (Core + Loop + SG + Sink + RodController)
-coupled together. Each script defines its own ~35-line `f(t, y)` wiring;
-the coupled-system test in `tests/test_primary_plant.py` does the same.
-After this slice there are four copies of essentially the same wiring;
-the engine slice (slice 4) will deduplicate them.
+All runners (`run_primary.py`, `report_primary.py`, `dump_state.py`) and
+the coupled-plant tests (`test_primary_plant.py`) use `SimEngine` for
+wiring; they differ only in their `scenario_fn` and how they format the
+output (matplotlib, ASCII text, or full state dump).
 
 ## Roadmap
 
