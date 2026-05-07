@@ -112,35 +112,35 @@ def test_small_motion_in_lag_region():
 # ---------------------------------------------------------------------------
 # Layer 1: outputs() and telemetry() tests
 # ---------------------------------------------------------------------------
-def test_rod_reactivity_at_critical():
-    """At rod_position == rod_position_critical, rod_reactivity == 0."""
+def test_rho_rod_at_critical():
+    """At rod_position == rod_position_critical, rho_rod == 0."""
     p = default_params()
     rod = RodController(p)
     state = np.array([p.rod_position_critical])
     out = rod.outputs(state)
-    assert out["rod_reactivity"] == pytest.approx(0.0)
+    assert out["rho_rod"] == pytest.approx(0.0)
 
 
-def test_rod_reactivity_negative_below_critical():
+def test_rho_rod_negative_below_critical():
     """rod_position below critical → negative reactivity (rods more inserted)."""
     p = default_params()
     rod = RodController(p)
     state = np.array([p.rod_position_critical - 0.1])
     out = rod.outputs(state)
     expected = p.rho_total_worth * (-0.1)
-    assert out["rod_reactivity"] == pytest.approx(expected)
-    assert out["rod_reactivity"] < 0
+    assert out["rho_rod"] == pytest.approx(expected)
+    assert out["rho_rod"] < 0
 
 
-def test_rod_reactivity_positive_above_critical():
+def test_rho_rod_positive_above_critical():
     """rod_position above critical → positive reactivity (rods more withdrawn)."""
     p = default_params()
     rod = RodController(p)
     state = np.array([p.rod_position_critical + 0.1])
     out = rod.outputs(state)
     expected = p.rho_total_worth * 0.1
-    assert out["rod_reactivity"] == pytest.approx(expected)
-    assert out["rod_reactivity"] > 0
+    assert out["rho_rod"] == pytest.approx(expected)
+    assert out["rho_rod"] > 0
 
 
 def test_telemetry_with_inputs():
@@ -151,7 +151,7 @@ def test_telemetry_with_inputs():
     tele = rod.telemetry(state, inputs)
     expected_keys = {
         "rod_position",
-        "rod_reactivity",
+        "rho_rod",
         "rod_command",
         "scram",
         "rod_command_effective",
@@ -180,7 +180,7 @@ def test_telemetry_without_inputs_reports_none():
     tele = rod.telemetry(rod.initial_state())
     # State-derived keys still present
     assert tele["rod_position"] == pytest.approx(p.rod_position_design)
-    assert tele["rod_reactivity"] == pytest.approx(0.0)
+    assert tele["rho_rod"] == pytest.approx(0.0)
     # Input-dependent keys are None
     assert tele["rod_command"] is None
     assert tele["scram"] is None

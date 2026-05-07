@@ -58,7 +58,7 @@ def main() -> None:
         return core.derivatives(
             y,
             {
-                "rod_reactivity": rod_reactivity_fn(t),
+                "rho_rod": rod_reactivity_fn(t),
                 "T_cool": T_cool_fn(t),
             },
         )

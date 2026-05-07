@@ -5,7 +5,7 @@ actual rod position via a rate-limited first-order lag. The actual position
 is converted to reactivity via a linear (L1) rod-worth function.
 
 This component is the bridge between human decisions (rod_command, scram)
-and the physics (rod_reactivity into the core). After this component lands,
+and the physics (rho_rod into the core). After this component lands,
 the only "fake" inputs in the simulator are the operator's keystrokes —
 which is exactly what they should be (we don't model human decisions).
 
@@ -105,7 +105,7 @@ class RodParams:
     # reactivity. The total swing (pos=0 vs pos=1) is rho_total_worth, so
     # 0.14 = ±14000 pcm full swing. With design at 0.5, scram (0.5 → 0)
     # delivers 0.14 * 0.5 = 0.07 = +7000 pcm of negative reactivity (the
-    # change in rod_reactivity is -7000 pcm).
+    # change in rho_rod is -7000 pcm).
     #
     # SIMPLIFICATION: linear rod worth. Real reactor rods have an S-shaped
     # position-to-reactivity curve because absorbed neutrons are weighted
@@ -159,7 +159,7 @@ class RodController:
             (fully inserted) and the rate clip allows scram speed.
 
     Ports out (returned by ``outputs()``):
-        rod_reactivity : float [dimensionless]
+        rho_rod : float [dimensionless]
             Reactivity contribution of the rod bank at the current
             position. Zero at design; positive when withdrawn, negative
             when inserted (relative to design).
@@ -178,7 +178,7 @@ class RodController:
     state_size: int = 1
     state_labels: tuple[str, ...] = ("rod_position",)
     input_ports: tuple[str, ...] = ("rod_command", "scram")
-    output_ports: tuple[str, ...] = ("rod_reactivity",)
+    output_ports: tuple[str, ...] = ("rho_rod",)
 
     def __init__(self, params: RodParams) -> None:
         """Construct a rod controller with the given parameters.
@@ -276,7 +276,7 @@ class RodController:
         return dstate
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
-        """Return rod_reactivity from rod position via linear worth.
+        """Return rho_rod from rod position via linear worth.
 
         Parameters
         ----------
@@ -289,7 +289,7 @@ class RodController:
         Returns
         -------
         dict
-            ``{"rod_reactivity": float [dimensionless]}``
+            ``{"rho_rod": float [dimensionless]}``
 
         Notes
         -----
@@ -304,7 +304,7 @@ class RodController:
         p = self.params
         rod_position = state[0]
         rod_reactivity = p.rho_total_worth * (rod_position - p.rod_position_critical)
-        return {"rod_reactivity": rod_reactivity}
+        return {"rho_rod": rod_reactivity}
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
         """Return a rich diagnostic dict for logging and visualization.
@@ -326,7 +326,7 @@ class RodController:
         Returns
         -------
         dict
-            Keys: ``rod_position``, ``rod_reactivity``, ``rod_command``,
+            Keys: ``rod_position``, ``rho_rod``, ``rod_command``,
             ``scram``, ``rod_command_effective``.
         """
         p = self.params
@@ -335,7 +335,7 @@ class RodController:
 
         out = {
             "rod_position": rod_position,
-            "rod_reactivity": rod_reactivity,
+            "rho_rod": rod_reactivity,
         }
         if inputs is not None:
             cmd = inputs.get("rod_command")

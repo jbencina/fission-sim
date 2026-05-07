@@ -62,9 +62,7 @@ def main() -> None:
         out_core = core.outputs(s_core)
         out_rod = rod.outputs(s_rod)
         dy = np.empty_like(y)
-        dy[0:8] = core.derivatives(
-            s_core, inputs={"rod_reactivity": out_rod["rod_reactivity"], "T_cool": out_loop["T_cool"]}
-        )
+        dy[0:8] = core.derivatives(s_core, inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]})
         dy[8:10] = loop.derivatives(s_loop, inputs={"Q_core": out_core["power_thermal"], "Q_sg": out_sg["Q_sg"]})
         dy[10:11] = rod.derivatives(s_rod, inputs={"rod_command": rod_command_fn(t), "scram": scram_fn(t)})
         return dy
@@ -100,9 +98,7 @@ def main() -> None:
         )
         out_rod = rod.outputs(s_rod)
 
-        core_tele = core.telemetry(
-            s_core, inputs={"rod_reactivity": out_rod["rod_reactivity"], "T_cool": out_loop["T_cool"]}
-        )
+        core_tele = core.telemetry(s_core, inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]})
         loop_tele = loop.telemetry(s_loop, inputs={"Q_core": core_tele["power_thermal"], "Q_sg": out_sg["Q_sg"]})
         sg_tele = sg.telemetry(
             np.empty(0),
@@ -163,7 +159,7 @@ def main() -> None:
         print()
         print("  RodController.telemetry:")
         print(f"    rod_position           = {rod_tele['rod_position']:.6f}")
-        print(f"    rod_reactivity         = {rod_tele['rod_reactivity'] * 1e5:+9.2f} pcm")
+        print(f"    rho_rod                = {rod_tele['rho_rod'] * 1e5:+9.2f} pcm")
         print(f"    rod_command            = {rod_tele['rod_command']:.6f}")
         print(f"    scram                  = {rod_tele['scram']}")
         print(f"    rod_command_effective  = {rod_tele['rod_command_effective']:.6f}")

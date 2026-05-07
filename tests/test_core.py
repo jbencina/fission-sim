@@ -77,7 +77,7 @@ def test_initial_state_is_design_steady_state():
 
 def _design_inputs(p: CoreParams) -> dict:
     """Inputs that, with initial_state, yield zero derivatives."""
-    return {"rod_reactivity": 0.0, "T_cool": p.T_cool_ref}
+    return {"rho_rod": 0.0, "T_cool": p.T_cool_ref}
 
 
 def test_design_steady_state_balances():
@@ -91,7 +91,7 @@ def test_design_steady_state_balances():
 def test_positive_reactivity_grows_n():
     p = default_params()
     core = PointKineticsCore(p)
-    inputs = _design_inputs(p) | {"rod_reactivity": 100e-5}  # +100 pcm
+    inputs = _design_inputs(p) | {"rho_rod": 100e-5}  # +100 pcm
     dstate = core.derivatives(core.initial_state(), inputs)
     assert dstate[0] > 0  # dn/dt > 0
 
@@ -99,7 +99,7 @@ def test_positive_reactivity_grows_n():
 def test_negative_reactivity_shrinks_n():
     p = default_params()
     core = PointKineticsCore(p)
-    inputs = _design_inputs(p) | {"rod_reactivity": -100e-5}  # -100 pcm
+    inputs = _design_inputs(p) | {"rho_rod": -100e-5}  # -100 pcm
     dstate = core.derivatives(core.initial_state(), inputs)
     assert dstate[0] < 0  # dn/dt < 0
 
@@ -142,7 +142,7 @@ def test_telemetry_with_inputs_decomposes_reactivity():
     core = PointKineticsCore(p)
     s = core.initial_state()
     s[7] = p.T_fuel_ref + 100.0  # raise T_fuel by 100 K
-    inputs = {"rod_reactivity": 200e-5, "T_cool": p.T_cool_ref + 5.0}
+    inputs = {"rho_rod": 200e-5, "T_cool": p.T_cool_ref + 5.0}
     tele = core.telemetry(s, inputs)
     # All keys present
     expected_keys = {
@@ -194,7 +194,7 @@ def _integrate(core, rod_fn, T_cool_fn, t_end, t_start=0.0, max_step=0.5):
     ----------
     core : PointKineticsCore
     rod_fn : Callable[[float], float]
-        Returns rod_reactivity at time t.
+        Returns rho_rod at time t.
     T_cool_fn : Callable[[float], float]
         Returns T_cool [K] at time t.
     t_end : float
@@ -205,7 +205,7 @@ def _integrate(core, rod_fn, T_cool_fn, t_end, t_start=0.0, max_step=0.5):
         return core.derivatives(
             y,
             {
-                "rod_reactivity": rod_fn(t),
+                "rho_rod": rod_fn(t),
                 "T_cool": T_cool_fn(t),
             },
         )
@@ -342,7 +342,7 @@ def test_inhour_asymptotic_period_50pcm():
     rho = 50e-5  # +50 pcm — small enough to stay well below prompt critical
 
     def f(t, y):
-        return core.derivatives(y, {"rod_reactivity": rho, "T_cool": p.T_cool_ref})
+        return core.derivatives(y, {"rho_rod": rho, "T_cool": p.T_cool_ref})
 
     sol = solve_ivp(
         f,

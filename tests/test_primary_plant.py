@@ -75,7 +75,7 @@ def _assemble_plant(rod_command_fn, scram_fn):
         dy[0:8] = core.derivatives(
             s_core,
             inputs={
-                "rod_reactivity": out_rod["rod_reactivity"],
+                "rho_rod": out_rod["rho_rod"],
                 "T_cool": out_loop["T_cool"],
             },
         )

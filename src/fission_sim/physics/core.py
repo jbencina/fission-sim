@@ -179,7 +179,7 @@ class PointKineticsCore:
     argument.
 
     Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
-        rod_reactivity : float [dimensionless]
+        rho_rod : float [dimensionless]
             Reactivity contribution from control rods. In a real plant,
             this comes from the rod controller component.
         T_cool : float [K]
@@ -225,11 +225,7 @@ class PointKineticsCore:
         "T_fuel",
     )
 
-    # Port metadata used by the simulation engine.
-    # See docs/superpowers/specs/2026-05-07-simulation-engine-design.md §4.
-    # NOTE: input port names use the *current* names; Task 2 renames
-    # rod_reactivity → rho_rod.
-    input_ports: tuple[str, ...] = ("rod_reactivity", "T_cool")
+    input_ports: tuple[str, ...] = ("rho_rod", "T_cool")
     output_ports: tuple[str, ...] = ("power_thermal", "T_fuel")
 
     def __init__(self, params: CoreParams) -> None:
@@ -285,7 +281,7 @@ class PointKineticsCore:
         inputs : dict
             Required keys:
 
-            - ``rod_reactivity`` : float [dimensionless] — reactivity from
+            - ``rho_rod`` : float [dimensionless] — reactivity from
               control rods.
             - ``T_cool`` : float [K] — coolant temperature seen by the core.
 
@@ -304,7 +300,7 @@ class PointKineticsCore:
 
         with total reactivity:
 
-            rho = rod_reactivity
+            rho = rho_rod
                 + alpha_f * (T_fuel - T_fuel_ref)        [Doppler]
                 + alpha_m * (T_cool - T_cool_ref)        [moderator]
 
@@ -321,7 +317,7 @@ class PointKineticsCore:
         T_fuel = state[7]
 
         # --- decode inputs ---
-        rod_reactivity = inputs["rod_reactivity"]
+        rho_rod = inputs["rho_rod"]
         T_cool = inputs["T_cool"]
 
         # --- total reactivity (Lamarsh eq 9.39) ---
@@ -329,7 +325,7 @@ class PointKineticsCore:
         # display unit; nothing internal uses it.
         rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
         rho_moderator = p.alpha_m * (T_cool - p.T_cool_ref)
-        rho = rod_reactivity + rho_doppler + rho_moderator
+        rho = rho_rod + rho_doppler + rho_moderator
 
         # --- point kinetics equations (Lamarsh eq 7.26-7.28) ---
         # dn/dt has two parts:
@@ -417,7 +413,7 @@ class PointKineticsCore:
         rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
 
         if inputs is not None:
-            rho_rod = inputs["rod_reactivity"]
+            rho_rod = inputs["rho_rod"]
             rho_moderator = p.alpha_m * (inputs["T_cool"] - p.T_cool_ref)
             rho_total = rho_rod + rho_doppler + rho_moderator
         else:
