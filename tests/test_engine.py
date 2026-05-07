@@ -918,3 +918,126 @@ def test_engine_step_then_run_match_for_full_plant() -> None:
     assert snap_a["core"]["n"] == pytest.approx(snap_b["core"]["n"], rel=1e-3)
     assert snap_a["loop"]["T_hot"] == pytest.approx(snap_b["loop"]["T_hot"], rel=1e-4)
     assert snap_a["loop"]["T_cold"] == pytest.approx(snap_b["loop"]["T_cold"], rel=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Layer 3 — regression: engine output matches legacy hand-coded f(t, y)
+# ---------------------------------------------------------------------------
+
+
+def _legacy_f_assemble():
+    """Build the same plant components used elsewhere, then return a
+    callable f(t, y) that does the wiring by hand (the pre-engine approach)
+    plus the solve_ivp solution and helpers to inspect outputs at sampled
+    times.
+
+    State layout matches the engine's registration order exactly:
+      y[0:1]  — rod (RodController, state_size=1)
+      y[1:9]  — core (PointKineticsCore, state_size=8)
+      y[9:11] — loop (PrimaryLoop, state_size=2)
+    This is the same order that _assemble_full_plant() uses when it calls
+    engine.module(rod), engine.module(core), engine.module(loop) in that
+    sequence, so the state vectors fed to BDF are identical and the solver
+    takes bit-identical steps.
+    """
+    from scipy.integrate import solve_ivp as _legacy_solve_ivp
+
+    rod = RodController(RodParams())
+    core = PointKineticsCore(CoreParams())
+    loop = PrimaryLoop(LoopParams())
+    sg = SteamGenerator(SGParams())
+    sink = SecondarySink(SinkParams())
+    # State ordering: rod first, then core, then loop — mirrors engine layout.
+    y0 = np.concatenate([rod.initial_state(), core.initial_state(), loop.initial_state()])
+
+    def rod_command_fn(t):
+        return 0.5 if t < 10.0 else 0.515
+
+    def scram_fn(t):
+        return t >= 60.0
+
+    def f(t, y):
+        # Slice state vector using the same offsets the engine assigns:
+        # rod at 0:1, core at 1:9, loop at 9:11.
+        s_rod = y[0:1]
+        s_core = y[1:9]
+        s_loop = y[9:11]
+        out_sink = sink.outputs(np.empty(0))
+        out_loop = loop.outputs(s_loop)
+        out_sg = sg.outputs(
+            np.empty(0),
+            inputs={"T_avg": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
+        )
+        out_core = core.outputs(s_core)
+        out_rod = rod.outputs(s_rod)
+        dy = np.empty_like(y)
+        dy[0:1] = rod.derivatives(s_rod, inputs={"rod_command": rod_command_fn(t), "scram": scram_fn(t)})
+        dy[1:9] = core.derivatives(
+            s_core,
+            inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]},
+        )
+        dy[9:11] = loop.derivatives(
+            s_loop,
+            inputs={
+                "power_thermal": out_core["power_thermal"],
+                "Q_sg": out_sg["Q_sg"],
+            },
+        )
+        return dy
+
+    sol = _legacy_solve_ivp(
+        f,
+        (0.0, 300.0),
+        y0,
+        method="BDF",
+        dense_output=True,
+        rtol=1e-6,
+        atol=1e-9,
+        max_step=0.5,
+    )
+    return sol
+
+
+def test_engine_run_matches_legacy_solve_ivp() -> None:
+    """The engine's trajectories are bit-identical (within tol) to the legacy
+    hand-coded f(t, y).
+
+    This locks in the spec's load-bearing claim: the engine is purely
+    structural — same physics, same tolerances, identical trajectories.
+    """
+    sample_t = np.array([5.0, 30.0, 60.0, 100.0, 300.0])
+
+    # Legacy.
+    legacy_sol = _legacy_f_assemble()
+
+    # Engine.
+    engine, _ = _assemble_full_plant()
+
+    def scenario(t):
+        return {"rod_command": 0.5 if t < 10.0 else 0.515, "scram": t >= 60.0}
+
+    _, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
+
+    # Compare core neutron population n and key thermal/rod state at each sample.
+    for ti in sample_t:
+        legacy_y = legacy_sol.sol(ti)
+        # Indices match _legacy_f_assemble state layout: rod=0, core=1:9, loop=9:11.
+        legacy_rod_pos = legacy_y[0]
+        legacy_n = legacy_y[1]
+        legacy_T_hot = legacy_y[9]
+        legacy_T_cold = legacy_y[10]
+
+        engine_snap = dense.at(float(ti))
+        engine_n = engine_snap["core"]["n"]
+        engine_T_hot = engine_snap["loop"]["T_hot"]
+        engine_T_cold = engine_snap["loop"]["T_cold"]
+        engine_rod_pos = engine_snap["rod"]["rod_position"]
+
+        # Tight tolerance: 1e-9 relative (well below solver tolerance).
+        # Identical f(t, y) should produce identical sol.y up to FP precision;
+        # any ordering differences in dict iteration could introduce tiny
+        # ULP-level diffs, hence not 0.0 exactly.
+        assert engine_n == pytest.approx(legacy_n, rel=1e-9, abs=1e-12)
+        assert engine_T_hot == pytest.approx(legacy_T_hot, rel=1e-9, abs=1e-12)
+        assert engine_T_cold == pytest.approx(legacy_T_cold, rel=1e-9, abs=1e-12)
+        assert engine_rod_pos == pytest.approx(legacy_rod_pos, rel=1e-9, abs=1e-12)
