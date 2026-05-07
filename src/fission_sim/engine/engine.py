@@ -90,17 +90,95 @@ class SimModule:
     """
 
     def __init__(self, engine: SimEngine, component: Any, name: str) -> None:
-        self._engine = engine
-        self._component = component
-        self.name = name
-        # State-vector slice indices, populated by engine.finalize().
-        self._state_offset: int | None = None
-        self._state_size: int = int(getattr(component, "state_size"))
-        # Recorded input wiring (port_name → Signal). Populated by __call__.
-        self._inputs: dict[str, Signal] = {}
-        # Set in __call__: was the call form used at all? (Some modules may
-        # be wired purely via attribute access; we track this for diagnostics.)
-        self._was_called: bool = False
+        # Use object.__setattr__ to bypass our custom __getattr__ during init.
+        object.__setattr__(self, "_engine", engine)
+        object.__setattr__(self, "_component", component)
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "_state_offset", None)
+        object.__setattr__(self, "_state_size", int(getattr(component, "state_size")))
+        object.__setattr__(self, "_inputs", {})
+        object.__setattr__(self, "_was_called", False)
+        object.__setattr__(self, "_output_ports", tuple(getattr(component, "output_ports")))
+        object.__setattr__(self, "_input_ports", tuple(getattr(component, "input_ports")))
+
+    # ----- Wiring API -----
+
+    def __call__(self, **inputs: Signal) -> Signal | None:
+        """Record this module's input wiring.
+
+        Each kwarg's name must be a port in the underlying component's
+        ``input_ports``; each kwarg's value must be a ``Signal`` (produced by
+        ``engine.input()``, by another module's call return, or by another
+        module's attribute access).
+
+        Each input port can be wired at most once. Calling with a port that's
+        already wired raises ``EngineWiringError`` — matches the engine's
+        convention for module() and input() (raise on duplicate). To rewire,
+        construct a new engine.
+
+        Returns the output ``Signal`` if the component has exactly one output
+        port; otherwise returns None and outputs are read via attribute access.
+        Calling a module is also legal as a pure side effect.
+        """
+        for port_name, sig in inputs.items():
+            if port_name not in self._input_ports:
+                raise EngineWiringError(
+                    f"unknown input port '{port_name}' on module '{self.name}'; valid ports: {self._input_ports!r}"
+                )
+            if not isinstance(sig, Signal):
+                raise EngineWiringError(
+                    f"module '{self.name}' input '{port_name}' must be a Signal "
+                    f"(got {type(sig).__name__}); pass an engine.input(...) handle "
+                    f"or another module's output signal"
+                )
+            if port_name in self._inputs:
+                raise EngineWiringError(
+                    f"module '{self.name}' input '{port_name}' is already wired "
+                    f"(previously to signal '{self._inputs[port_name].name}'); "
+                    f"each input port can only be connected once. To rewire, "
+                    f"construct a new engine."
+                )
+            self._inputs[port_name] = sig
+        object.__setattr__(self, "_was_called", True)
+
+        if len(self._output_ports) == 1:
+            return self._signal_for_output(self._output_ports[0])
+        return None
+
+    def __getattr__(self, name: str) -> Signal:
+        """Return a Signal handle for the named output port.
+
+        Triggered for attribute names that are not real instance attributes
+        (those go through normal lookup). Used to expose state-derived output
+        ports as Signal handles before the module is even called — e.g.
+        ``loop.T_avg`` works during graph construction.
+        """
+        # __getattr__ is only called when normal attribute lookup fails (i.e.
+        # the name isn't in self.__dict__). The _-prefix early-return is the
+        # primary defense against dunder probing during copy/deepcopy/pickle/
+        # repr/hasattr — without it, those operations would try to look up
+        # __copy__, __getstate__, etc. as output ports and either recurse or
+        # raise misleading errors. The init-incomplete fallback is secondary.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        try:
+            output_ports = object.__getattribute__(self, "_output_ports")
+        except AttributeError as e:
+            raise AttributeError(name) from e
+        if name not in output_ports:
+            module_name = object.__getattribute__(self, "name")
+            raise AttributeError(f"module '{module_name}' has no output port '{name}'; output_ports: {output_ports!r}")
+        return self._signal_for_output(name)
+
+    # ----- Internal helpers -----
+
+    def _signal_for_output(self, port: str) -> Signal:
+        return Signal(
+            name=port,
+            is_external=False,
+            producer_module=self.name,
+            producer_port=port,
+        )
 
 
 class SimEngine:

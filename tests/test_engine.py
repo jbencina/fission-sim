@@ -83,3 +83,97 @@ def test_duplicate_module_name_raises() -> None:
     engine.module(_ScalarIntegrator(), name="a")
     with pytest.raises(EngineWiringError, match="duplicate module name"):
         engine.module(_ScalarIntegrator(), name="a")
+
+
+def test_call_records_input_wiring() -> None:
+    """Calling a module with kwargs records each kwarg as an input wire."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    assert m._inputs == {"rate": rate}
+    assert m._was_called is True
+
+
+def test_getattr_returns_signal_for_known_output() -> None:
+    """module.<port> returns a Signal naming the producer module/port."""
+    from fission_sim.engine import Signal
+
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    sig = m.x
+    assert isinstance(sig, Signal)
+    assert sig.name == "x"
+    assert sig.producer_module == "m"
+    assert sig.producer_port == "x"
+    assert sig.is_external is False
+
+
+def test_getattr_unknown_port_raises_attributeerror() -> None:
+    """module.<port> for a port not in output_ports raises AttributeError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    with pytest.raises(AttributeError, match="has no output port 'foo'"):
+        _ = m.foo
+
+
+def test_call_returns_signal_when_one_output() -> None:
+    """A module with exactly one output port: __call__ returns that Signal."""
+    from fission_sim.engine import Signal
+
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=0.0)
+    out = m(rate=rate)
+    assert isinstance(out, Signal)
+    assert out.name == "x"
+
+
+def test_call_returns_none_when_multiple_outputs() -> None:
+    """A module with >1 output: __call__ returns None; use attribute access."""
+
+    class _MultiOut:
+        state_size = 1
+        state_labels = ("x",)
+        input_ports = ("rate",)
+        output_ports = ("x", "y")
+
+        def initial_state(self):
+            return np.array([0.0])
+
+        def derivatives(self, state, inputs):
+            return np.array([0.0])
+
+        def outputs(self, state, inputs=None):
+            return {"x": float(state[0]), "y": -float(state[0])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    m = engine.module(_MultiOut(), name="m")
+    rate = engine.input("rate", default=0.0)
+    result = m(rate=rate)
+    assert result is None
+
+
+def test_input_returns_external_signal() -> None:
+    """engine.input() returns a Signal marked is_external=True with the given name."""
+    from fission_sim.engine import Signal
+
+    engine = SimEngine()
+    sig = engine.input("rod_command", default=0.5)
+    assert isinstance(sig, Signal)
+    assert sig.name == "rod_command"
+    assert sig.is_external is True
+    assert sig.producer_module is None
+
+
+def test_call_twice_with_same_port_raises() -> None:
+    """Wiring the same input port twice → EngineWiringError."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate1 = engine.input("rate", default=0.0)
+    m(rate=rate1)
+    with pytest.raises(EngineWiringError, match="already wired"):
+        m(rate=rate1)
