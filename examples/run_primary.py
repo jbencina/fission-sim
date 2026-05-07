@@ -1,9 +1,4 @@
-"""Standalone matplotlib driver for the coupled primary plant.
-
-Throwaway script. Drives core + loop + SG + sink + rod controller through
-their real public APIs. Now that the rod controller is a real component,
-the only "fake" inputs in this runner are operator decisions
-(rod_command_fn, scram_fn) — which is exactly what they should be.
+"""Matplotlib driver for the coupled primary plant — wired through SimEngine.
 
 Default scenario:
     t = 0..10   : steady state at design power (rod_command = 0.5)
@@ -16,21 +11,14 @@ Run:
     uv run python examples/run_primary.py
 
 Produces a four-panel matplotlib figure.
-
-Note on intentional duplication: this script holds its own ~35 lines of
-plant wiring, identical in shape to ``tests/test_primary_plant.py::_assemble_plant``,
-``examples/report_primary.py``, and ``examples/dump_state.py``. The
-duplication is the signal that the engine should be extracted in slice 4 —
-see the spec at
-``docs/superpowers/specs/2026-05-04-rod-controller-design.md`` §9.
 """
 
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.integrate import solve_ivp
 
+from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -38,111 +26,66 @@ from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
 
-# ---------------------------------------------------------------------------
-# Faked operator inputs (these are correctly fake; we don't model humans).
-# ---------------------------------------------------------------------------
-def rod_command_fn(t: float) -> float:
-    """Operator's rod-position setpoint over time [dimensionless, 0–1]."""
-    if t < 10.0:
-        return 0.5  # design position
-    return 0.515  # +0.015 step at t=10 (≈ +210 pcm via 0.14 worth slope)
-
-
-def scram_fn(t: float) -> bool:
-    """Operator's scram button [bool]."""
-    return t >= 60.0
+def scenario(t: float) -> dict:
+    """Operator inputs over time."""
+    return {
+        "rod_command": 0.5 if t < 10.0 else 0.515,
+        "scram": t >= 60.0,
+    }
 
 
 def main() -> None:
-    # --- construct components ---
-    core = PointKineticsCore(CoreParams())
-    loop = PrimaryLoop(LoopParams())
-    sg = SteamGenerator(SGParams())
-    sink = SecondarySink(SinkParams())
-    rod = RodController(RodParams())
+    # --- engine setup ---
+    core_params = CoreParams()
+    loop_params = LoopParams()
+    sg_params = SGParams()
+    sink_params = SinkParams()
+    rod_params = RodParams()
 
-    # --- assemble global initial state: 8 core + 2 loop + 1 rod ---
-    y0 = np.concatenate([core.initial_state(), loop.initial_state(), rod.initial_state()])
+    engine = SimEngine()
+    rod = engine.module(RodController(rod_params), name="rod")
+    core = engine.module(PointKineticsCore(core_params), name="core")
+    loop = engine.module(PrimaryLoop(loop_params), name="loop")
+    sg = engine.module(SteamGenerator(sg_params), name="sg")
+    sink = engine.module(SecondarySink(sink_params), name="sink")
 
-    # --- f(t, y) glue ---
-    def f(t, y):
-        s_core = y[0:8]
-        s_loop = y[8:10]
-        s_rod = y[10:11]
+    rod_cmd = engine.input("rod_command", default=0.5)
+    scram = engine.input("scram", default=False)
 
-        out_sink = sink.outputs(np.empty(0))
-        out_loop = loop.outputs(s_loop)
-        out_sg = sg.outputs(
-            np.empty(0),
-            inputs={
-                "T_avg": out_loop["T_avg"],
-                "T_secondary": out_sink["T_secondary"],
-            },
-        )
-        out_core = core.outputs(s_core)
-        out_rod = rod.outputs(s_rod)
-
-        dy = np.empty_like(y)
-        dy[0:8] = core.derivatives(
-            s_core,
-            inputs={
-                "rho_rod": out_rod["rho_rod"],
-                "T_cool": out_loop["T_cool"],
-            },
-        )
-        dy[8:10] = loop.derivatives(
-            s_loop,
-            inputs={
-                "power_thermal": out_core["power_thermal"],
-                "Q_sg": out_sg["Q_sg"],
-            },
-        )
-        dy[10:11] = rod.derivatives(
-            s_rod,
-            inputs={
-                "rod_command": rod_command_fn(t),
-                "scram": scram_fn(t),
-            },
-        )
-        return dy
+    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    T_sec = sink()
+    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    loop(power_thermal=core.power_thermal, Q_sg=Q_sg_sig)
 
     # --- integrate ---
-    sol = solve_ivp(
-        f,
-        (0.0, 300.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.5,
-    )
-    if not sol.success:
-        raise RuntimeError(f"solve_ivp failed: {sol.message}")
+    _final_snap, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
 
     # --- sample on a uniform grid for plotting ---
     t = np.linspace(0.0, 300.0, 1500)
-    Y = sol.sol(t)
-    n = Y[0]
-    T_fuel = Y[7]
-    T_hot = Y[8]
-    T_cold = Y[9]
-    T_avg = (T_hot + T_cold) / 2
-    rod_position = Y[10]
 
-    # --- reactivity components vectorized over t ---
-    p_core = core.params
-    p_rod = rod.params
-    rho_rod = p_rod.rho_total_worth * (rod_position - p_rod.rod_position_critical)
-    rho_doppler = p_core.alpha_f * (T_fuel - p_core.T_fuel_ref)
-    rho_mod = p_core.alpha_m * (T_avg - p_core.T_cool_ref)
-    rho_total = rho_rod + rho_doppler + rho_mod
+    # Pull arrays for each plotted quantity.
+    Q_core = dense.signal("power_thermal", t)
+    n = Q_core / core_params.P_design
+    Q_sg = dense.signal("Q_sg", t)
 
-    # --- heat flows over t ---
-    Q_core = n * p_core.P_design
-    Q_sg = sg.params.UA * (T_avg - sink.params.T_secondary)
+    # Things not directly in the wiring graph (T_hot, T_cold, T_fuel,
+    # rod_position): pull them from per-time snapshots. dense.at() with
+    # an array argument returns a list of snapshots.
+    snaps = dense.at(t)
+    T_hot = np.array([s["loop"]["T_hot"] for s in snaps])
+    T_cold = np.array([s["loop"]["T_cold"] for s in snaps])
+    T_avg_arr = (T_hot + T_cold) / 2
+    T_fuel = np.array([s["core"]["T_fuel"] for s in snaps])
+    rod_position = np.array([s["rod"]["rod_position"] for s in snaps])
 
-    # --- four-panel diagnostic plot ---
+    # --- reactivity components ---
+    rho_rod_arr = dense.signal("rho_rod", t)
+    rho_doppler = core_params.alpha_f * (T_fuel - core_params.T_fuel_ref)
+    rho_mod = core_params.alpha_m * (T_avg_arr - core_params.T_cool_ref)
+    rho_total = rho_rod_arr + rho_doppler + rho_mod
+
+    # --- four-panel plot ---
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 
     # Panel 1: power
@@ -157,14 +100,13 @@ def main() -> None:
     ax = axes[0, 1]
     ax.plot(t, T_hot, "r-", label="T_hot")
     ax.plot(t, T_cold, "b-", label="T_cold")
-    ax.plot(t, T_avg, "k--", label="T_avg", linewidth=1)
+    ax.plot(t, T_avg_arr, "k--", label="T_avg", linewidth=1)
     ax.plot(t, T_fuel, "orange", label="T_fuel")
     ax.set_title("Temperatures + rod position")
     ax.set_xlabel("t [s]")
     ax.set_ylabel("T [K]")
     ax.legend(loc="center left", fontsize=8)
     ax.grid(True, alpha=0.3)
-    # Right axis for rod position
     ax2 = ax.twinx()
     ax2.plot(t, rod_position, "g-", linewidth=1.5, label="rod_position")
     ax2.set_ylabel("rod position", color="g")
@@ -174,7 +116,7 @@ def main() -> None:
     # Panel 3: reactivity components in pcm
     ax = axes[1, 0]
     PCM = 1e5
-    ax.plot(t, rho_rod * PCM, label="rod")
+    ax.plot(t, rho_rod_arr * PCM, label="rod")
     ax.plot(t, rho_doppler * PCM, label="Doppler")
     ax.plot(t, rho_mod * PCM, label="moderator")
     ax.plot(t, rho_total * PCM, "k", linewidth=2, label="total")
@@ -194,7 +136,7 @@ def main() -> None:
     ax.legend()
     ax.grid(True, alpha=0.3)
 
-    fig.suptitle("Coupled primary plant + rod controller — default scenario")
+    fig.suptitle("Coupled primary plant + rod controller — engine-driven")
     fig.tight_layout()
     plt.show()
 
