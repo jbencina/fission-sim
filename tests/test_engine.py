@@ -852,3 +852,69 @@ def test_dense_signal_unknown_name_raises() -> None:
     _, dense = engine.run(t_end=1.0, dense=True)
     with pytest.raises(KeyError, match="not found"):
         dense.signal("zzz_nonexistent", np.array([0.5]))
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — integration with real physics components (the full M1 plant)
+# ---------------------------------------------------------------------------
+
+from fission_sim.physics.core import CoreParams, PointKineticsCore  # noqa: E402
+from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop  # noqa: E402
+from fission_sim.physics.rod_controller import RodController, RodParams  # noqa: E402
+from fission_sim.physics.secondary_sink import SecondarySink, SinkParams  # noqa: E402
+from fission_sim.physics.steam_generator import SGParams, SteamGenerator  # noqa: E402
+
+
+def _assemble_full_plant() -> tuple[SimEngine, dict]:
+    engine = SimEngine()
+    rod = engine.module(RodController(RodParams()), name="rod")
+    core = engine.module(PointKineticsCore(CoreParams()), name="core")
+    loop = engine.module(PrimaryLoop(LoopParams()), name="loop")
+    sg = engine.module(SteamGenerator(SGParams()), name="sg")
+    sink = engine.module(SecondarySink(SinkParams()), name="sink")
+
+    rod_cmd = engine.input("rod_command", default=0.5)
+    scram = engine.input("scram", default=False)
+
+    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    T_sec = sink()
+    Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    loop(power_thermal=core.power_thermal, Q_sg=Q_sg)
+    engine.finalize()
+    return engine, {"rod": rod, "core": core, "loop": loop, "sg": sg, "sink": sink}
+
+
+def test_engine_assembles_full_plant() -> None:
+    """The full M1 plant assembles via the engine; state size is 11."""
+    engine, _modules = _assemble_full_plant()
+    # state_size: core 8 + loop 2 + rod 1 = 11.
+    assert engine.state.shape == (11,)
+
+
+def test_engine_steady_state_holds() -> None:
+    """At default operator inputs, the plant holds steady for 30 s."""
+    engine, _modules = _assemble_full_plant()
+    snap = engine.run(t_end=30.0)
+    # n stays within 0.1% of 1.0; T_avg within 0.5 K of design.
+    assert snap["core"]["n"] == pytest.approx(1.0, rel=1e-3)
+    T_avg_design = (snap["loop"]["T_hot"] + snap["loop"]["T_cold"]) / 2.0
+    # Loop's design T_avg is around 580 K — loose bound to allow for
+    # slight design-point drift.
+    assert 575.0 < T_avg_design < 585.0
+
+
+def test_engine_step_then_run_match_for_full_plant() -> None:
+    """run(t_end=10) equals the result of 100 step(dt=0.1) calls (within tol)."""
+    engine_a, _ = _assemble_full_plant()
+    snap_a = engine_a.run(t_end=10.0)
+
+    engine_b, _ = _assemble_full_plant()
+    for _ in range(100):
+        engine_b.step(dt=0.1)
+    snap_b = engine_b.snapshot()
+
+    # Compare the consequential signals.
+    assert snap_a["core"]["n"] == pytest.approx(snap_b["core"]["n"], rel=1e-3)
+    assert snap_a["loop"]["T_hot"] == pytest.approx(snap_b["loop"]["T_hot"], rel=1e-4)
+    assert snap_a["loop"]["T_cold"] == pytest.approx(snap_b["loop"]["T_cold"], rel=1e-4)
