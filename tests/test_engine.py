@@ -410,3 +410,173 @@ def test_cycle_error_message_shows_path() -> None:
     msg = str(exc_info.value)
     # The message should mention both modules and use the → arrow:
     assert "m1" in msg and "m2" in msg and "→" in msg
+
+
+def test_snapshot_initial_state_after_finalize() -> None:
+    """snapshot() returns the initial state values pre-integration."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=7.0), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["t"] == 0.0
+    assert "signals" in snap
+    assert "m" in snap
+
+
+def test_snapshot_signals_includes_external_value() -> None:
+    """An external used in a wiring shows up in snapshot['signals'] with its default."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")
+    rate = engine.input("rate", default=2.5)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["signals"]["rate"] == pytest.approx(2.5)
+
+
+def test_snapshot_signals_includes_state_derived_output() -> None:
+    """A state-derived output a downstream module consumes shows up in signals."""
+
+    class _Consumer:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("foo",)
+        output_ports = ()
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=11.0), name="m")
+    c = engine.module(_Consumer(), name="c")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    c(foo=m.x)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["signals"]["x"] == pytest.approx(11.0)
+
+
+def test_snapshot_signals_includes_computed_output() -> None:
+    """A computed module's output is evaluated using already-resolved inputs."""
+
+    class _Times2:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("y",)
+        output_ports = ("z",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError
+            return {"z": 2.0 * float(inputs["y"])}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    class _Sink:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("zin",)
+        output_ports = ()
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    src = engine.module(_ScalarIntegrator(x0=4.0), name="src")
+    times2 = engine.module(_Times2(), name="t2")
+    sink = engine.module(_Sink(), name="snk")
+    rate = engine.input("rate", default=0.0)
+    src(rate=rate)
+    times2(y=src.x)
+    sink(zin=times2.z)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["signals"]["x"] == pytest.approx(4.0)
+    assert snap["signals"]["z"] == pytest.approx(8.0)
+
+
+def test_snapshot_includes_module_telemetry() -> None:
+    """Each module's telemetry(state) appears under snap[<module_name>]."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=9.0), name="m")
+    rate = engine.input("rate", default=0.0)
+    m(rate=rate)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["m"] == {"x": 9.0}
+
+
+def test_snapshot_for_stateless_module_has_empty_telemetry_dict() -> None:
+    """A stateless module with empty telemetry shows up as snap['name'] == {}."""
+
+    class _Empty:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ()
+        output_ports = ("c",)
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs=None):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {"c": 1.0}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    class _Reader:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("c",)
+        output_ports = ()
+
+        def initial_state(self):
+            return np.empty(0)
+
+        def derivatives(self, state, inputs=None):
+            return np.empty(0)
+
+        def outputs(self, state, inputs=None):
+            return {}
+
+        def telemetry(self, state, inputs=None):
+            return {}
+
+    engine = SimEngine()
+    e = engine.module(_Empty(), name="e")
+    r = engine.module(_Reader(), name="r")
+    r(c=e.c)
+    engine.finalize()
+    snap = engine.snapshot()
+    assert snap["e"] == {}

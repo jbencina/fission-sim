@@ -450,6 +450,110 @@ class SimEngine:
             raise EngineWiringError("engine.state is unavailable until finalize()")
         return self._state
 
+    def snapshot(self) -> Snapshot:
+        """Return a snapshot dict reflecting the current state and signals.
+
+        Does not advance time. Replays the wiring graph using the current
+        external values (defaults if no overrides are active) and the current
+        state vector. The returned dict has the schema described in §3.4 of
+        the engine spec: ``{"t": float, "signals": {...}, "<module>": {...}}``.
+        """
+        if not self._finalized:
+            raise EngineWiringError("engine.snapshot() requires finalize()")
+        externals = self._current_external_values()
+        signal_values = self._resolve_signal_values(self._state, externals)
+        return self._build_snapshot(self._state, signal_values)
+
+    # ----- Private helpers used by snapshot/step/run -----
+
+    def _current_external_values(self) -> dict[str, Any]:
+        """Active external values for the next f(t, y) evaluation.
+
+        For ``snapshot()``, these are the declared defaults. ``step()`` and
+        ``run()`` (with ``scenario_fn``) override on a per-call basis via
+        their own merged dicts.
+        """
+        return dict(self._externals)
+
+    def _resolve_signal_values(self, y: np.ndarray, externals: dict[str, Any]) -> dict[str, Any]:
+        """Replay the eval_order to compute every consumed signal's value.
+
+        Returns a dict ``{signal_name: value}`` containing only signals that
+        appear in the wiring graph (consumed externals + consumed module
+        outputs). Unwired outputs aren't tracked.
+        """
+        signal_values: dict[str, Any] = {}
+
+        for kind, name in self._eval_order:
+            if kind == "external":
+                if self._is_external_consumed(name):
+                    signal_values[name] = externals.get(name, self._externals[name])
+            elif kind == "output":
+                m = self._modules_by_name[name]
+                state_slice = y[m._state_offset : m._state_offset + m._state_size]
+                # Same heuristic as classification: try outputs(state) first;
+                # fall back to outputs(state, inputs=...) if the component
+                # signals it needs inputs.
+                try:
+                    out = m._component.outputs(state_slice)
+                except TypeError:
+                    inputs = self._inputs_for_module(m, signal_values, externals)
+                    out = m._component.outputs(state_slice, inputs=inputs)
+                # Publish each consumed output port as a signal.
+                for port_name, value in out.items():
+                    if self._is_module_output_consumed(m.name, port_name):
+                        signal_values[port_name] = value
+            else:
+                raise AssertionError(f"unknown eval_order kind: {kind!r}")
+
+        return signal_values
+
+    def _inputs_for_module(
+        self,
+        m: SimModule,
+        signal_values: dict[str, Any],
+        externals: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Build the inputs dict for ``derivatives()`` / ``outputs(inputs=...)``."""
+        inputs: dict[str, Any] = {}
+        for port_name, sig in m._inputs.items():
+            if sig.is_external:
+                inputs[port_name] = externals.get(sig.name, self._externals[sig.name])
+            else:
+                inputs[port_name] = signal_values[sig.name]
+        return inputs
+
+    def _is_external_consumed(self, name: str) -> bool:
+        for m in self._modules:
+            for sig in m._inputs.values():
+                if sig.is_external and sig.name == name:
+                    return True
+        return False
+
+    def _is_module_output_consumed(self, module_name: str, port_name: str) -> bool:
+        for m in self._modules:
+            for sig in m._inputs.values():
+                if not sig.is_external and sig.producer_module == module_name and sig.producer_port == port_name:
+                    return True
+        return False
+
+    def _build_snapshot(self, y: np.ndarray, signal_values: dict[str, Any]) -> Snapshot:
+        """Assemble the full snapshot dict from the resolved signal values.
+
+        Uses the engine's current ``self._t`` for the ``"t"`` field. Each
+        module's telemetry is computed by calling ``component.telemetry(
+        state_slice, inputs=...)`` with the same input dict that derivatives
+        would see.
+        """
+        snap: Snapshot = {"t": self._t, "signals": dict(signal_values)}
+        externals = self._current_external_values()
+        for m in self._modules:
+            state_slice = y[m._state_offset : m._state_offset + m._state_size]
+            inputs = self._inputs_for_module(m, signal_values, externals)
+            tele = m._component.telemetry(state_slice, inputs=inputs)
+            snap[m.name] = dict(tele) if tele is not None else {}
+        return snap
+
 
 class DenseSolution:
     """Stub; populated in Task 11."""
