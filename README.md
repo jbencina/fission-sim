@@ -361,6 +361,204 @@ the coupled-plant tests (`test_primary_plant.py`) use `SimEngine` for
 wiring; they differ only in their `scenario_fn` and how they format the
 output (matplotlib, ASCII text, or full state dump).
 
+## Glossary
+
+### Domain terms (plain English)
+
+- **Reactivity (ρ).** The chain reaction's "excess multiplication" relative to exact self-sustainment. ρ = 0 → power constant. ρ > 0 → power rising. ρ < 0 → power falling. Stored dimensionless; displayed in pcm.
+- **pcm.** "Per cent mille" = 10⁻⁵. Display unit for reactivity because real values are tiny: total delayed-neutron fraction β ≈ 0.0065 = 650 pcm; full-rod scram worth ≈ 7000 pcm.
+- **Neutron population (n).** How busy the chain reaction is, normalized so n = 1 at design power. Roughly proportional to thermal power. n = 0.01 ⇒ 1% of design power.
+- **Delayed-neutron precursors (Cᵢ).** ~99.35% of fission neutrons appear instantly (prompt); ~0.65% come out seconds-to-minutes later from radioactive decay of fission fragments. The fragments are the "precursors." We lump them into 6 groups (Keepin convention) with decay constants λᵢ from ~0.012 to ~3 s⁻¹. Without delayed neutrons the reactor would respond on a microsecond timescale and be uncontrollable.
+- **Doppler feedback.** As fuel heats, resonances in its neutron-absorption cross-section broaden, so the fuel absorbs slightly more neutrons. Hotter fuel → less reactivity. Inherent, sub-second, key passive safety effect.
+- **Moderator feedback.** PWR water moderates (slows down) neutrons; slower neutrons cause more fission. Hotter water is less dense, moderates less. Hotter coolant → less reactivity. Slower than Doppler.
+- **Scram.** Emergency shutdown. The rod controller's `scram=True` input forces commanded position to 0 (fully inserted) at rate cap `v_scram`; full insertion takes ~2 s.
+- **Control rods.** Physical rods of neutron-absorbing material slid into and out of the core. We model one combined "rod bank" with linear worth.
+- **Primary loop / secondary side.** Primary loop water actually touches the fuel; the secondary side gets heat (via the steam generator) and drives the turbine. Mathematically separate; never mix.
+- **Hot leg / cold leg.** Primary water leaving the core (hot, ~596 K) vs returning (cold, ~564 K).
+- **Steady state.** Power, temperatures, and reactivity all constant; ρ_total = 0; energy in = energy out.
+- **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 20 µs; loop water turnover is ~10 s; precursor tail is ~100 s. Total span ~10⁹. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
+- **L1 / L2 / L3.** Internal fidelity levels. M1 is all-L1 (lumped, simplified). L2/L3 swap individual components for higher-fidelity versions without touching neighbors.
+
+### Symbols (in equations)
+
+| Symbol | Meaning | Units |
+|---|---|---|
+| `n` | Neutron population (n=1 at design) | — |
+| `Cᵢ` | Delayed-neutron precursor concentration, group i (1..6) | — |
+| `ρ` | Reactivity | — |
+| `β`, `βᵢ` | Total / per-group delayed neutron fraction; Σβᵢ = β | — |
+| `λᵢ` | Precursor decay constant, group i | 1/s |
+| `Λ` | Prompt neutron generation time | s |
+| `α_f` | Doppler (fuel temperature) reactivity coefficient | 1/K |
+| `α_m` | Moderator (coolant temperature) reactivity coefficient | 1/K |
+| `T_fuel` | Average fuel temperature | K |
+| `T_hot`, `T_cold`, `T_avg` | Coolant exit / return / mean temperature | K |
+| `T_cool` | What the core sees as inlet coolant; = `T_avg` at L1 | K |
+| `T_secondary` | Steam-side temperature | K |
+| `ṁ` | Primary mass flow rate | kg/s |
+| `c_p` | Specific heat of water | J/(kg·K) |
+| `c_p_fuel` | Specific heat of fuel | J/(kg·K) |
+| `M_hot`, `M_cold` | Lumped water mass in hot / cold leg | kg |
+| `M_fuel` | Lumped fuel mass | kg |
+| `hA_fc` | Fuel-to-coolant heat-transfer coefficient × area | W/K |
+| `UA` | SG overall heat-transfer coefficient × area | W/K |
+| `P_design` | Design thermal power | W |
+| `power_thermal`, `Q_sg`, `Q_flow` | Heat from core / removed by SG / carried by primary flow | W |
+| `τ` | Rod controller first-order lag time constant | s |
+| `v_normal`, `v_scram` | Rod motion rate caps (normal / scram) | 1/s |
+| `ρ_total_worth` | Reactivity slope per unit rod position | — |
+
+### Acronyms
+
+- **PWR** — Pressurized Water Reactor.
+- **SG** — Steam Generator.
+- **BDF** — Backward Differentiation Formula (the implicit stiff ODE solver in `scipy.integrate.solve_ivp`).
+- **ODE** — Ordinary Differential Equation.
+- **DAG** — Directed Acyclic Graph (the engine builds one of these from the wiring).
+- **RPS** — Reactor Protection System (M5).
+
+### Units conventions
+
+All physics uses SI units internally — K, Pa, kg, s, m, J, W. Reactivity is stored dimensionless; pcm is *display only*. Temperatures are absolute (K), never Celsius. All scalars are float64.
+
+## Equations
+
+The simulator implements the equations below. Each appears as a comment above its implementation in the corresponding source file, with a textbook citation.
+
+### Point kinetics — `core.py`
+
+State: `n`, `C1..C6`, `T_fuel`. References: Lamarsh §7.4, Duderstadt eq 7.16, Keepin (1965).
+
+**Total reactivity** (sum of three contributions):
+
+```
+ρ = ρ_rod + ρ_doppler + ρ_moderator
+```
+
+**Doppler** (linear in fuel-temperature deviation; α_f < 0):
+
+```
+ρ_doppler = α_f · (T_fuel − T_fuel_ref)
+```
+
+**Moderator** (linear in coolant-temperature deviation; α_m < 0):
+
+```
+ρ_moderator = α_m · (T_cool − T_cool_ref)
+```
+
+**Neutron balance** (one ODE for `n`):
+
+```
+dn/dt = ((ρ − β) / Λ) · n  +  Σᵢ λᵢ · Cᵢ
+```
+
+The `(ρ − β)` term is the prompt response; the `Σ λᵢ · Cᵢ` term is the slow drip from delayed-neutron precursors that gives the system its controllable timescale.
+
+**Precursor balance** (six ODEs, one per group):
+
+```
+dCᵢ/dt = (βᵢ / Λ) · n  −  λᵢ · Cᵢ        i = 1..6
+```
+
+Each group is a tank with one inflow (a fraction of fissions) and one outflow (radioactive decay).
+
+**Fuel-temperature dynamics** (lumped energy balance):
+
+```
+M_fuel · c_p_fuel · dT_fuel/dt = n · P_design  −  hA_fc · (T_fuel − T_cool)
+```
+
+In: thermal power produced. Out: heat conducted from fuel to coolant.
+
+### Primary loop — `primary_loop.py`
+
+State: `T_hot`, `T_cold`. Single-phase water, constant flow ṁ.
+
+**Heat carried by flow:**
+
+```
+Q_flow = ṁ · c_p · (T_hot − T_cold)
+```
+
+**Hot-leg energy balance:**
+
+```
+M_hot · c_p · dT_hot/dt = power_thermal − Q_flow
+```
+
+**Cold-leg energy balance:**
+
+```
+M_cold · c_p · dT_cold/dt = Q_flow − Q_sg
+```
+
+**Outputs:**
+
+```
+T_avg  = (T_hot + T_cold) / 2
+T_cool = T_avg                # what the core sees, L1
+```
+
+### Steam generator — `steam_generator.py`
+
+No state. Algebraic.
+
+```
+Q_sg = UA · (T_avg − T_secondary)
+```
+
+`UA` is calibrated so the design-point steady state closes:
+`UA = Q_design / (T_primary_ref − T_secondary_ref)`.
+
+### Secondary sink — `secondary_sink.py`
+
+No state, no inputs.
+
+```
+T_secondary = const   # 558 K (saturation at ~6.9 MPa)
+```
+
+### Rod controller — `rod_controller.py`
+
+State: `rod_position` (dimensionless, 0 = fully inserted, 1 = fully withdrawn).
+
+**Effective command** (scram override):
+
+```
+rod_command_effective = 0 if scram else rod_command
+```
+
+**Rod position dynamics** (first-order lag with rate cap):
+
+```
+drod_position/dt = clip(
+    (rod_command_effective − rod_position) / τ,
+    −v_scram,
+    +v_normal,
+)
+```
+
+Small errors → smooth exponential approach (lag region, time constant τ). Large errors → constant velocity at the rate cap (saturation region). Scram saturates at −v_scram; full insertion in ~2 s.
+
+**Rod reactivity** (linear L1 worth):
+
+```
+ρ_rod = ρ_total_worth · (rod_position − rod_position_critical)
+```
+
+`rod_position_critical` is set to `rod_position_design` (= 0.5 by default) so the rod produces exactly zero reactivity at the design steady state. `ρ_total_worth = 0.14` is calibrated so a scram from design (0.5 → 0) gives −7000 pcm, matching real PWR shutdown margins.
+
+### M1 success criteria
+
+The slice's acceptance pass machine-verifies all of the following (see `tests/test_primary_plant.py`):
+
+1. **Steady state** — n = 1.0 ± 0.1% over 30 s at default inputs.
+2. **Doppler levelling** — a +1.5% rod-position step raises power but feedback caps n < 1.10.
+3. **Scram** — after `scram = True` at t = 10, n < 0.10 by t = 15 (5 s after scram).
+4. **Energy balance** — Q_core ≈ Q_sg within 0.1% at steady state (the M1-spec criterion).
+5. **Real time** — the entire test suite (including 300 s coupled-plant integrations) runs in < 3 s real time.
+
 ## Roadmap
 
 Tracked in `.docs/design.md` §4. This slice covers the first piece of
