@@ -232,25 +232,34 @@ class RodController:
 
         Notes
         -----
-        Equation (.docs/design.md §5.5):
+        Equation (.docs/design.md §5.5, with scram-aware rate cap):
 
             rod_command_effective = 0 if scram else rod_command
+            v_lower = −v_scram if scram else −v_normal
             drod_position/dt = clip((rod_command_effective − rod_position) / τ,
-                                     −v_scram, +v_normal)
+                                     v_lower, +v_normal)
 
-        Two regimes:
+        Rate-cap asymmetry models two distinct mechanisms in real PWRs:
+
+        - **Motor-driven motion** (operator commands, scram=False): rate
+          is symmetric at ±v_normal both directions, matching the rod
+          drive mechanism's step-motor speed (~1 %/s typical).
+        - **Gravity-drop scram** (scram=True): rate cap on the insertion
+          side widens to v_scram, allowing the rod to fall fast enough
+          to fully insert in ~2 s. Withdrawal during scram still capped
+          at v_normal but is moot since cmd_effective = 0.
+
+        Two regimes within whichever cap applies:
 
         - **Lag region** (small |error|): rate is ``error / τ``, smooth
           first-order tracking toward the commanded position.
-        - **Saturation region** (large |error|): rate is clipped to
-          ``±v_normal`` or ``−v_scram``, constant velocity.
+        - **Saturation region** (large |error|): rate is clipped to the
+          appropriate velocity cap, constant-velocity motion.
 
-        The crossover happens when ``|error| / τ`` exceeds the velocity
-        limit. For default parameters (τ=1s, v_normal=0.01/s), crossover
-        is at |error| = 0.01 — i.e. 1% mismatch between command and
-        position. Above that, motion is rate-clipped at v_normal (matching
-        how a real rod-drive mechanism behaves); below it, motion is the
-        smooth first-order lag.
+        For default parameters (τ=1s, v_normal=0.01/s), the lag→saturation
+        crossover happens at |error| = 0.01 (1 % mismatch). Above that,
+        motion is rate-clipped — matching how a real rod-drive mechanism
+        actually moves.
         """
         p = self.params
         rod_position = state[0]
@@ -264,14 +273,19 @@ class RodController:
         # instantaneous.
         rod_command_effective = 0.0 if scram else rod_command
 
-        # First-order lag with rate clipping.
+        # First-order lag with rate clipping. The lower (insertion-direction)
+        # cap depends on scram state: only gravity-drop scrams move at
+        # v_scram; manual rod-drive motion (commanded insertion or
+        # withdrawal) is bounded by v_normal in either direction. This
+        # matches the two distinct physical mechanisms in real PWRs.
         # SIMPLIFICATION: the clip() introduces a kink in drod/dt at the
         # boundary between lag and saturation regimes. Real actuators have
         # smoother transitions between drive-mode and free-fall (for
         # gravity scrams) but the discontinuity is small in magnitude and
         # BDF handles it fine with max_step=0.5.
+        v_lower = -p.v_scram if scram else -p.v_normal
         raw_rate = (rod_command_effective - rod_position) / p.tau
-        rate = np.clip(raw_rate, -p.v_scram, p.v_normal)
+        rate = np.clip(raw_rate, v_lower, p.v_normal)
 
         dstate = np.empty(self.state_size)
         dstate[0] = rate

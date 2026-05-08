@@ -249,8 +249,8 @@ plus linear (L1) rod-worth function. Bridges operator decisions
 | Field                    | Units         | Default                  | Source / note                                       |
 |--------------------------|---------------|--------------------------|-----------------------------------------------------|
 | `tau`                    | s             | 1.0                      | First-order lag time constant; with v_normal=0.01/s the rate cap binds for any motion >1% (controller behaves as constant-velocity tracker for normal motion). |
-| `v_normal`               | 1/s           | 0.01                     | Normal motion speed (~1%/s typical PWR drive rate)  |
-| `v_scram`                | 1/s           | 0.5                      | Scram speed limit; rate-cap (see code comment for dynamics nuance) |
+| `v_normal`               | 1/s           | 0.01                     | Motor-driven motion speed (~1%/s); applies to BOTH directions when scram=False |
+| `v_scram`                | 1/s           | 0.5                      | Gravity-drop scram speed; only used when scram=True (insertion direction) |
 | `rho_total_worth`        | dimensionless | 0.14                     | Reactivity slope per unit position; scram from design (0.5→0) gives −7000 pcm |
 | `rod_position_design`    | dimensionless | 0.5                      | Position at coupled-plant design steady state       |
 | `rod_position_critical`  | dimensionless | derived: `= rod_position_design` | Position where rod produces zero reactivity         |
@@ -529,17 +529,23 @@ State: `rod_position` (dimensionless, 0 = fully inserted, 1 = fully withdrawn).
 rod_command_effective = 0 if scram else rod_command
 ```
 
-**Rod position dynamics** (first-order lag with rate cap):
+**Rod position dynamics** (first-order lag with scram-aware rate cap):
 
 ```
+v_lower = −v_scram if scram else −v_normal
 drod_position/dt = clip(
     (rod_command_effective − rod_position) / τ,
-    −v_scram,
+    v_lower,
     +v_normal,
 )
 ```
 
-Small errors → smooth exponential approach (lag region, time constant τ). Large errors → constant velocity at the rate cap (saturation region). Scram saturates at −v_scram; full insertion in ~2 s.
+The rate-cap asymmetry models two distinct mechanisms in real PWRs:
+
+- **Motor-driven motion** (operator commands, `scram=False`): rate is symmetric at `±v_normal` both directions, matching the rod-drive step-motor speed (~1 %/s).
+- **Gravity-drop scram** (`scram=True`): the insertion-side cap widens to `v_scram`, allowing the rod to fall fast enough to fully insert in ~2 s.
+
+Small errors → smooth exponential approach (lag region, time constant τ). Large errors → constant velocity at the appropriate cap.
 
 **Rod reactivity** (linear L1 worth):
 

@@ -97,6 +97,22 @@ def test_normal_motion_at_max_velocity():
     assert dstate[0] == pytest.approx(p.v_normal)
 
 
+def test_manual_insertion_without_scram_capped_at_v_normal():
+    """Manual insertion (lowering rod_command without scram) is rate-capped
+    at v_normal, not v_scram. v_scram applies only during gravity-drop
+    scrams; motor-driven motion in either direction uses v_normal.
+    """
+    p = default_params()
+    rod = RodController(p)
+    state = np.array([1.0])  # fully withdrawn
+    inputs = {"rod_command": 0.0, "scram": False}  # operator commands fully in, NO scram
+    dstate = rod.derivatives(state, inputs)
+    # error = 0 - 1 = -1, raw rate = -1/tau = -1.0
+    # Clipped to -v_normal = -0.01 (NOT -v_scram = -0.5).
+    assert dstate[0] == pytest.approx(-p.v_normal)
+    assert dstate[0] != pytest.approx(-p.v_scram)  # explicit anti-regression
+
+
 def test_small_motion_in_lag_region():
     """Small error → rate is error/tau (clip not binding, pure first-order lag)."""
     p = default_params()
