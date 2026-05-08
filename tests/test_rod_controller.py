@@ -32,6 +32,16 @@ def test_initial_state_is_design_position():
     assert s[0] == pytest.approx(p.rod_position_design)
 
 
+def test_initial_state_override_via_rod_position_initial():
+    """rod_position_initial overrides the default for initial_state()."""
+    from dataclasses import replace
+
+    p = replace(default_params(), rod_position_initial=0.1)
+    rod = RodController(p)
+    s = rod.initial_state()
+    assert s[0] == pytest.approx(0.1)
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: pure derivative tests (no integration)
 # ---------------------------------------------------------------------------

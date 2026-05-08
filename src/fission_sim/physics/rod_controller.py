@@ -122,6 +122,11 @@ class RodParams:
     # Derived in __post_init__ so design state has zero rod reactivity.
     rod_position_critical: float | None = None  # [dimensionless]
 
+    # Initial position used by initial_state(). None → use rod_position_design.
+    # Override for cold-startup demos (e.g., 0.1 = nearly fully inserted at
+    # session start).
+    rod_position_initial: float | None = None  # [dimensionless, 0..1]
+
     def __post_init__(self) -> None:
         """Derive ``rod_position_critical`` so design state has zero rod reactivity.
 
@@ -192,18 +197,23 @@ class RodController:
         self.params = params
 
     def initial_state(self) -> np.ndarray:
-        """Return the design-point initial state.
+        """Return the initial rod position.
 
-        At t=0 the rod position is at the design steady-state position.
-        Combined with ``rod_command = rod_position_design`` and
-        ``scram = False``, the initial derivative is zero by construction.
+        Defaults to ``rod_position_design`` (the design-point steady state,
+        where combined with ``rod_command = rod_position_design`` and
+        ``scram = False``, the initial derivative is zero by construction).
+        Override via ``RodParams(rod_position_initial=...)`` for non-design
+        starting points (e.g., cold-startup demos beginning with rod nearly
+        fully inserted).
 
         Returns
         -------
         np.ndarray, shape (1,)
-            ``[rod_position_design]``
+            ``[rod_position_initial or rod_position_design]``
         """
-        return np.array([self.params.rod_position_design])
+        p = self.params
+        pos0 = p.rod_position_design if p.rod_position_initial is None else p.rod_position_initial
+        return np.array([pos0])
 
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
         """Compute drod_position/dt with rate-limited first-order tracking.

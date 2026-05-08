@@ -40,6 +40,35 @@ def test_core_params_defaults_are_consistent():
     # Feedback coefficients are negative (stable PWR)
     assert p.alpha_f < 0
     assert p.alpha_m < 0
+    # Initial-state defaults reproduce the design point
+    assert p.n_initial == 1.0
+    assert p.T_fuel_initial is None  # falls back to T_fuel_ref
+
+
+def test_initial_state_with_n_initial_override():
+    """n_initial=1e-6 starts at intermediate-range source level; precursors
+    scale linearly so dC_i/dt = 0 still holds at the new n.
+    """
+    p = replace(default_params(), n_initial=1e-6)
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    assert s[0] == pytest.approx(1e-6)
+    # Precursors are at scaled steady-state: C_i = n0 · beta_i / (Lambda · lambda_i)
+    expected_precursors = 1e-6 * p.beta_i / (p.Lambda * p.lambda_i)
+    np.testing.assert_allclose(s[1:7], expected_precursors, rtol=1e-12)
+    # T_fuel still defaults to T_fuel_ref
+    assert s[7] == pytest.approx(p.T_fuel_ref)
+    # And precursors are still on dC_i/dt = 0 locus: (beta_i/Lambda)*n - lambda_i*C_i = 0
+    dC_dt = (p.beta_i / p.Lambda) * s[0] - p.lambda_i * s[1:7]
+    np.testing.assert_allclose(dC_dt, 0.0, atol=1e-15)
+
+
+def test_initial_state_with_T_fuel_initial_override():
+    """T_fuel_initial overrides the default T_fuel_ref in the initial state."""
+    p = replace(default_params(), T_fuel_initial=600.0)
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    assert s[7] == pytest.approx(600.0)
 
 
 # ---------------------------------------------------------------------------

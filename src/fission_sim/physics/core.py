@@ -171,6 +171,15 @@ class CoreParams:
     # __post_init__. Override by passing an explicit value.
     hA_fc: float | None = None  # [W/K]
 
+    # Initial-state overrides (used by initial_state()). Default values
+    # produce the design-point steady state. Override to start the
+    # simulation from a different point — e.g. cold-startup demos use
+    # n_initial=1e-6 to begin from intermediate-range source levels.
+    # Precursors auto-scale linearly with n (still on the steady-state
+    # locus dC_i/dt=0 at the new n).
+    n_initial: float = 1.0  # dimensionless
+    T_fuel_initial: float | None = None  # [K]; None → use T_fuel_ref
+
     def __post_init__(self) -> None:
         """Derive ``hA_fc`` from steady-state self-consistency if not given.
 
@@ -263,7 +272,9 @@ class PointKineticsCore:
         self.params = params
 
     def initial_state(self) -> np.ndarray:
-        """Return the design-point steady-state vector.
+        """Return the initial state vector — design-point steady state by
+        default, or a user-specified starting point via ``n_initial`` and
+        ``T_fuel_initial`` on ``CoreParams``.
 
         At the design point all derivatives are zero by construction:
 
@@ -272,9 +283,11 @@ class PointKineticsCore:
           from setting ``dC_i/dt = 0``)
         - ``T_fuel = T_fuel_ref`` (so Doppler reactivity is zero)
 
-        The coolant temperature seen by the core at this steady state is
-        ``T_cool_ref`` (provided by the caller via ``inputs``); the moderator
-        and rod reactivities are zero at design conditions.
+        For non-default ``n_initial`` (e.g. cold-startup demos with
+        n=1e-6), precursors scale linearly with n — they're still on
+        the steady-state locus dC_i/dt=0 at the new n. ``T_fuel_initial``
+        defaults to ``T_fuel_ref`` (the caller can override to start from
+        a different fuel temperature, e.g. cold metal at startup).
 
         Returns
         -------
@@ -283,10 +296,12 @@ class PointKineticsCore:
         """
         p = self.params
         s = np.empty(self.state_size)
-        s[0] = 1.0
-        # Precursor steady state from dC_i/dt = (beta_i/Lambda)*n - lambda_i*C_i = 0
-        s[1:7] = p.beta_i / (p.Lambda * p.lambda_i)
-        s[7] = p.T_fuel_ref
+        n0 = p.n_initial
+        s[0] = n0
+        # Precursor steady state at n=n0: dC_i/dt=(beta_i/Lambda)*n - lambda_i*C_i = 0
+        # Scales linearly with n.
+        s[1:7] = n0 * p.beta_i / (p.Lambda * p.lambda_i)
+        s[7] = p.T_fuel_ref if p.T_fuel_initial is None else p.T_fuel_initial
         return s
 
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
