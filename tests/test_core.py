@@ -159,6 +159,7 @@ def test_telemetry_with_inputs_decomposes_reactivity():
         "rho_rod",
         "rho_doppler",
         "rho_moderator",
+        "startup_rate_dpm",
     }
     assert set(tele.keys()) == expected_keys
     # Decomposition
@@ -182,6 +183,52 @@ def test_telemetry_without_inputs_reports_none_for_input_dependent_keys():
     assert tele["rho_rod"] is None
     assert tele["rho_moderator"] is None
     assert tele["rho_total"] is None
+    # startup_rate also requires inputs (via dn/dt)
+    assert tele["startup_rate_dpm"] is None
+
+
+def test_startup_rate_zero_at_steady_state():
+    """At design steady state, dn/dt ≈ 0 → startup rate ≈ 0 DPM."""
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    inputs = {"rho_rod": 0.0, "T_cool": p.T_cool_ref}
+    tele = core.telemetry(s, inputs)
+    assert tele["startup_rate_dpm"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_startup_rate_sign_matches_reactivity():
+    """SUR > 0 when supercritical, SUR < 0 when subcritical.
+
+    Magnitude depends on the regime — immediately after a step insertion
+    (precursors not yet equilibrated) the prompt-jump value dominates and
+    can be hundreds of DPM; asymptotic SUR for the delayed-neutron-driven
+    period would be far smaller. We test sign here, not magnitude.
+    """
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    # +50 pcm: supercritical
+    tele_pos = core.telemetry(s, {"rho_rod": +50e-5, "T_cool": p.T_cool_ref})
+    assert tele_pos["startup_rate_dpm"] > 0.0
+    # -50 pcm: subcritical
+    tele_neg = core.telemetry(s, {"rho_rod": -50e-5, "T_cool": p.T_cool_ref})
+    assert tele_neg["startup_rate_dpm"] < 0.0
+
+
+def test_startup_rate_matches_explicit_formula():
+    """Numerical sanity: SUR_dpm = (60 / ln(10)) · (1/n) · dn/dt."""
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    inputs = {"rho_rod": 100e-5, "T_cool": p.T_cool_ref + 5.0}
+    tele = core.telemetry(s, inputs)
+    # Recompute dn/dt from derivatives() and the SUR formula by hand.
+    dstate = core.derivatives(s, inputs)
+    dn_dt = dstate[0]
+    n = s[0]
+    expected = (60.0 / np.log(10.0)) * (dn_dt / n)
+    assert tele["startup_rate_dpm"] == pytest.approx(expected, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------

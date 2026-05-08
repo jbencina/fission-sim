@@ -113,11 +113,13 @@ def test_telemetry_includes_delta_t_and_q_flow():
         "T_avg",
         "T_cool",
         "delta_T",
+        "Tref",
         "power_thermal",
         "Q_sg",
         "Q_flow",
     }
     assert set(tele.keys()) == expected_keys
+    assert tele["Tref"] == pytest.approx(p.T_avg_ref)
     assert tele["delta_T"] == pytest.approx(30.0)
     assert tele["Q_flow"] == pytest.approx(p.m_dot * p.c_p * 30.0)
     assert tele["power_thermal"] == pytest.approx(2.5e9)

@@ -305,7 +305,11 @@ class PrimaryLoop:
         -------
         dict
             Keys: ``T_hot``, ``T_cold``, ``T_avg``, ``T_cool``, ``delta_T``,
-            ``power_thermal``, ``Q_sg``, ``Q_flow``.
+            ``Tref``, ``power_thermal``, ``Q_sg``, ``Q_flow``. ``Tref`` is the
+            T_avg setpoint for the current load — at L1/M1 (no turbine) it
+            is constant ``T_avg_ref``; M3 will make it a function of turbine
+            demand. Real-plant operators watch ``T_avg − Tref`` as the
+            primary control signal.
         """
         p = self.params
         T_hot = state[0]
@@ -316,6 +320,10 @@ class PrimaryLoop:
         out["delta_T"] = delta_T
         # Q_flow depends only on state; always computable.
         out["Q_flow"] = p.m_dot * p.c_p * delta_T
+        # Tref: design-point T_avg setpoint. Constant at M1 (no turbine
+        # load). Exposed now as a placeholder so future UI / control work
+        # can already key off it; M3 turbine integration makes it dynamic.
+        out["Tref"] = p.T_avg_ref
 
         if inputs is not None:
             out["power_thermal"] = inputs.get("power_thermal")

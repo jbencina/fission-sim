@@ -426,11 +426,15 @@ class PointKineticsCore:
         -------
         dict
             Keys: ``power_thermal``, ``T_fuel``, ``n``, ``C1``..``C6``,
-            ``rho_total``, ``rho_rod``, ``rho_doppler``, ``rho_moderator``.
+            ``rho_total``, ``rho_rod``, ``rho_doppler``, ``rho_moderator``,
+            ``startup_rate_dpm``. The startup rate is ``None`` when
+            ``inputs`` is omitted (it depends on dn/dt which needs
+            ``rho_rod`` and ``T_cool``).
         """
         p = self.params
         n = state[0]
         T_fuel = state[7]
+        C = state[1:7]
 
         # Doppler depends only on state and is always reported.
         rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
@@ -439,10 +443,24 @@ class PointKineticsCore:
             rho_rod = inputs["rho_rod"]
             rho_moderator = p.alpha_m * (inputs["T_cool"] - p.T_cool_ref)
             rho_total = rho_rod + rho_doppler + rho_moderator
+            # Startup rate in decades-per-minute (DPM) — what an operator
+            # watches on the intermediate-range startup-rate meter during
+            # cold-startup approach to criticality. SUR = (1/n)·dn/dt
+            # converts to "decades per minute" via:
+            #   SUR_dpm = (60 / ln(10)) · (1/n) · dn/dt
+            # We compute dn/dt here (rather than calling derivatives) so
+            # this method stays a pure read of state + inputs.
+            beta_total = p.beta_i.sum()
+            dn_dt = ((rho_total - beta_total) / p.Lambda) * n + (p.lambda_i * C).sum()
+            if n > 1e-30:
+                startup_rate_dpm = (60.0 / np.log(10.0)) * (dn_dt / n)
+            else:
+                startup_rate_dpm = 0.0
         else:
             rho_rod = None
             rho_moderator = None
             rho_total = None
+            startup_rate_dpm = None
 
         return {
             "power_thermal": n * p.P_design,
@@ -458,4 +476,5 @@ class PointKineticsCore:
             "rho_rod": rho_rod,
             "rho_doppler": rho_doppler,
             "rho_moderator": rho_moderator,
+            "startup_rate_dpm": startup_rate_dpm,
         }
