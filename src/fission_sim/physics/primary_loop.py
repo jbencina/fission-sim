@@ -65,9 +65,10 @@ class LoopParams:
     # SIMPLIFICATION: single equivalent loop. Real PWRs have 2-4 parallel loops;
     # we model their combined behavior as one lumped circuit.
 
-    # Mass flow rate. Source: typical 4-loop PWR (e.g., Westinghouse 4-loop) is
-    # ~17000 kg/s combined.
-    m_dot: float = 1.7e4  # [kg/s]
+    # Mass flow rate (combined, single equivalent loop). Westinghouse 4-loop
+    # full-power flow is ~140 Mlb/hr ≈ 18000-19000 kg/s total (4 × ~4500-4800
+    # kg/s per loop). 18500 is mid-range; gives loop ΔT ≈ 29.5 K at design.
+    m_dot: float = 1.85e4  # [kg/s]
 
     # Specific heat. Source: water at ~300°C and 15.5 MPa, IAPWS-97 (would come
     # from CoolProp at L2). The high value reflects the high-pressure liquid
@@ -84,8 +85,9 @@ class LoopParams:
     Q_design: float = 3.0e9  # [W]
 
     # Design average temperature. Match the core's T_cool_ref so moderator
-    # feedback is zero at the coupled design point.
-    T_avg_ref: float = 580.0  # [K] (~307 °C)
+    # feedback is zero at the coupled design point. Westinghouse 4-loop full
+    # power T_avg is typically 583-588 K (310-315 °C); 583 K is mid-range.
+    T_avg_ref: float = 583.0  # [K] (~310 °C)
 
     # Reference leg temperatures. None means "derive from energy balance".
     T_hot_ref: float | None = None  # [K]

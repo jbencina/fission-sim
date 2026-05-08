@@ -56,7 +56,7 @@ class SGParams:
 
     # Reference temperatures: design point where Q_sg = Q_design exactly. At
     # these temperatures the steady-state energy balance closes by construction.
-    T_primary_ref: float = 580.0  # [K] match the primary loop's T_avg_ref
+    T_primary_ref: float = 583.0  # [K] match the primary loop's T_avg_ref
     T_secondary_ref: float = 558.0  # [K] match the sink's T_secondary
 
     # Design heat duty. ~3000 MWth, large 4-loop PWR.

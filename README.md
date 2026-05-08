@@ -83,12 +83,12 @@ moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
 |---------------|------------|----------------------------------------|----------------------------------|
 | `beta_i`      | —          | 6 values, Σ ≈ 0.0065                   | Lamarsh Tab 7.3 / Keepin 1965    |
 | `lambda_i`    | 1/s        | 6 values, 0.0124 .. 3.01               | Lamarsh Tab 7.3 / Keepin 1965    |
-| `Lambda`      | s          | 2.0e-5                                 | Typical thermal reactor          |
+| `Lambda`      | s          | 4.0e-5                                 | Mid-range PWR (Bell & Glasstone §9.2) |
 | `P_design`    | W          | 3.0e9                                  | ~3000 MWth large PWR             |
-| `alpha_f`     | 1/K        | −2.5e-5                                | Doppler, negative                |
-| `alpha_m`     | 1/K        | −5.0e-5                                | Moderator, negative              |
-| `T_fuel_ref`  | K          | 900                                    | Doppler-zero reference           |
-| `T_cool_ref`  | K          | 580                                    | Moderator-zero reference         |
+| `alpha_f`     | 1/K        | −2.5e-5                                | Doppler, negative; IAEA range −2 to −4×10⁻⁵ |
+| `alpha_m`     | 1/K        | −5.0e-5                                | Moderator, negative at hot full power |
+| `T_fuel_ref`  | K          | 1100                                   | Volume-avg fuel temp (Fink 2000) |
+| `T_cool_ref`  | K          | 583                                    | Match loop's T_avg_ref           |
 | `M_fuel`      | kg         | 1.0e5                                  | Lumped fuel mass                 |
 | `c_p_fuel`    | J/(kg·K)   | 300                                    | UO₂                              |
 | `hA_fc`       | W/K        | derived: P_design / (T_f_ref - T_c_ref)| Steady-state energy balance      |
@@ -135,14 +135,14 @@ single-phase liquid. See `.docs/design.md` §5.2 for physics.
 
 | Field         | Units    | Default                                | Source / note                          |
 |---------------|----------|----------------------------------------|----------------------------------------|
-| `m_dot`       | kg/s     | 1.7e4                                  | Single equivalent loop, 4-loop PWR     |
-| `c_p`         | J/(kg·K) | 5500                                   | Water at ~300°C, 15.5 MPa              |
+| `m_dot`       | kg/s     | 1.85e4                                 | W4-loop full-power flow (~140 Mlb/hr)  |
+| `c_p`         | J/(kg·K) | 5500                                   | Water at ~310°C, 15.5 MPa              |
 | `M_hot`       | kg       | 1.5e4                                  | Lumped hot-leg water mass              |
 | `M_cold`      | kg       | 1.5e4                                  | Lumped cold-leg water mass             |
 | `Q_design`    | W        | 3.0e9                                  | Match core's P_design                  |
-| `T_avg_ref`   | K        | 580                                    | Match core's T_cool_ref                |
-| `T_hot_ref`   | K        | derived: T_avg_ref + ΔT_design/2 ≈ 596 | ΔT = Q_design/(m_dot·c_p) ≈ 32 K       |
-| `T_cold_ref`  | K        | derived: T_avg_ref − ΔT_design/2 ≈ 564 | (same)                                 |
+| `T_avg_ref`   | K        | 583                                    | W4-loop full-power T_avg ~310 °C       |
+| `T_hot_ref`   | K        | derived: T_avg_ref + ΔT_design/2 ≈ 598 | ΔT = Q_design/(m_dot·c_p) ≈ 29.5 K     |
+| `T_cold_ref`  | K        | derived: T_avg_ref − ΔT_design/2 ≈ 568 | (same)                                 |
 
 ### SteamGenerator (`src/fission_sim/physics/steam_generator.py`)
 
@@ -174,7 +174,7 @@ See `.docs/design.md` §5.3 for physics.
 
 | Field             | Units | Default                                    | Source / note                  |
 |-------------------|-------|--------------------------------------------|--------------------------------|
-| `T_primary_ref`   | K     | 580                                        | Match loop's T_avg_ref         |
+| `T_primary_ref`   | K     | 583                                        | Match loop's T_avg_ref         |
 | `T_secondary_ref` | K     | 558                                        | Match sink's T_secondary       |
 | `Q_design`        | W     | 3.0e9                                      | Match core's P_design          |
 | `UA`              | W/K   | derived: Q_design / (T_p_ref − T_s_ref)    | ≈ 1.4e8; closes design steady   |
@@ -308,12 +308,12 @@ Returned by `step()`, `run()`, and `engine.snapshot()`:
 {
   "t": 5.0,
   "signals": {
-    "rho_rod": 0.0, "T_cool": 563.2, "power_thermal": 3.0e9,
-    "Q_sg": 3.0e9, "T_avg": 581.0, "T_secondary": 558.0,
+    "rho_rod": 0.0, "T_cool": 583.0, "power_thermal": 3.0e9,
+    "Q_sg": 3.0e9, "T_avg": 583.0, "T_secondary": 558.0,
     "rod_command": 0.5, "scram": False,
   },
-  "core": {"n": 1.0, "T_fuel": 812.0, ...},
-  "loop": {"T_hot": 598.0, "T_cold": 563.0, ...},
+  "core": {"n": 1.0, "T_fuel": 1100.0, ...},
+  "loop": {"T_hot": 597.7, "T_cold": 568.3, ...},
   "rod":  {"rod_position": 0.5, "rho_rod": 0.0, ...},
   "sg":   {...},
   "sink": {},
@@ -376,7 +376,7 @@ output (matplotlib, ASCII text, or full state dump).
 - **Primary loop / secondary side.** Primary loop water actually touches the fuel; the secondary side gets heat (via the steam generator) and drives the turbine. Mathematically separate; never mix.
 - **Hot leg / cold leg.** Primary water leaving the core (hot, ~596 K) vs returning (cold, ~564 K).
 - **Steady state.** Power, temperatures, and reactivity all constant; ρ_total = 0; energy in = energy out.
-- **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 20 µs; loop water turnover is ~10 s; precursor tail is ~100 s. Total span ~10⁹. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
+- **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 40 µs; loop water turnover is ~10 s; precursor tail is ~100 s. Total span ~10⁶. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
 - **L1 / L2 / L3.** Internal fidelity levels. M1 is all-L1 (lumped, simplified). L2/L3 swap individual components for higher-fidelity versions without touching neighbors.
 
 ### Symbols (in equations)

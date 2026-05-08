@@ -111,37 +111,60 @@ class CoreParams:
 
     # Prompt neutron generation time. Capital Lambda by reactor physics
     # convention; do not confuse with the lambda_i decay constants above.
-    # Source: typical thermal reactor value, Lamarsh §7.4. The reactor's
-    # response to reactivity bumps is set by the ratio rho/Lambda for the
-    # prompt term and by lambda_i for the delayed term.
-    Lambda: float = 2.0e-5  # [s]
+    # Equals ℓ/k_eff (mean generation time) where ℓ is the prompt neutron
+    # lifetime; the two differ by k_eff (≈ 1 here). The reactor's response
+    # to reactivity bumps is set by the ratio rho/Lambda for the prompt
+    # term and by lambda_i for the delayed term.
+    # Source: Bell & Glasstone, "Nuclear Reactor Theory" §9.2 — typical
+    # thermal LWR Lambda ~ 30-50 µs; Duderstadt & Hamilton Table 6.1.
+    Lambda: float = 4.0e-5  # [s]
 
     # Design thermal power. ~3000 MWth, large 4-loop PWR.
     P_design: float = 3.0e9  # [W]
 
     # Doppler coefficient — change in reactivity per unit fuel temperature
     # change. Negative because hotter UO2 broadens absorption resonances,
-    # capturing more neutrons. This is the primary fast feedback that lets
-    # the reactor self-regulate against power excursions on millisecond
-    # timescales (hotter fuel happens fast; coolant heating is slower).
-    # Representative value, Lamarsh §9.5.
+    # capturing more neutrons (Doppler broadening). This is the primary
+    # fast feedback that lets the reactor self-regulate against power
+    # excursions on millisecond timescales (hotter fuel happens fast;
+    # coolant heating is slower).
+    # Source: Duderstadt & Hamilton §6.5 derives the Doppler coefficient;
+    # IAEA-TECDOC published range for PWR UO2 fuel is α_f = -2 to -4×10⁻⁵
+    # /K depending on fuel temperature and burnup. Lamarsh & Baratta §9.5.
     alpha_f: float = -2.5e-5  # [1/K]
 
     # Moderator temperature coefficient — change in reactivity per unit
-    # coolant temperature change. Negative for a properly-designed PWR
-    # because hotter water is less dense and moderates neutrons less
-    # effectively, reducing reactivity.
+    # coolant temperature change. Negative for a properly-designed PWR at
+    # hot full power because hotter water is less dense and moderates
+    # neutrons less effectively, reducing reactivity.
+    # SIMPLIFICATION: real PWRs can have α_m positive at low boron
+    # concentrations or beginning-of-cycle low-power conditions; operators
+    # confirm α_m is negative before low-power testing (a Tech Spec
+    # requirement). At L1 we model only the hot-full-power negative regime.
+    # Source: Duderstadt & Hamilton §6.5; published PWR range -1 to
+    # -5×10⁻⁵ /K at hot full power.
     alpha_m: float = -5.0e-5  # [1/K]
 
     # Reference temperatures: Doppler and moderator feedback contribute
     # exactly zero reactivity at these temperatures by construction. The
     # design steady state holds T_fuel and T_cool here.
-    T_fuel_ref: float = 900.0  # [K] (~627 °C average fuel temperature)
-    T_cool_ref: float = 580.0  # [K] (~307 °C; T_avg of primary loop)
+    # T_fuel_ref is the volume-averaged fuel temperature; real PWRs have
+    # centerline ~1500-2000 K and surface ~700 K with volume-average
+    # ~1100 K (Fink 2000, J. Nucl. Mater. 279; Todreas & Kazimi §8.5).
+    # SIMPLIFICATION: the *Doppler-effective* fuel temperature (flux-
+    # weighted, typically 0.7·T_centerline + 0.3·T_surface ≈ 1200-1400 K)
+    # is what physically drives Doppler. At L1 we use the volume-average;
+    # L2 multi-region fuel models would split centerline / surface.
+    T_fuel_ref: float = 1100.0  # [K] (~827 °C volume-averaged fuel temp)
+    T_cool_ref: float = 583.0  # [K] (~310 °C; matches loop's T_avg_ref)
 
     # Fuel thermal mass for the lumped energy balance.
     M_fuel: float = 1.0e5  # [kg] total fuel mass
-    c_p_fuel: float = 300.0  # [J/(kg·K)] UO2 specific heat (representative)
+    # UO2 specific heat. Fink (2000) "Thermophysical properties of uranium
+    # dioxide", J. Nucl. Mater. 279, gives c_p ≈ 235 at 300 K, ~305 at
+    # 900 K, ~330 at 1500 K (Bredig peak above 2000 K). 300 J/(kg·K) is
+    # representative of the lumped average around T_fuel_ref.
+    c_p_fuel: float = 300.0  # [J/(kg·K)]
 
     # Lumped fuel-to-coolant heat transfer coefficient. None means "derive
     # so the steady-state energy balance closes exactly" — see
