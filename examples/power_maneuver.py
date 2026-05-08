@@ -1,19 +1,24 @@
 """Power-maneuver demo — slow rod insertion + withdrawal at hot full power.
 
 Demonstrates the operator's startup-rate meter (DPM) over a controlled
-load-follow maneuver. Starts at design steady state, slowly inserts rod
-to drop power by ~14%, holds, then re-withdraws to design. The SUR
-indicator transitions through subcritical → critical → supercritical →
-stable across the maneuver — the same shape an operator sees during
-load-follow operations.
+maneuver. Starts at design steady state, slowly inserts rod to drop
+power by ~14%, holds, then re-withdraws to design. The SUR indicator
+transitions through subcritical → critical → supercritical → stable
+across the maneuver — the same shape an operator sees during load-follow
+or any controlled rod-driven power change at power.
 
-This is **not** a cold-startup approach to criticality. M1 has no
-external neutron source modeled, so it can't simulate the source-driven
-deep-subcritical regime where SUR is the *only* power indicator on the
-panel. What we demo here is hot-full-power maneuvering, where SUR is
-still informative but power level can also be read directly from the
-flux instruments. M6+ could add a source term and a true cold-startup
-scenario.
+This is **NOT** a cold-startup approach-to-criticality. A real cold
+startup begins at deep-subcritical conditions where neutron count rate
+is supported by an external neutron source (Pu-Be / Sb-Be), with primary
+loop temperatures cold or at hot-zero-power, and the operator slowly
+withdraws rods over many minutes/hours watching SUR converge toward zero
+as the system approaches critical. M1 models none of that:
+    - No external neutron source — n decays to zero at deep subcritical.
+    - No cold / HZP loop initial conditions — loop initializes at design.
+    - No two-phase state with primary at saturation pressure.
+
+A future M6+ slice could add the source term and consistent low-power
+thermal initial conditions for a real cold-startup scenario.
 
 Scenario:
     t = 0..30 s     hold at design (rod_command = 0.5, n = 1.0)
@@ -24,7 +29,7 @@ Scenario:
     t = 480..900 s  hold; power returns to design
 
 Run:
-    uv run python examples/startup.py
+    uv run python examples/power_maneuver.py
 """
 
 from __future__ import annotations
