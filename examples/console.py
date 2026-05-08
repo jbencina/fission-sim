@@ -1,11 +1,14 @@
 """Interactive PWR console — type commands, watch telemetry update in real time.
 
-Real-time at 1 sim-second per 1 wall-clock second. The screen shows a rolling
-window of the last 10 simulated seconds; commands are typed at a prompt below
-the table.
+Real-time at 1 sim-second per 1 wall-clock second by default. Use --speed
+to compress time (e.g. --speed 60 → 1 minute of plant time per wall-second,
+useful for watching slow delayed-neutron transients without waiting). The
+screen shows a rolling window of the last N rows; commands are typed at a
+prompt below the table.
 
 Run:
     uv run python examples/console.py
+    uv run python examples/console.py --speed 60   # 60x faster than real
 
 Commands:
     <number>   set rod_command to value in [0, 1]  (e.g. "0.515")
@@ -19,10 +22,17 @@ Implementation notes:
     are line-buffered (committed on Enter). Screen redraws use ANSI cursor-
     home + clear-to-EOL so the display does not flicker. Unix-only (uses
     termios + tty); fission-sim is a Unix-targeted project.
+
+    --speed N scales DT (sim-seconds per step) — each row in the rolling
+    window represents N sim-seconds, and the display advances at a fixed
+    1 Hz wall-clock rate. The buffer length stays 10 rows, so you see the
+    last 10·N sim-seconds of history. At --speed 60, the rolling window
+    shows the last 10 minutes of plant time.
 """
 
 from __future__ import annotations
 
+import argparse
 import select
 import sys
 import termios
@@ -37,12 +47,12 @@ from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
-# 1 sim-second per 1 wall-clock second.
-DT = 1.0
 # Rolling window of last N steps shown in the table.
 BUFFER_LEN = 10
 # pcm = per-cent-mille = 1e-5; standard reactivity display unit.
 PCM = 1e5
+# Wall-clock interval between display ticks. Constant regardless of speed.
+WALL_TICK_S = 1.0
 
 
 def build_plant() -> SimEngine:
@@ -85,11 +95,17 @@ def format_row(snap: dict) -> str:
     )
 
 
-def header_lines() -> list[str]:
+def header_lines(speed: float) -> list[str]:
     """Static lines above the rolling buffer."""
+    window_s = BUFFER_LEN * speed
+    if speed == 1.0:
+        speed_str = "1 sim-s = 1 wall-s"
+    else:
+        speed_str = f"{speed:g} sim-s/wall-s ({speed:g}x real-time)"
+    title = f"  PWR Reactor Console — Interactive M1 Plant   ({speed_str}, last {window_s:g} s)"
     return [
         "=" * 92,
-        "  PWR Reactor Console — Interactive M1 Plant       (1 sim-s = 1 wall-s, last 10 s)",
+        title,
         "=" * 92,
         "",
         f"   {'t[s]':>6}  {'n':>9}  {'T_fuel':>7}  {'T_avg':>6}  {'T_hot':>6}"
@@ -119,7 +135,7 @@ def render(state: dict) -> None:
     by the terminal's input echo.
     """
     rows = list(state["buffer"])
-    lines = list(header_lines())
+    lines = list(header_lines(state["speed"]))
     for i in range(BUFFER_LEN):
         lines.append(format_row(rows[i]) if i < len(rows) else "")
     lines.append("   " + "-" * 89)
@@ -166,7 +182,25 @@ def process_command(state: dict, cmd: str) -> bool:
     return True
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    p.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Sim-seconds per wall-clock-second (default 1.0). E.g. --speed 60 "
+        "compresses 1 minute of plant time into 1 wall-second; useful for "
+        "watching slow delayed-neutron transients without waiting.",
+    )
+    return p.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
+    if args.speed <= 0:
+        sys.stderr.write(f"--speed must be > 0, got {args.speed}\n")
+        sys.exit(2)
+
     if not sys.stdin.isatty():
         sys.stderr.write("examples/console.py is interactive — run it from a terminal, not a pipe.\n")
         sys.exit(1)
@@ -178,6 +212,7 @@ def main() -> None:
         "msg": "Ready. Type a command and press Enter.",
         "input": "",
         "buffer": deque(maxlen=BUFFER_LEN),
+        "speed": args.speed,
     }
     state["buffer"].append(engine.snapshot())
 
@@ -189,7 +224,7 @@ def main() -> None:
         sys.stdout.write("\033[2J")  # clear screen once at startup
         sys.stdout.flush()
 
-        next_step_time = time.monotonic() + DT
+        next_step_time = time.monotonic() + WALL_TICK_S
 
         while True:
             render(state)
@@ -214,17 +249,18 @@ def main() -> None:
                 rlist, _, _ = select.select([sys.stdin], [], [], 0.0)
 
             if time.monotonic() >= next_step_time:
+                # Each wall-tick advances sim by `speed` seconds.
                 snap = engine.step(
-                    dt=DT,
+                    dt=args.speed,
                     rod_command=state["rod_command"],
                     scram=state["scram"],
                 )
                 state["buffer"].append(snap)
                 state["sim_t"] = engine.t
-                next_step_time += DT
+                next_step_time += WALL_TICK_S
                 # Don't drift forward forever if integration runs slow.
                 if next_step_time < time.monotonic():
-                    next_step_time = time.monotonic() + DT
+                    next_step_time = time.monotonic() + WALL_TICK_S
     finally:
         sys.stdout.write("\033[?25h")  # show cursor
         sys.stdout.flush()
