@@ -120,10 +120,16 @@ def main() -> None:
     snaps = [dense.at(float(ti)) for ti in sample_t]
 
     print("  Time-series at key points:")
-    header = "    -----------------------------------------------------------------------------------"
+    # Column widths matched to the data row below (6, 9, 7, 6, 7, 7, 6, 6) with
+    # 2-space separators and a 4-space indent. rod_pos column is 7 wide so the
+    # "rod_pos" header label fits without overflow.
+    header = "    " + "-" * 76
     print(header)
-    print("       t[s]      n       T_fuel    T_avg    rod_pos   rho_rod   Q_core   Q_sg")
-    print("                            [K]      [K]              [pcm]    [GW]    [GW]")
+    print(
+        f"    {'t[s]':>6}  {'n':>9}  {'T_fuel':>7}  {'T_avg':>6}  {'rod_pos':>7}"
+        f"  {'rho_rod':>7}  {'Q_core':>6}  {'Q_sg':>6}"
+    )
+    print(f"    {'':>6}  {'':>9}  {'[K]':>7}  {'[K]':>6}  {'':>7}  {'[pcm]':>7}  {'[GW]':>6}  {'[GW]':>6}")
     print(header)
     PCM = 1e5
     for ti, snap in zip(sample_t, snaps):
@@ -135,7 +141,7 @@ def main() -> None:
         Q_core_v = snap["signals"]["power_thermal"]
         Q_sg_v = snap["signals"]["Q_sg"]
         print(
-            f"    {ti:6.1f}  {ni:8.3e}  {Tfi:7.2f}  {Tavi:6.2f}  {posi:6.4f}"
+            f"    {ti:6.1f}  {ni:9.3e}  {Tfi:7.2f}  {Tavi:6.2f}  {posi:7.4f}"
             f"  {rho_rod_v:+7.1f}  {Q_core_v / 1e9:6.3f}  {Q_sg_v / 1e9:6.3f}"
         )
     print(header)
@@ -165,7 +171,8 @@ def main() -> None:
 
     print("  Energy balance check (Q_core vs Q_sg at key times, both in GW):")
     print()
-    print("                  Q_core       Q_sg      ΔQ        rel")
+    # Header columns right-align with the data values below.
+    print(f"{'':>17}{'Q_core':>6}     {'Q_sg':>6}     {'ΔQ':>7}   {'rel':>8}")
     for ti in [0.0, 30.0, 100.0, 300.0]:
         snap_t = dense.at(float(ti))
         Qc = snap_t["signals"]["power_thermal"]
