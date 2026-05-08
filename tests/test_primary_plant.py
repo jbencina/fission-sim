@@ -106,6 +106,30 @@ def test_coupled_energy_balance_closes_at_steady() -> None:
     )
 
 
+def test_coupled_energy_balance_closes_during_transient() -> None:
+    """At a stable plateau after a rod-step transient, Q_core ≈ Q_sg
+    within 1%.
+
+    Stronger than the steady-state version: the plateau is reached via a
+    real transient where the loop's storage term (M·c_p·dT/dt) was
+    actively non-zero. If the storage term has a sign error or
+    miscoefficient, the plateau won't close even though the steady-state
+    test does (which is trivially true at exact equilibrium).
+    """
+    engine, _ = _assemble_plant()
+
+    def scenario(t: float) -> dict:
+        return {"rod_command": 0.5 + (0.015 if t >= 10.0 else 0.0), "scram": False}
+
+    snap = engine.run(t_end=200.0, scenario_fn=scenario)
+    Q_core = snap["signals"]["power_thermal"]
+    Q_sg = snap["signals"]["Q_sg"]
+    rel_err = abs(Q_core - Q_sg) / Q_core
+    assert rel_err < 1e-2, (
+        f"Energy balance not closed during transient: Q_core={Q_core:.4e} W, Q_sg={Q_sg:.4e} W (rel err {rel_err:.4%})"
+    )
+
+
 def test_coupled_scram_drops_power_with_rod_motion() -> None:
     """Hold steady to t=10, then scram. Power should drop dramatically as rods
     insert (rod motion takes ~1 s), then continue to fall via the delayed-neutron
@@ -119,10 +143,17 @@ def test_coupled_scram_drops_power_with_rod_motion() -> None:
     # Pre-scram: holding steady at n=1
     n_pre = dense.signal("n", np.array([9.0]))[0]
     assert n_pre == pytest.approx(1.0, abs=1e-3)
+    # Early post-scram (1.5 s after trigger): rods are mostly inserted,
+    # prompt drop has happened, n is at ~8% of design. This catches a
+    # regression where the prompt jump is too small or the rod moved too
+    # slowly. Real PWR plants land around 6% by 1.5 s post-scram.
+    n_early = dense.signal("n", np.array([11.5]))[0]
+    assert n_early < 0.10, f"prompt drop too small: n(11.5) = {n_early:.4f}"
     # Post-scram + rod insertion + prompt drop: by t=15s (5 s after scram),
     # rods have fully inserted and the prompt drop is well under way.
+    # Real plants are at ~3-5% at 5 s post-scram (delayed-neutron tail).
     n_post = dense.signal("n", np.array([15.0]))[0]
-    assert n_post < 0.15, f"power didn't drop: n(15) = {n_post:.4f}"
+    assert n_post < 0.05, f"power didn't drop enough: n(15) = {n_post:.4f}"
     # Late: delayed-neutron tail still nonzero
     n_late = dense.signal("n", np.array([60.0]))[0]
     assert n_late > 1e-4, f"delayed-neutron tail vanished too fast: n(60) = {n_late:.4e}"

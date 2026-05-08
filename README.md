@@ -248,7 +248,7 @@ plus linear (L1) rod-worth function. Bridges operator decisions
 
 | Field                    | Units         | Default                  | Source / note                                       |
 |--------------------------|---------------|--------------------------|-----------------------------------------------------|
-| `tau`                    | s             | 10.0                     | First-order lag time constant                       |
+| `tau`                    | s             | 1.0                      | First-order lag time constant; with v_normal=0.01/s the rate cap binds for any motion >1% (controller behaves as constant-velocity tracker for normal motion). |
 | `v_normal`               | 1/s           | 0.01                     | Normal motion speed (~1%/s typical PWR drive rate)  |
 | `v_scram`                | 1/s           | 0.5                      | Scram speed limit; rate-cap (see code comment for dynamics nuance) |
 | `rho_total_worth`        | dimensionless | 0.14                     | Reactivity slope per unit position; scram from design (0.5→0) gives −7000 pcm |
@@ -555,7 +555,7 @@ The slice's acceptance pass machine-verifies all of the following (see `tests/te
 
 1. **Steady state** — n = 1.0 ± 0.1% over 30 s at default inputs.
 2. **Doppler levelling** — a +1.5% rod-position step raises power but feedback caps n < 1.10.
-3. **Scram** — after `scram = True` at t = 10, n < 0.10 by t = 15 (5 s after scram).
+3. **Scram** — after `scram = True` at t = 10, n < 0.10 by t = 11.5 (1.5 s after scram, prompt drop) AND n < 0.05 by t = 15 (5 s after scram, into delayed-neutron tail).
 4. **Energy balance** — Q_core ≈ Q_sg within 0.1% at steady state (the M1-spec criterion).
 5. **Real time** — the entire test suite (including 300 s coupled-plant integrations) runs in < 3 s real time.
 

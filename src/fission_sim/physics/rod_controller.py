@@ -246,9 +246,11 @@ class RodController:
           ``±v_normal`` or ``−v_scram``, constant velocity.
 
         The crossover happens when ``|error| / τ`` exceeds the velocity
-        limit. For default parameters (τ=10s, v_normal=0.01/s), crossover
-        is at |error| = 0.1 — i.e. 10% mismatch between command and
-        position.
+        limit. For default parameters (τ=1s, v_normal=0.01/s), crossover
+        is at |error| = 0.01 — i.e. 1% mismatch between command and
+        position. Above that, motion is rate-clipped at v_normal (matching
+        how a real rod-drive mechanism behaves); below it, motion is the
+        smooth first-order lag.
         """
         p = self.params
         rod_position = state[0]
