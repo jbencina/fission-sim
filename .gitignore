@@ -3,6 +3,9 @@
 CLAUDE.md
 docs/
 
+# Claude Code: personal config, but track shared agents/skills/etc.
+.claude/settings.local.json
+
 # Python build / cache
 __pycache__/
 *.py[cod]
