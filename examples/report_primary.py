@@ -191,6 +191,16 @@ def main() -> None:
     print("      ~1 s (delivers ~80% of scram worth), then exponential settling over a")
     print("      few more seconds for the last bit. Power drops two orders of magnitude")
     print("      within ~2 s, then delayed-neutron tail (group-1 precursor, ~55 s τ).")
+    print("    * Late-tail T_avg → T_secondary (558 K) is an M1 artifact: with no decay")
+    print("      heat (M6) and no auto-controllers (M5), the only heat source after the")
+    print("      neutron tail dies is gone, so the loop equilibrates to the sink. A real")
+    print("      plant would hold ~30-50 MW of decay heat at t=300 s, keeping T_avg a")
+    print("      fraction of a K above T_secondary indefinitely.")
+    print("    * Energy-balance 'rel' column grows during cooldown (4% at t=100 s) because")
+    print("      both Q_core and Q_sg are tiny compared to the loop's stored-energy")
+    print("      release rate (M·c_p·dT/dt). The absolute ΔQ is ~1 MW — well within the")
+    print("      loop's thermal-storage rate. Closure tightens to <0.1% at any settled")
+    print("      plateau (see steady state and post-rod-step).")
     print()
 
 
