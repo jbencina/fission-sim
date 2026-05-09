@@ -913,7 +913,7 @@ def _assemble_full_plant() -> tuple[SimEngine, dict]:
         power_thermal=core.power_thermal,
         Q_sg=Q_sg,
         m_dot_spray=pzr_ctrl.m_dot_spray,
-        m_dot_surge=pzr.m_dot_surge,
+        P_primary=pzr.P,
     )
     engine.finalize()
     return engine, {

@@ -47,9 +47,9 @@ def test_state_layout_indices():
     assert loop.state_labels == ("T_hot", "T_cold", "M_loop")
 
 
-def test_input_ports_include_m_dot_spray_and_m_dot_surge():
+def test_input_ports_include_m_dot_spray_and_P_primary():
     loop = PrimaryLoop(default_params())
-    assert loop.input_ports == ("power_thermal", "Q_sg", "m_dot_spray", "m_dot_surge")
+    assert loop.input_ports == ("power_thermal", "Q_sg", "m_dot_spray", "P_primary")
 
 
 def test_initial_state_is_design_steady_state():
@@ -66,12 +66,18 @@ def test_initial_state_is_design_steady_state():
 # Layer 1: pure derivative tests (no integration)
 # ---------------------------------------------------------------------------
 def _design_inputs(p: LoopParams) -> dict:
-    """Inputs that, with initial_state, yield zero derivatives."""
+    """Inputs that, with initial_state, yield zero derivatives.
+
+    At design (Q_core = Q_sg), dT_avg/dt = 0, so m_dot_surge computed
+    internally by derivatives() is also 0. P_primary is the design
+    pressure; it sets the ρ-branch in the surge helper but doesn't
+    affect the zero result since surge_volume_rate is 0 at balance.
+    """
     return {
         "power_thermal": p.Q_design,
         "Q_sg": p.Q_design,
         "m_dot_spray": 0.0,
-        "m_dot_surge": 0.0,
+        "P_primary": 1.55e7,  # design pressure [Pa] — for surge ρ branching
     }
 
 
@@ -101,17 +107,39 @@ def test_more_q_sg_cools_cold_leg():
     assert dstate[1] < 0  # dT_cold/dt < 0
 
 
-def test_positive_surge_drains_loop_mass():
-    """ṁ_surge > 0 means mass leaves loop → dM_loop/dt < 0."""
+def test_power_excess_drains_loop_mass():
+    """Power excess (Q_core > Q_sg) → primary heats → insurge → loop mass falls.
+
+    The loop now computes m_dot_surge internally from the energy imbalance
+    and P_primary. When Q_core > Q_sg, dT_avg/dt > 0, surge_volume_rate > 0
+    (insurge into pressurizer), so dM_loop/dt < 0.
+    """
     p = default_params()
     loop = PrimaryLoop(p)
-    inputs = _design_inputs(p) | {"m_dot_surge": 1.0}
+    inputs = _design_inputs(p) | {"power_thermal": 1.05 * p.Q_design}
     dstate = loop.derivatives(loop.initial_state(), inputs)
-    assert dstate[2] == pytest.approx(-1.0)
+    assert dstate[2] < 0
+
+
+def test_power_deficit_grows_loop_mass():
+    """Power deficit (Q_core < Q_sg) → primary cools → outsurge → loop mass rises.
+
+    When Q_core < Q_sg, dT_avg/dt < 0, surge_volume_rate < 0
+    (outsurge from pressurizer into loop), so dM_loop/dt > 0.
+    """
+    p = default_params()
+    loop = PrimaryLoop(p)
+    inputs = _design_inputs(p) | {"power_thermal": 0.95 * p.Q_design}
+    dstate = loop.derivatives(loop.initial_state(), inputs)
+    assert dstate[2] > 0
 
 
 def test_spray_drains_loop_mass():
-    """ṁ_spray > 0 means cold-leg water leaves to pzr → dM_loop/dt < 0."""
+    """ṁ_spray > 0 means cold-leg water leaves to pzr → dM_loop/dt = -ṁ_spray.
+
+    At design (Q_core = Q_sg, dT_avg/dt = 0), m_dot_surge computed
+    internally is 0, so dM_loop/dt = -m_dot_spray exactly.
+    """
     p = default_params()
     loop = PrimaryLoop(p)
     inputs = _design_inputs(p) | {"m_dot_spray": 5.0}
@@ -191,7 +219,14 @@ def test_telemetry_without_inputs_reports_none_for_input_keys():
 # Layer 2: short-integration behavior tests
 # ---------------------------------------------------------------------------
 def _integrate(loop, q_core_fn, q_sg_fn, t_end, t_start=0.0, max_step=0.5):
-    """Integrate the loop from initial_state under input functions of t."""
+    """Integrate the loop from initial_state under input functions of t.
+
+    Uses P_primary=1.55e7 Pa (design pressure) as a fixed input. In
+    these unit tests the pressurizer state is not being evolved, so we
+    pin it to the design value. The surge helper still runs correctly —
+    at balance (Q_core = Q_sg) it produces 0; at imbalance it produces
+    the physically correct m_dot_surge given P_design for density lookup.
+    """
 
     def f(t, y):
         return loop.derivatives(
@@ -200,7 +235,7 @@ def _integrate(loop, q_core_fn, q_sg_fn, t_end, t_start=0.0, max_step=0.5):
                 "power_thermal": q_core_fn(t),
                 "Q_sg": q_sg_fn(t),
                 "m_dot_spray": 0.0,
-                "m_dot_surge": 0.0,
+                "P_primary": 1.55e7,  # design pressure [Pa]
             },
         )
 
@@ -295,7 +330,7 @@ def test_loop_energy_balance_at_steady_70pct():
     assert sol.success
     # Verify steady state: derivatives near zero at the end
     final_state = sol.y[:, -1]
-    final_inputs = {"power_thermal": Q, "Q_sg": Q, "m_dot_spray": 0.0, "m_dot_surge": 0.0}
+    final_inputs = {"power_thermal": Q, "Q_sg": Q, "m_dot_spray": 0.0, "P_primary": 1.55e7}
     final_dstate = loop.derivatives(final_state, final_inputs)
     assert np.allclose(final_dstate, 0.0, atol=1e-3)
     # Now check the analytical prediction

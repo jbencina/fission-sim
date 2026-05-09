@@ -77,13 +77,7 @@ def test_input_ports():
 
 def test_output_ports():
     pzr = Pressurizer(default_params())
-    assert pzr.output_ports == (
-        "P",
-        "level",
-        "T_sat",
-        "m_dot_surge",
-        "subcooling_margin",
-    )
+    assert pzr.output_ports == ("P", "level", "T_sat")
 
 
 def test_initial_state_shape_and_values():
@@ -227,46 +221,55 @@ def test_outsurge_uses_saturated_liquid_density():
 # Layer 1: outputs() and telemetry()
 # ---------------------------------------------------------------------------
 def test_outputs_at_design_returns_design_pressure_and_level():
+    """outputs() returns only the three state-derived ports: P, level, T_sat.
+
+    m_dot_surge and subcooling_margin are no longer output ports — they
+    require inputs unavailable in the state-derived engine pass and are
+    now telemetry-only.
+    """
     p = default_params()
     pzr = Pressurizer(p)
-    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
-    assert set(out.keys()) == {"P", "level", "T_sat", "m_dot_surge", "subcooling_margin"}
+    out = pzr.outputs(pzr.initial_state())
+    assert set(out.keys()) == {"P", "level", "T_sat"}
     assert out["P"] == pytest.approx(p.P_design, rel=1e-3)
     assert out["level"] == pytest.approx(p.level_design, abs=1e-3)
 
 
-def test_outputs_subcooling_margin_is_T_sat_minus_T_hotleg():
+def test_telemetry_subcooling_margin_is_T_sat_minus_T_hotleg():
+    """subcooling_margin is available in telemetry() when inputs are provided."""
     p = default_params()
     pzr = Pressurizer(p)
-    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
-    expected = out["T_sat"] - p.loop_params.T_hot_ref
-    assert out["subcooling_margin"] == pytest.approx(expected, rel=1e-9)
-    assert out["subcooling_margin"] > 0
+    tele = pzr.telemetry(pzr.initial_state(), inputs=_design_inputs(p))
+    T_sat = tele["T_sat"]
+    expected = T_sat - p.loop_params.T_hot_ref
+    assert tele["subcooling_margin"] == pytest.approx(expected, rel=1e-9)
+    assert tele["subcooling_margin"] > 0
 
 
-def test_outputs_m_dot_surge_zero_at_design():
+def test_telemetry_m_dot_surge_zero_at_design():
+    """m_dot_surge is available in telemetry() and is zero at the design point
+    (Q_core = Q_sg → dT_avg/dt = 0 → no volumetric expansion)."""
     p = default_params()
     pzr = Pressurizer(p)
-    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
-    assert out["m_dot_surge"] == pytest.approx(0.0, abs=1e-3)
+    tele = pzr.telemetry(pzr.initial_state(), inputs=_design_inputs(p))
+    assert tele["m_dot_surge"] == pytest.approx(0.0, abs=1e-3)
 
 
 def test_outputs_state_derived_classification():
-    """Pressurizer is now a "state-derived" module — outputs(state) without
-    inputs must succeed so the engine can break the algebraic loop between
+    """Pressurizer is a "state-derived" module — outputs(state) without inputs
+    must succeed so the engine can break the algebraic loop between
     the pressurizer (needs controller outputs for *derivatives*) and the
     controller (needs pressurizer P for its outputs).
 
-    When called without inputs, P/level/T_sat are exact; m_dot_surge is 0.0
-    and subcooling_margin is None (inputs required for those).
+    outputs() returns only the three state-derived ports: P, level, T_sat.
+    m_dot_surge and subcooling_margin are telemetry-only (require inputs).
     """
     pzr = Pressurizer(default_params())
     out = pzr.outputs(pzr.initial_state())
     assert "P" in out
     assert "level" in out
     assert "T_sat" in out
-    assert out["m_dot_surge"] == 0.0
-    assert out["subcooling_margin"] is None
+    assert set(out.keys()) == {"P", "level", "T_sat"}
 
 
 def test_telemetry_includes_heater_on_and_spray_open():

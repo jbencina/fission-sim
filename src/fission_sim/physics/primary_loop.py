@@ -179,9 +179,12 @@ class PrimaryLoop:
         m_dot_spray : float [kg/s]
             Mass flow rate of cold-leg water sprayed into the pressurizer.
             Positive means water leaving the loop (from controller).
-        m_dot_surge : float [kg/s]
-            Net mass flow from/to the pressurizer surge line. Positive means
-            water leaving the loop into the pressurizer (from pressurizer).
+        P_primary : float [Pa]
+            Primary system pressure (= pressurizer pressure, a state-derived
+            output available before any computed module runs). Used by the loop
+            to compute m_dot_surge internally via the shared surge helper,
+            replacing the old wired ``m_dot_surge`` port that always carried
+            0.0 due to the pressurizer's state-derived classification.
 
     Ports out (returned by ``outputs()``):
         T_hot : float [K]
@@ -209,7 +212,7 @@ class PrimaryLoop:
 
     state_size: int = 3
     state_labels: tuple[str, ...] = ("T_hot", "T_cold", "M_loop")
-    input_ports: tuple[str, ...] = ("power_thermal", "Q_sg", "m_dot_spray", "m_dot_surge")
+    input_ports: tuple[str, ...] = ("power_thermal", "Q_sg", "m_dot_spray", "P_primary")
     output_ports: tuple[str, ...] = ("T_hot", "T_cold", "T_avg", "T_cool")
 
     def __init__(self, params: LoopParams) -> None:
@@ -242,15 +245,26 @@ class PrimaryLoop:
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
         """Two-leg energy balance + liquid inventory conservation.
 
-        State and energy-balance equations unchanged from M1. The new
-        third equation closes the conservation loop with the pressurizer:
+        State and energy-balance equations unchanged from M1. The third
+        equation closes the conservation loop with the pressurizer:
 
             dM_loop/dt = − ṁ_surge − ṁ_spray
 
         The negative signs reflect that mass leaving the loop into the
-        pressurizer reduces the loop's inventory. ``ṁ_surge`` and
-        ``ṁ_spray`` are inputs computed by the pressurizer and the
-        controller respectively; the loop just records the bookkeeping.
+        pressurizer reduces the loop's inventory.
+
+        ``ṁ_surge`` is computed *internally* by this method using the
+        shared helper ``surge.compute_m_dot_surge``, identical to the
+        computation in ``Pressurizer.derivatives``. This is the key to
+        mass conservation: both modules apply the same surge flow to their
+        respective state derivatives, so ``d/dt(M_loop + M_pzr) = 0`` to
+        solver tolerance. The old wired ``m_dot_surge`` port was replaced
+        with ``P_primary`` (the pressurizer pressure, a state-derived
+        output available early in the engine's eval pass) which is the only
+        additional input the surge helper needs beyond quantities already
+        available (power_thermal, Q_sg, T_hot from state).
+
+        ``ṁ_spray`` is still an input wired directly from the controller.
 
         SIMPLIFICATION: ``M_hot`` and ``M_cold`` parameters in the
         energy balance represent **lumped pipe-metal-plus-water
@@ -266,7 +280,8 @@ class PrimaryLoop:
         state : np.ndarray, shape (3,)
             ``[T_hot, T_cold, M_loop]``.
         inputs : dict
-            See ``input_ports`` for required keys.
+            See ``input_ports`` for required keys: ``power_thermal``,
+            ``Q_sg``, ``m_dot_spray``, ``P_primary``.
 
         Returns
         -------
@@ -281,7 +296,15 @@ class PrimaryLoop:
             M_hot  · c_p · dT_hot/dt  = Q_core − ṁ · c_p · (T_hot − T_cold)
             M_cold · c_p · dT_cold/dt = ṁ · c_p · (T_hot − T_cold) − Q_sg
             dM_loop/dt                = − ṁ_surge − ṁ_spray
+
+        where ṁ_surge is derived from (P_primary, power_thermal, Q_sg,
+        T_hot) via ``surge.compute_m_dot_surge``.
         """
+        # Local import to avoid circular import: surge.py imports LoopParams
+        # from this module. The import is cached by Python after the first call.
+        from fission_sim.physics import coolprop
+        from fission_sim.physics.surge import compute_m_dot_surge
+
         p = self.params
 
         # --- decode the state slice into named locals ---
@@ -293,7 +316,7 @@ class PrimaryLoop:
         power_thermal = inputs["power_thermal"]  # heat from core [W]
         Q_sg = inputs["Q_sg"]
         m_dot_spray = inputs["m_dot_spray"]  # cold-leg spray to pressurizer [kg/s]
-        m_dot_surge = inputs["m_dot_surge"]  # surge line mass flow [kg/s]
+        P_primary = inputs["P_primary"]  # pressurizer pressure (state-derived) [Pa]
 
         # --- heat carried from hot leg to cold leg by mass flow ---
         # ṁ · c_p · ΔT, dimensions [W]. This is the rate at which warm water
@@ -311,8 +334,23 @@ class PrimaryLoop:
         # --- cold-leg energy balance ---
         dT_cold_dt = (Q_flow - Q_sg) / (p.M_cold * p.c_p)
 
+        # --- compute surge mass flow using the shared helper ---
+        # The pressurizer's derivatives() calls the same function, ensuring
+        # d/dt(M_loop + M_pzr) = -ṁ_surge - ṁ_spray + ṁ_surge + ṁ_spray = 0
+        # i.e. the sealed-system invariant holds to solver tolerance.
+        rho_l_sat = coolprop.sat_liquid_density(P=P_primary)
+        m_dot_surge = compute_m_dot_surge(
+            power_thermal=power_thermal,
+            Q_sg=Q_sg,
+            T_hotleg=T_hot,
+            P_primary=P_primary,
+            rho_l_sat=rho_l_sat,
+            loop_params=p,
+        )
+
         # --- mass conservation across the sealed primary system ---
-        # Spec §3.3. Positive ṁ_surge / ṁ_spray mean mass leaving the loop.
+        # Spec §3.3. Positive ṁ_surge means mass flowing INTO the pressurizer
+        # (OUT of the loop), so dM_loop/dt is negative for positive surge.
         dM_loop_dt = -m_dot_surge - m_dot_spray
 
         # --- assemble derivative vector matching state layout ---

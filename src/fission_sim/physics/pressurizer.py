@@ -283,10 +283,15 @@ class Pressurizer:
             Fractional water level, V_l / V_pzr.
         T_sat : float [K]
             Saturation temperature at current P.
-        m_dot_surge : float [kg/s]
-            Mass surge rate (positive = insurge into pressurizer).
-        subcooling_margin : float [K]
-            T_sat − T_hotleg. Operator-facing primary indicator.
+
+    Note: ``m_dot_surge`` and ``subcooling_margin`` were formerly
+    published as output ports. They are now telemetry-only because
+    ``outputs()`` is called without inputs in the state-derived engine
+    pass, making those values unavailable at output-resolution time.
+    Both values appear in ``telemetry()`` when inputs are provided.
+    The primary loop now computes ``m_dot_surge`` internally using the
+    shared ``surge.compute_m_dot_surge`` helper instead of reading it
+    as a wired port from the pressurizer.
 
     State vector (length ``state_size`` = 2, names in ``state_labels``):
         index 0 : M_pzr — total mass in vessel [kg]
@@ -303,13 +308,7 @@ class Pressurizer:
         "Q_heater",
         "m_dot_spray",
     )
-    output_ports: tuple[str, ...] = (
-        "P",
-        "level",
-        "T_sat",
-        "m_dot_surge",
-        "subcooling_margin",
-    )
+    output_ports: tuple[str, ...] = ("P", "level", "T_sat")
 
     def __init__(self, params: PressurizerParams) -> None:
         self.params = params
@@ -329,82 +328,25 @@ class Pressurizer:
         sat: SaturationState,
         inputs: dict,
     ) -> float:
-        """Mass surge flow into the pressurizer [kg/s].
+        """Mass surge flow into the pressurizer [kg/s] — delegates to
+        the shared helper in ``surge.py`` so the primary loop computes
+        the same value when bookkeeping mass conservation.
 
-        Internal helper used by both ``derivatives()`` and ``outputs()``
-        so the surge math lives in one place.
-
-        Algorithm:
-
-        1. Compute dT_avg/dt from the loop's energy imbalance:
-
-               dT_avg/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)
-
-           This is the symmetric simplification of the two-leg energy
-           balance valid when M_hot ≈ M_cold (true at L1 defaults).
-        2. Volumetric expansion of primary water:
-
-               surge_volume_rate = β_T · V_loop · dT_avg/dt
-
-           Volume expanding *out of* the loop pipes goes *into* the
-           pressurizer (same sign convention).
-        3. Convert volumetric to mass flow with direction-branched ρ:
-
-           - Insurge (positive): hot-leg subcooled liquid enters →
-             ρ_hotleg(P, T_hotleg) from CoolProp.
-           - Outsurge (negative): saturated liquid leaves the bottom
-             of the pressurizer → ρ_l from the saturation closure.
-
-        The asymmetry is real and matters for conservation: at design
-        ρ_hotleg ≈ 715 kg/m³ vs. ρ_l_sat ≈ 595 kg/m³ (~17 % gap).
-        Using a single value would inflate the conservation-test residual
-        to the size of the test tolerance.
-
-        References
-        ----------
-        Todreas & Kazimi Vol. 1, §6.2 Eq. 6-13 (energy balance form on a
-        rigid control volume); §6.4 (volumetric expansion under heating).
+        See ``fission_sim.physics.surge.compute_m_dot_surge`` for the
+        full algorithm description.  Passing ``sat.rho_l`` as
+        ``rho_l_sat`` avoids an extra CoolProp call since the
+        saturation state is already computed by the caller.
         """
-        lp = self.params.loop_params
-        Q_core = inputs["power_thermal"]
-        Q_sg = inputs["Q_sg"]
-        T_hotleg = inputs["T_hotleg"]
+        from fission_sim.physics.surge import compute_m_dot_surge
 
-        # SIMPLIFICATION: symmetric thermal mass — assumes M_hot ≈ M_cold
-        # so dT_avg/dt = (Q_core − Q_sg) / (M_total · c_p). At default L1
-        # parameters M_hot = M_cold = 1.5e4 kg, so the approximation is
-        # exact. If the user makes them asymmetric, the surge prediction
-        # will be off by a few percent.
-        M_total = lp.M_hot + lp.M_cold
-        dT_avg_dt = (Q_core - Q_sg) / (M_total * lp.c_p)
-
-        # Volumetric expansion of primary water into the pressurizer.
-        # SIMPLIFICATION: β_T_primary frozen at design (~3.3e-3 /K from
-        # CoolProp at 583 K, 15.5 MPa, verified Task A1). The real value
-        # varies ~50 % across the 568–598 K operating range; frozen-at-
-        # design under-predicts surge magnitude during cooldowns and
-        # over-predicts during heatups. L2 reads β_T from CoolProp
-        # every step.
-        #
-        # TEMPORARY (until F1): beta_T_primary and V_loop are not yet
-        # added to LoopParams — Task F1 does that. Using getattr() with
-        # a 0.0 default so calls with dT_avg_dt = 0 (design steady-state,
-        # heater-only, spray-only tests) still pass. F2 removes these
-        # fallbacks once F1 has landed.
-        beta_T_primary = getattr(lp, "beta_T_primary", 0.0)
-        V_loop = getattr(lp, "V_loop", 0.0)
-        surge_volume_rate = beta_T_primary * V_loop * dT_avg_dt
-
-        # Direction-branched density.
-        if surge_volume_rate >= 0.0:
-            # Insurge: hot-leg subcooled liquid enters at primary P, T_hot.
-            rho_surge = coolprop.density_PT(P=sat.P, T=T_hotleg)
-        else:
-            # Outsurge: saturated liquid leaves at the pressurizer's
-            # current saturation density.
-            rho_surge = sat.rho_l
-
-        return rho_surge * surge_volume_rate
+        return compute_m_dot_surge(
+            power_thermal=inputs["power_thermal"],
+            Q_sg=inputs["Q_sg"],
+            T_hotleg=inputs["T_hotleg"],
+            P_primary=sat.P,
+            rho_l_sat=sat.rho_l,
+            loop_params=self.params.loop_params,
+        )
 
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
         """Mass + energy balance for the saturated mixture.
@@ -474,7 +416,7 @@ class Pressurizer:
     _HEATER_ON_THRESHOLD: float = 0.5
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
-        """Return the publishable ports (P, level, T_sat, m_dot_surge, subcooling_margin).
+        """Return the publishable ports (P, level, T_sat).
 
         The pressurizer is classified as "state-derived" by the engine because
         P, level, and T_sat follow directly from the saturation closure on the
@@ -492,70 +434,35 @@ class Pressurizer:
         computed pass even though the controller's outputs are consumed by
         the pressurizer's derivatives.
 
-        When ``inputs`` is None (state-derived evaluation pass):
-        - P, level, T_sat are computed exactly from the saturation closure.
-        - m_dot_surge is returned as 0.0.  This value feeds ``loop.derivatives()``
-          only for the ``dM_loop/dt`` mass-balance term (which does not affect
-          T_hot or T_cold).  The true surge is negligible at near-steady-state
-          conditions tested in M1/M2 integration tests.
-
-          # SIMPLIFICATION: m_dot_surge = 0 when outputs() is called without
-          # inputs.  This under-counts the mass transferred through the surge
-          # line in the M_loop state, but has zero effect on T_hot, T_cold, n,
-          # or rod_position — the quantities asserted in all coupled tests.
-          # A future engine enhancement (passing wired inputs to state-derived
-          # modules) will remove this approximation.
-
-        - subcooling_margin is returned as None (T_hotleg not available).
-
-        When ``inputs`` is provided, all five outputs are computed correctly.
+        ``m_dot_surge`` and ``subcooling_margin`` are NOT output ports.
+        They require inputs (T_hotleg, Q_sg, power_thermal) that are
+        unavailable in the state-derived evaluation pass. Both quantities
+        are available in ``telemetry()`` when inputs are provided. The
+        primary loop now computes ``m_dot_surge`` independently using
+        the shared ``surge.compute_m_dot_surge`` helper — this is the
+        mechanism that restores mass conservation (M_loop + M_pzr = const).
 
         Parameters
         ----------
         state : np.ndarray, shape (2,)
             ``[M_pzr, U_pzr]``.
         inputs : dict or None, optional
-            See ``input_ports`` for required keys.  When None, only
-            state-derivable outputs are exact; see above for approximations.
+            Accepted for API uniformity; not used. P, level, T_sat are
+            state-derived and require no inputs.
 
         Returns
         -------
         dict
-            Keys: ``P``, ``level``, ``T_sat``, ``m_dot_surge``,
-            ``subcooling_margin``.
+            Keys: ``P``, ``level``, ``T_sat``.
         """
         p = self.params
         M, U = state[0], state[1]
         sat = saturation_state(M=M, U=U, V=p.V_pzr)
 
-        if inputs is None:
-            # State-derived evaluation pass: return what we can from state alone.
-            return {
-                "P": sat.P,
-                "level": sat.level,
-                "T_sat": sat.T_sat,
-                # SIMPLIFICATION: surge not computable without loop/core signals.
-                # Zero is the correct value at design steady-state and a good
-                # approximation near it.  See docstring above.
-                "m_dot_surge": 0.0,
-                # Subcooling margin requires T_hotleg from the loop; not available
-                # without inputs.  Callers that need this value must pass inputs.
-                "subcooling_margin": None,
-            }
-
-        m_dot_surge = self._compute_m_dot_surge(sat, inputs)
-        T_hotleg = inputs["T_hotleg"]
-
         return {
             "P": sat.P,
             "level": sat.level,
             "T_sat": sat.T_sat,
-            "m_dot_surge": m_dot_surge,
-            # Subcooling margin: T_sat − T_hotleg. Positive when the hot
-            # leg is below saturation (normal operation). Zero or negative
-            # signals incipient bulk boiling — trigger for FR-C.1
-            # (Inadequate Core Cooling) on real W4-loop control rooms.
-            "subcooling_margin": sat.T_sat - T_hotleg,
         }
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
