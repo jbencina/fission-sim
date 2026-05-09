@@ -9,7 +9,7 @@ Three layers (mirroring the rest of the physics package):
 import pytest
 
 from fission_sim.physics import coolprop
-from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams  # noqa: F401
+from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams
 
 
@@ -50,3 +50,44 @@ def test_pzr_params_explicit_initial_state_overrides_derived():
     p = PressurizerParams(M_pzr_initial=10000.0, U_pzr_initial=2.0e10)
     assert p.M_pzr_initial == 10000.0
     assert p.U_pzr_initial == 2.0e10
+
+
+# ---------------------------------------------------------------------------
+# Pressurizer: API surface
+# ---------------------------------------------------------------------------
+def test_state_layout_indices():
+    pzr = Pressurizer(default_params())
+    assert pzr.state_size == 2
+    assert pzr.state_labels == ("M_pzr", "U_pzr")
+
+
+def test_input_ports():
+    pzr = Pressurizer(default_params())
+    assert pzr.input_ports == (
+        "power_thermal",
+        "Q_sg",
+        "T_hotleg",
+        "T_coldleg",
+        "Q_heater",
+        "m_dot_spray",
+    )
+
+
+def test_output_ports():
+    pzr = Pressurizer(default_params())
+    assert pzr.output_ports == (
+        "P",
+        "level",
+        "T_sat",
+        "m_dot_surge",
+        "subcooling_margin",
+    )
+
+
+def test_initial_state_shape_and_values():
+    p = default_params()
+    pzr = Pressurizer(p)
+    s = pzr.initial_state()
+    assert s.shape == (2,)
+    assert s[0] == pytest.approx(p.M_pzr_initial)
+    assert s[1] == pytest.approx(p.U_pzr_initial)

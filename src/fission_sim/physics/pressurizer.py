@@ -43,6 +43,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from fission_sim.physics import coolprop
 from fission_sim.physics.primary_loop import LoopParams
 
@@ -133,7 +135,72 @@ class PressurizerParams:
 
 
 class Pressurizer:
-    """Placeholder — math added in Tasks B2 (skeleton), C1–C3 (closure + derivatives + outputs)."""
+    """Two-phase pressurizer (L1 fidelity).
+
+    The class owns its parameters and equations. State (the total
+    pressurizer mass and internal energy) lives in a numpy array passed
+    in by the caller. Every method that needs current-state numbers takes
+    them as an argument.
+
+    Ports in (passed to ``derivatives()`` / ``outputs(inputs=)``):
+        power_thermal : float [W]
+            Heat from the core (used to compute dT_avg/dt and hence
+            surge_volume_rate inside the pressurizer).
+        Q_sg : float [W]
+            Heat removed by the steam generator (also for dT_avg/dt).
+        T_hotleg : float [K]
+            Hot-leg temperature — sets ρ and h of insurge water.
+        T_coldleg : float [K]
+            Cold-leg temperature — sets h of spray water.
+        Q_heater : float [W]
+            Heater electrical power demand (≥ 0).
+        m_dot_spray : float [kg/s]
+            Spray mass-flow demand (≥ 0).
+
+    Ports out (returned by ``outputs(state, inputs=)``):
+        P : float [Pa]
+            Pressurizer pressure (= primary system pressure).
+        level : float [dimensionless]
+            Fractional water level, V_l / V_pzr.
+        T_sat : float [K]
+            Saturation temperature at current P.
+        m_dot_surge : float [kg/s]
+            Mass surge rate (positive = insurge into pressurizer).
+        subcooling_margin : float [K]
+            T_sat − T_hotleg. Operator-facing primary indicator.
+
+    State vector (length ``state_size`` = 2, names in ``state_labels``):
+        index 0 : M_pzr — total mass in vessel [kg]
+        index 1 : U_pzr — total internal energy in vessel [J]
+    """
+
+    state_size: int = 2
+    state_labels: tuple[str, ...] = ("M_pzr", "U_pzr")
+    input_ports: tuple[str, ...] = (
+        "power_thermal",
+        "Q_sg",
+        "T_hotleg",
+        "T_coldleg",
+        "Q_heater",
+        "m_dot_spray",
+    )
+    output_ports: tuple[str, ...] = (
+        "P",
+        "level",
+        "T_sat",
+        "m_dot_surge",
+        "subcooling_margin",
+    )
 
     def __init__(self, params: PressurizerParams) -> None:
         self.params = params
+
+    def initial_state(self) -> np.ndarray:
+        """Return ``[M_pzr_initial, U_pzr_initial]``.
+
+        Both values are derived from (P_design, level_design, V_pzr) in
+        ``PressurizerParams.__post_init__``; this method just packages
+        them into a numpy array of the right shape.
+        """
+        p = self.params
+        return np.array([p.M_pzr_initial, p.U_pzr_initial])
