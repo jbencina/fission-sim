@@ -8,6 +8,7 @@ Three layers (mirroring the rest of the physics package):
 
 import numpy as np
 import pytest
+from scipy.integrate import solve_ivp
 
 from fission_sim.physics import coolprop
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams, SaturationState, saturation_state
@@ -297,3 +298,120 @@ def test_telemetry_without_inputs_returns_state_only_keys():
     assert tele.get("subcooling_margin") is None
     assert tele.get("heater_on") is None
     assert tele.get("spray_open") is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: short-integration behavior tests
+#
+# These integrate the pressurizer alone with synthesized inputs that mimic
+# the surrounding plant. Useful for confirming sign and order-of-magnitude
+# behavior in isolation before plugging into the full plant.
+# ---------------------------------------------------------------------------
+def _integrate_pressurizer(pzr, inputs_fn, t_end, t_start=0.0, max_step=0.5):
+    """Drive Pressurizer.derivatives under a time-varying inputs function."""
+    def f(t, y):
+        return pzr.derivatives(y, inputs_fn(t))
+    return solve_ivp(
+        f,
+        (t_start, t_end),
+        pzr.initial_state(),
+        method="BDF",
+        dense_output=True,
+        rtol=1e-7,
+        atol=1e-3,
+        max_step=max_step,
+    )
+
+
+@pytest.mark.xfail(
+    reason="needs LoopParams.beta_T_primary added in Task F1; unmark in F2",
+    strict=True,
+)
+def test_steady_insurge_ramp_raises_pressure():
+    """A constant +1% power excess for 30 s drives steady insurge;
+    pressure should rise monotonically."""
+    p = default_params()
+    pzr = Pressurizer(p)
+    lp = p.loop_params
+    inputs_const = {
+        "power_thermal": 1.01 * lp.Q_design,
+        "Q_sg": lp.Q_design,
+        "T_hotleg": lp.T_hot_ref,
+        "T_coldleg": lp.T_cold_ref,
+        "Q_heater": 0.0,
+        "m_dot_spray": 0.0,
+    }
+    sol = _integrate_pressurizer(pzr, lambda t: inputs_const, t_end=30.0)
+    assert sol.success
+    P0 = pzr.outputs(sol.y[:, 0], inputs=inputs_const)["P"]
+    P_end = pzr.outputs(sol.y[:, -1], inputs=inputs_const)["P"]
+    assert P_end > P0
+
+
+@pytest.mark.xfail(
+    reason="needs LoopParams.beta_T_primary added in Task F1; unmark in F2",
+    strict=True,
+)
+def test_steady_outsurge_ramp_lowers_pressure():
+    """A constant −1% power deficit for 30 s drives steady outsurge;
+    pressure should fall monotonically."""
+    p = default_params()
+    pzr = Pressurizer(p)
+    lp = p.loop_params
+    inputs_const = {
+        "power_thermal": 0.99 * lp.Q_design,
+        "Q_sg": lp.Q_design,
+        "T_hotleg": lp.T_hot_ref,
+        "T_coldleg": lp.T_cold_ref,
+        "Q_heater": 0.0,
+        "m_dot_spray": 0.0,
+    }
+    sol = _integrate_pressurizer(pzr, lambda t: inputs_const, t_end=30.0)
+    assert sol.success
+    P0 = pzr.outputs(sol.y[:, 0], inputs=inputs_const)["P"]
+    P_end = pzr.outputs(sol.y[:, -1], inputs=inputs_const)["P"]
+    assert P_end < P0
+
+
+def test_heater_step_raises_pressure():
+    """Holding Q_heater at 1.8 MW for 30 s with no surge or spray
+    should raise pressure measurably."""
+    p = default_params()
+    pzr = Pressurizer(p)
+    lp = p.loop_params
+    inputs_const = {
+        "power_thermal": lp.Q_design,
+        "Q_sg": lp.Q_design,
+        "T_hotleg": lp.T_hot_ref,
+        "T_coldleg": lp.T_cold_ref,
+        "Q_heater": 1.8e6,
+        "m_dot_spray": 0.0,
+    }
+    sol = _integrate_pressurizer(pzr, lambda t: inputs_const, t_end=30.0)
+    assert sol.success
+    P0 = pzr.outputs(sol.y[:, 0], inputs=inputs_const)["P"]
+    P_end = pzr.outputs(sol.y[:, -1], inputs=inputs_const)["P"]
+    assert P_end > P0
+    assert (P_end - P0) > 1.0e3
+    assert (P_end - P0) < 5.0e5
+
+
+def test_spray_step_lowers_pressure():
+    """Holding m_dot_spray at 25 kg/s for 30 s with no surge or heaters
+    should lower pressure (cold spray condenses steam)."""
+    p = default_params()
+    pzr = Pressurizer(p)
+    lp = p.loop_params
+    inputs_const = {
+        "power_thermal": lp.Q_design,
+        "Q_sg": lp.Q_design,
+        "T_hotleg": lp.T_hot_ref,
+        "T_coldleg": lp.T_cold_ref,
+        "Q_heater": 0.0,
+        "m_dot_spray": 25.0,
+    }
+    sol = _integrate_pressurizer(pzr, lambda t: inputs_const, t_end=30.0)
+    assert sol.success
+    P0 = pzr.outputs(sol.y[:, 0], inputs=inputs_const)["P"]
+    P_end = pzr.outputs(sol.y[:, -1], inputs=inputs_const)["P"]
+    assert P_end < P0
