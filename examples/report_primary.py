@@ -12,8 +12,13 @@ from __future__ import annotations
 
 import numpy as np
 
+from fission_sim.control.pressurizer_controller import (
+    PressurizerController,
+    PressurizerControllerParams,
+)
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
@@ -78,6 +83,8 @@ def main() -> None:
     sg_params = SGParams()
     sink_params = SinkParams()
     rod_params = RodParams()
+    pzr_params = PressurizerParams(loop_params=loop_params)
+    ctrl_params = PressurizerControllerParams()
 
     engine = SimEngine()
     rod = engine.module(RodController(rod_params), name="rod")
@@ -85,15 +92,36 @@ def main() -> None:
     loop = engine.module(PrimaryLoop(loop_params), name="loop")
     sg = engine.module(SteamGenerator(sg_params), name="sg")
     sink = engine.module(SecondarySink(sink_params), name="sink")
+    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
+    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
     rod_cmd = engine.input("rod_command", default=0.5)
     scram = engine.input("scram", default=False)
+    P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
+    heater_manual = engine.input("heater_manual", default=None)
+    spray_manual = engine.input("spray_manual", default=None)
 
     rho_rod = rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    loop(power_thermal=core.power_thermal, Q_sg=Q_sg_sig)
+    pzr(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg_sig,
+        T_hotleg=loop.T_hot,
+        T_coldleg=loop.T_cold,
+        Q_heater=pzr_ctrl.Q_heater,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+    )
+    pzr_ctrl(
+        P=pzr.P, P_setpoint=P_setpoint,
+        heater_manual=heater_manual, spray_manual=spray_manual,
+    )
+    loop(
+        power_thermal=core.power_thermal, Q_sg=Q_sg_sig,
+        m_dot_spray=pzr_ctrl.m_dot_spray, P_primary=pzr.P,
+    )
+    engine.finalize()
 
     def scenario(t: float) -> dict:
         return {
@@ -179,6 +207,22 @@ def main() -> None:
         Qs = snap_t["signals"]["Q_sg"]
         rel = abs(Qc - Qs) / max(abs(Qc), 1.0)
         print(f"    t = {ti:5.1f} s  {Qc / 1e9:6.3f}     {Qs / 1e9:6.3f}     {(Qc - Qs) / 1e9:7.4f}   {rel:8.2%}")
+    print()
+
+    print()
+    print("  PRESSURIZER")
+    print("  -----------")
+    print(f"    {'t[s]':>6}  {'P[MPa]':>7}  {'level':>5}  {'T_sat[K]':>8}  {'Q_htr[MW]':>9}  {'m_spr[kg/s]':>11}")
+    for ti in sample_t:
+        snap = dense.at(float(ti))
+        P_MPa = snap["pzr"]["P"] / 1e6
+        level = snap["pzr"]["level"]
+        T_sat = snap["pzr"]["T_sat"]
+        Q_htr = snap["signals"]["Q_heater"] / 1e6
+        m_spr = snap["signals"]["m_dot_spray"]
+        print(
+            f"    {ti:6.1f}  {P_MPa:7.3f}  {level:5.3f}  {T_sat:8.2f}  {Q_htr:9.3f}  {m_spr:11.3f}"
+        )
     print()
 
     print("  What this shows:")
