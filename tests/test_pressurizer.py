@@ -251,12 +251,22 @@ def test_outputs_m_dot_surge_zero_at_design():
     assert out["m_dot_surge"] == pytest.approx(0.0, abs=1e-3)
 
 
-def test_outputs_requires_inputs_kwarg():
-    """Pressurizer is a 'computed' module — outputs(state) without inputs
-    must raise TypeError so the engine classifies it correctly."""
+def test_outputs_state_derived_classification():
+    """Pressurizer is now a "state-derived" module — outputs(state) without
+    inputs must succeed so the engine can break the algebraic loop between
+    the pressurizer (needs controller outputs for *derivatives*) and the
+    controller (needs pressurizer P for its outputs).
+
+    When called without inputs, P/level/T_sat are exact; m_dot_surge is 0.0
+    and subcooling_margin is None (inputs required for those).
+    """
     pzr = Pressurizer(default_params())
-    with pytest.raises(TypeError):
-        pzr.outputs(pzr.initial_state())
+    out = pzr.outputs(pzr.initial_state())
+    assert "P" in out
+    assert "level" in out
+    assert "T_sat" in out
+    assert out["m_dot_surge"] == 0.0
+    assert out["subcooling_margin"] is None
 
 
 def test_telemetry_includes_heater_on_and_spray_open():

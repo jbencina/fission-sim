@@ -15,8 +15,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from fission_sim.control.pressurizer_controller import (
+    PressurizerController,
+    PressurizerControllerParams,
+)
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
@@ -24,29 +29,67 @@ from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
 
 def _assemble_plant():
-    """Build the M1 plant via the engine and return (engine, modules) ready
+    """Build the M2 plant via the engine and return (engine, modules) ready
     for run() with a scenario_fn.
 
-    Module registration order is rod, core, loop, sg, sink — matching
-    tests/test_engine.py::_assemble_full_plant for cross-test consistency.
+    Module registration order is rod, core, loop, sg, sink, pzr, pzr_ctrl —
+    matching tests/test_engine.py::_assemble_full_plant for cross-test
+    consistency. Includes M2 pressurizer and controller so the loop's new
+    inputs (m_dot_spray, m_dot_surge) are satisfied.
     """
     engine = SimEngine()
+    loop_params = LoopParams()
+    pzr_params = PressurizerParams(loop_params=loop_params)
+    ctrl_params = PressurizerControllerParams()
+
     rod = engine.module(RodController(RodParams()), name="rod")
     core = engine.module(PointKineticsCore(CoreParams()), name="core")
-    loop = engine.module(PrimaryLoop(LoopParams()), name="loop")
+    loop = engine.module(PrimaryLoop(loop_params), name="loop")
     sg = engine.module(SteamGenerator(SGParams()), name="sg")
     sink = engine.module(SecondarySink(SinkParams()), name="sink")
+    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
+    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
     rod_cmd = engine.input("rod_command", default=0.5)
     scram = engine.input("scram", default=False)
+    P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
+    heater_manual = engine.input("heater_manual", default=None)
+    spray_manual = engine.input("spray_manual", default=None)
 
     rho_rod = rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    loop(power_thermal=core.power_thermal, Q_sg=Q_sg)
+    pzr(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg,
+        T_hotleg=loop.T_hot,
+        T_coldleg=loop.T_cold,
+        Q_heater=pzr_ctrl.Q_heater,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+    )
+    pzr_ctrl(
+        P=pzr.P,
+        P_setpoint=P_setpoint,
+        heater_manual=heater_manual,
+        spray_manual=spray_manual,
+    )
+    loop(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+        m_dot_surge=pzr.m_dot_surge,
+    )
     engine.finalize()
-    return engine, {"rod": rod, "core": core, "loop": loop, "sg": sg, "sink": sink}
+    return engine, {
+        "rod": rod,
+        "core": core,
+        "loop": loop,
+        "sg": sg,
+        "sink": sink,
+        "pzr": pzr,
+        "pzr_ctrl": pzr_ctrl,
+    }
 
 
 def test_coupled_steady_state_holds() -> None:
