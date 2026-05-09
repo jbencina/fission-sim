@@ -129,3 +129,112 @@ class PressurizerController:
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
         """Return ``np.zeros(0)`` — stateless controller has no derivatives."""
         return np.zeros(0)
+
+    def outputs(self, state: np.ndarray, *, inputs: dict) -> dict:
+        """Compute heater and spray demands from the pressure error.
+
+        Algorithm:
+
+            err = P_setpoint − P
+            heater_duty (auto) = clip(K_p_heater · (err − deadband), 0, 1)
+                                  if err > deadband else 0
+            spray_duty (auto)  = clip(K_p_spray · (−err − deadband), 0, 1)
+                                  if err < −deadband else 0
+
+        Manual overrides bypass the auto path:
+
+            heater_duty = heater_manual if heater_manual is not None
+            spray_duty  = spray_manual  if spray_manual  is not None
+
+        Final demands scale by the actuator maxima:
+
+            Q_heater    = heater_duty · Q_heater_max
+            m_dot_spray = spray_duty  · m_dot_spray_max
+
+        SIMPLIFICATION: pure proportional, no integral. The pressurizer
+        + loop is a slow integrator already, so steady-state offset is
+        small and bounded by the deadband.
+
+        SIMPLIFICATION: no heater warm-up, no spray valve opening lag.
+        Real systems have ~0.5–1 s actuator dynamics; we treat as
+        instantaneous.
+
+        Parameters
+        ----------
+        state : np.ndarray
+            Length-0 state vector (controller is stateless).
+        inputs : dict
+            Must contain keys: ``P`` [Pa], ``P_setpoint`` [Pa],
+            ``heater_manual`` (float 0–1 or None),
+            ``spray_manual`` (float 0–1 or None).
+
+        Returns
+        -------
+        dict
+            ``Q_heater`` [W] and ``m_dot_spray`` [kg/s] demands.
+        """
+        p = self.params
+        P = inputs["P"]
+        P_set = inputs["P_setpoint"]
+        heater_manual = inputs["heater_manual"]
+        spray_manual = inputs["spray_manual"]
+
+        # Signed pressure error: positive means underpressure (need heat),
+        # negative means overpressure (need spray).
+        err = P_set - P
+
+        # Heater duty: auto when heater_manual is None, override otherwise.
+        if heater_manual is not None:
+            heater_duty = heater_manual
+        elif err > p.deadband:
+            # Outside deadband low — proportional demand saturated at 1.
+            heater_duty = float(np.clip(p.K_p_heater * (err - p.deadband), 0.0, 1.0))
+        else:
+            heater_duty = 0.0
+
+        # Spray duty: auto when spray_manual is None, override otherwise.
+        if spray_manual is not None:
+            spray_duty = spray_manual
+        elif err < -p.deadband:
+            # Outside deadband high — proportional demand saturated at 1.
+            spray_duty = float(np.clip(p.K_p_spray * (-err - p.deadband), 0.0, 1.0))
+        else:
+            spray_duty = 0.0
+
+        return {
+            "Q_heater": heater_duty * p.Q_heater_max,
+            "m_dot_spray": spray_duty * p.m_dot_spray_max,
+        }
+
+    def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Echo demand outputs plus raw inputs for the operator console.
+
+        Parameters
+        ----------
+        state : np.ndarray
+            Length-0 state vector.
+        inputs : dict or None
+            Same dict as ``outputs()``. When None (e.g. before the first
+            integration step), all values are returned as None.
+
+        Returns
+        -------
+        dict
+            Keys: ``Q_heater`` [W], ``m_dot_spray`` [kg/s], ``P`` [Pa],
+            ``P_setpoint`` [Pa], ``heater_manual`` [-], ``spray_manual`` [-].
+        """
+        if inputs is None:
+            return {
+                "Q_heater": None,
+                "m_dot_spray": None,
+                "P": None,
+                "P_setpoint": None,
+                "heater_manual": None,
+                "spray_manual": None,
+            }
+        out = self.outputs(state, inputs=inputs)
+        out["P"] = inputs["P"]
+        out["P_setpoint"] = inputs["P_setpoint"]
+        out["heater_manual"] = inputs["heater_manual"]
+        out["spray_manual"] = inputs["spray_manual"]
+        return out
