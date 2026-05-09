@@ -18,8 +18,13 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
+from fission_sim.control.pressurizer_controller import (
+    PressurizerController,
+    PressurizerControllerParams,
+)
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
@@ -41,6 +46,8 @@ def main() -> None:
     sg_params = SGParams()
     sink_params = SinkParams()
     rod_params = RodParams()
+    pzr_params = PressurizerParams(loop_params=loop_params)
+    ctrl_params = PressurizerControllerParams()
 
     engine = SimEngine()
     rod = engine.module(RodController(rod_params), name="rod")
@@ -48,15 +55,40 @@ def main() -> None:
     loop = engine.module(PrimaryLoop(loop_params), name="loop")
     sg = engine.module(SteamGenerator(sg_params), name="sg")
     sink = engine.module(SecondarySink(sink_params), name="sink")
+    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
+    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
     rod_cmd = engine.input("rod_command", default=0.5)
     scram = engine.input("scram", default=False)
+    P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
+    heater_manual = engine.input("heater_manual", default=None)
+    spray_manual = engine.input("spray_manual", default=None)
 
     rho_rod = rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    loop(power_thermal=core.power_thermal, Q_sg=Q_sg_sig)
+    pzr(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg_sig,
+        T_hotleg=loop.T_hot,
+        T_coldleg=loop.T_cold,
+        Q_heater=pzr_ctrl.Q_heater,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+    )
+    pzr_ctrl(
+        P=pzr.P,
+        P_setpoint=P_setpoint,
+        heater_manual=heater_manual,
+        spray_manual=spray_manual,
+    )
+    loop(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg_sig,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+        P_primary=pzr.P,
+    )
+    engine.finalize()
 
     # --- integrate ---
     _final_snap, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
