@@ -327,8 +327,8 @@ class PrimaryLoop:
 
         Parameters
         ----------
-        state : np.ndarray, shape (2,)
-            ``[T_hot, T_cold]`` in K.
+        state : np.ndarray, shape (3,)
+            ``[T_hot, T_cold, M_loop]`` in K and kg.
         inputs : dict, optional
             Unused for this component (loop outputs depend only on state).
             Accepted for API uniformity.
