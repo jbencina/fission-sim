@@ -78,32 +78,98 @@ def T_sat(P: float) -> float:
 
 
 def sat_liquid_density(P: float) -> float:
-    """Saturated-liquid density at given pressure (Q=0)."""
+    """Saturated-liquid density at given pressure (Q=0).
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Density [kg/m³].
+    """
     return CP.PropsSI("D", "P", P, "Q", 0.0, _FLUID)
 
 
 def sat_vapor_density(P: float) -> float:
-    """Saturated-vapor density at given pressure (Q=1)."""
+    """Saturated-vapor density at given pressure (Q=1).
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Density [kg/m³].
+    """
     return CP.PropsSI("D", "P", P, "Q", 1.0, _FLUID)
 
 
 def sat_liquid_enthalpy(P: float) -> float:
-    """Saturated-liquid specific enthalpy at given pressure (Q=0)."""
+    """Saturated-liquid specific enthalpy at given pressure (Q=0).
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Specific enthalpy [J/kg].
+    """
     return CP.PropsSI("H", "P", P, "Q", 0.0, _FLUID)
 
 
 def sat_vapor_enthalpy(P: float) -> float:
-    """Saturated-vapor specific enthalpy at given pressure (Q=1)."""
+    """Saturated-vapor specific enthalpy at given pressure (Q=1).
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Specific enthalpy [J/kg].
+    """
     return CP.PropsSI("H", "P", P, "Q", 1.0, _FLUID)
 
 
 def sat_liquid_internal_energy(P: float) -> float:
-    """Saturated-liquid specific internal energy at given pressure."""
+    """Saturated-liquid specific internal energy at given pressure.
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Specific internal energy [J/kg].
+    """
     return CP.PropsSI("U", "P", P, "Q", 0.0, _FLUID)
 
 
 def sat_vapor_internal_energy(P: float) -> float:
-    """Saturated-vapor specific internal energy at given pressure."""
+    """Saturated-vapor specific internal energy at given pressure.
+
+    Parameters
+    ----------
+    P : float
+        Pressure [Pa].
+
+    Returns
+    -------
+    float
+        Specific internal energy [J/kg].
+    """
     return CP.PropsSI("U", "P", P, "Q", 1.0, _FLUID)
 
 
