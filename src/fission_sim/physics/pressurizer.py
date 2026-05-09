@@ -323,3 +323,147 @@ class Pressurizer:
         """
         p = self.params
         return np.array([p.M_pzr_initial, p.U_pzr_initial])
+
+    def _compute_m_dot_surge(
+        self,
+        sat: SaturationState,
+        inputs: dict,
+    ) -> float:
+        """Mass surge flow into the pressurizer [kg/s].
+
+        Internal helper used by both ``derivatives()`` and ``outputs()``
+        so the surge math lives in one place.
+
+        Algorithm:
+
+        1. Compute dT_avg/dt from the loop's energy imbalance:
+
+               dT_avg/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)
+
+           This is the symmetric simplification of the two-leg energy
+           balance valid when M_hot ≈ M_cold (true at L1 defaults).
+        2. Volumetric expansion of primary water:
+
+               surge_volume_rate = β_T · V_loop · dT_avg/dt
+
+           Volume expanding *out of* the loop pipes goes *into* the
+           pressurizer (same sign convention).
+        3. Convert volumetric to mass flow with direction-branched ρ:
+
+           - Insurge (positive): hot-leg subcooled liquid enters →
+             ρ_hotleg(P, T_hotleg) from CoolProp.
+           - Outsurge (negative): saturated liquid leaves the bottom
+             of the pressurizer → ρ_l from the saturation closure.
+
+        The asymmetry is real and matters for conservation: at design
+        ρ_hotleg ≈ 715 kg/m³ vs. ρ_l_sat ≈ 595 kg/m³ (~17 % gap).
+        Using a single value would inflate the conservation-test residual
+        to the size of the test tolerance.
+
+        References
+        ----------
+        Todreas & Kazimi Vol. 1, §6.2 Eq. 6-13 (energy balance form on a
+        rigid control volume); §6.4 (volumetric expansion under heating).
+        """
+        lp = self.params.loop_params
+        Q_core = inputs["power_thermal"]
+        Q_sg = inputs["Q_sg"]
+        T_hotleg = inputs["T_hotleg"]
+
+        # SIMPLIFICATION: symmetric thermal mass — assumes M_hot ≈ M_cold
+        # so dT_avg/dt = (Q_core − Q_sg) / (M_total · c_p). At default L1
+        # parameters M_hot = M_cold = 1.5e4 kg, so the approximation is
+        # exact. If the user makes them asymmetric, the surge prediction
+        # will be off by a few percent.
+        M_total = lp.M_hot + lp.M_cold
+        dT_avg_dt = (Q_core - Q_sg) / (M_total * lp.c_p)
+
+        # Volumetric expansion of primary water into the pressurizer.
+        # SIMPLIFICATION: β_T_primary frozen at design (~3.3e-3 /K from
+        # CoolProp at 583 K, 15.5 MPa, verified Task A1). The real value
+        # varies ~50 % across the 568–598 K operating range; frozen-at-
+        # design under-predicts surge magnitude during cooldowns and
+        # over-predicts during heatups. L2 reads β_T from CoolProp
+        # every step.
+        #
+        # TEMPORARY (until F1): beta_T_primary and V_loop are not yet
+        # added to LoopParams — Task F1 does that. Using getattr() with
+        # a 0.0 default so calls with dT_avg_dt = 0 (design steady-state,
+        # heater-only, spray-only tests) still pass. F2 removes these
+        # fallbacks once F1 has landed.
+        beta_T_primary = getattr(lp, "beta_T_primary", 0.0)
+        V_loop = getattr(lp, "V_loop", 0.0)
+        surge_volume_rate = beta_T_primary * V_loop * dT_avg_dt
+
+        # Direction-branched density.
+        if surge_volume_rate >= 0.0:
+            # Insurge: hot-leg subcooled liquid enters at primary P, T_hot.
+            rho_surge = coolprop.density_PT(P=sat.P, T=T_hotleg)
+        else:
+            # Outsurge: saturated liquid leaves at the pressurizer's
+            # current saturation density.
+            rho_surge = sat.rho_l
+
+        return rho_surge * surge_volume_rate
+
+    def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
+        """Mass + energy balance for the saturated mixture.
+
+        Pure function of (state, inputs). The adaptive ODE solver may
+        call this speculatively many times per step with hypothetical
+        states.
+
+        Equations (open-system first law on a rigid control volume,
+        Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13):
+
+            dM/dt = ṁ_surge + ṁ_spray
+            dU/dt = Q_heater + ṁ_surge · h_hotleg + ṁ_spray · h_coldleg
+
+        The ``P · dV`` flow-work term that appears in the general open-
+        system first law vanishes because V_pzr is constant (rigid tank).
+        When PORV venting is added in a future slice, vapor leaves
+        through a *flowing* boundary and that closure must be re-derived.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+            ``[M_pzr, U_pzr]``.
+        inputs : dict
+            See ``input_ports`` for required keys.
+
+        Returns
+        -------
+        np.ndarray, shape (2,)
+            ``[dM_pzr/dt, dU_pzr/dt]``.
+        """
+        p = self.params
+        M, U = state[0], state[1]
+
+        # Saturation closure — gives current P, ρ_l (for outsurge), etc.
+        sat = saturation_state(M=M, U=U, V=p.V_pzr)
+
+        # Surge mass rate (sign-branched density inside helper).
+        m_dot_surge = self._compute_m_dot_surge(sat, inputs)
+
+        # Spray mass rate is just the input.
+        m_dot_spray = inputs["m_dot_spray"]
+        Q_heater = inputs["Q_heater"]
+
+        # Subcooled-liquid enthalpies of the incoming water streams.
+        # NOT saturation values — primary water at 568/598 K is well
+        # below T_sat ≈ 618 K at 15.5 MPa.
+        T_hotleg = inputs["T_hotleg"]
+        T_coldleg = inputs["T_coldleg"]
+        h_hotleg = coolprop.enthalpy_PT(P=sat.P, T=T_hotleg)
+        h_coldleg = coolprop.enthalpy_PT(P=sat.P, T=T_coldleg)
+
+        # Mass balance.
+        dM_dt = m_dot_surge + m_dot_spray
+
+        # Energy balance.
+        dU_dt = Q_heater + m_dot_surge * h_hotleg + m_dot_spray * h_coldleg
+
+        dstate = np.empty(self.state_size)
+        dstate[0] = dM_dt
+        dstate[1] = dU_dt
+        return dstate
