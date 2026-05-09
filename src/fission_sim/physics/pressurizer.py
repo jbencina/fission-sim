@@ -467,3 +467,127 @@ class Pressurizer:
         dstate[0] = dM_dt
         dstate[1] = dU_dt
         return dstate
+
+    # Heater-bank annunciator threshold for telemetry's heater_on bool.
+    # Real plants light "BACKUP HEATERS ON" when the variable bank
+    # saturates and the backup bank cuts in — about half-full duty.
+    _HEATER_ON_THRESHOLD: float = 0.5
+
+    def outputs(self, state: np.ndarray, inputs: dict) -> dict:
+        """Return the publishable ports (P, level, T_sat, m_dot_surge, subcooling_margin).
+
+        Pressurizer is a "computed" module — its outputs depend on inputs
+        (T_hotleg for both density evaluations and subcooling margin;
+        power_thermal/Q_sg for the surge calculation). The engine
+        classifies this by trying ``outputs(state)`` without inputs at
+        finalize time; this method requires the kwarg, so the call
+        without inputs raises TypeError, and the engine puts the
+        pressurizer in the topo-sorted "computed" group.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+            ``[M_pzr, U_pzr]``.
+        inputs : dict
+            See ``input_ports`` for required keys.
+
+        Returns
+        -------
+        dict
+            Keys: ``P``, ``level``, ``T_sat``, ``m_dot_surge``,
+            ``subcooling_margin``.
+        """
+        p = self.params
+        M, U = state[0], state[1]
+        sat = saturation_state(M=M, U=U, V=p.V_pzr)
+
+        m_dot_surge = self._compute_m_dot_surge(sat, inputs)
+        T_hotleg = inputs["T_hotleg"]
+
+        return {
+            "P": sat.P,
+            "level": sat.level,
+            "T_sat": sat.T_sat,
+            "m_dot_surge": m_dot_surge,
+            # Subcooling margin: T_sat − T_hotleg. Positive when the hot
+            # leg is below saturation (normal operation). Zero or negative
+            # signals incipient bulk boiling — trigger for FR-C.1
+            # (Inadequate Core Cooling) on real W4-loop control rooms.
+            "subcooling_margin": sat.T_sat - T_hotleg,
+        }
+
+    def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
+        """Return rich diagnostic dict for logging and visualization.
+
+        Includes all of ``outputs()`` plus operator-facing booleans
+        (``heater_on``, ``spray_open``) when inputs are provided, plus
+        the raw saturation-closure intermediates (``x``, ``M_l``,
+        ``M_v``) that are useful for understanding the model state.
+
+        When inputs is None, only state-derivable keys are populated;
+        input-dependent keys are reported as None.
+
+        Parameters
+        ----------
+        state : np.ndarray, shape (2,)
+            ``[M_pzr, U_pzr]``.
+        inputs : dict or None, optional
+            See ``input_ports`` for required keys. When None, only
+            state-derived quantities are populated.
+
+        Returns
+        -------
+        dict
+            Always contains: ``P``, ``level``, ``T_sat``, ``x``,
+            ``M_l``, ``M_v``, ``M_pzr``, ``U_pzr``.
+            With inputs: also ``m_dot_surge``, ``subcooling_margin``,
+            ``heater_on``, ``spray_open``, ``Q_heater``, ``m_dot_spray``.
+            Without inputs: above keys present but set to None.
+        """
+        p = self.params
+        M, U = state[0], state[1]
+        sat = saturation_state(M=M, U=U, V=p.V_pzr)
+
+        out: dict = {
+            "P": sat.P,
+            "level": sat.level,
+            "T_sat": sat.T_sat,
+            "x": sat.x,
+            "M_l": sat.M_l,
+            "M_v": sat.M_v,
+            "M_pzr": M,
+            "U_pzr": U,
+        }
+
+        if inputs is not None:
+            m_dot_surge = self._compute_m_dot_surge(sat, inputs)
+            T_hotleg = inputs["T_hotleg"]
+            Q_heater = inputs["Q_heater"]
+            m_dot_spray = inputs["m_dot_spray"]
+
+            out["m_dot_surge"] = m_dot_surge
+            out["subcooling_margin"] = sat.T_sat - T_hotleg
+            # Discrete annunciators — what an operator would see lit on
+            # a control-room panel.
+            # NOTE: Q_heater_max is owned by PressurizerControllerParams,
+            # not by the pressurizer. We use the default 1.8 MW as the
+            # annunciator threshold reference. If the user changes
+            # Q_heater_max in the controller, the threshold is still
+            # measured against the default — an approximation, fine for
+            # a read-only annunciator.
+            Q_heater_max_default = 1.8e6  # see PressurizerControllerParams
+            out["heater_on"] = bool(
+                Q_heater > self._HEATER_ON_THRESHOLD * Q_heater_max_default
+            )
+            out["spray_open"] = bool(m_dot_spray > 0.0)
+            out["Q_heater"] = Q_heater
+            out["m_dot_spray"] = m_dot_spray
+        else:
+            out["m_dot_surge"] = None
+            out["subcooling_margin"] = None
+            out["heater_on"] = None
+            out["spray_open"] = None
+            out["Q_heater"] = None
+            out["m_dot_spray"] = None
+
+        return out

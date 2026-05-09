@@ -228,3 +228,72 @@ def test_outsurge_uses_saturated_liquid_density():
     rho_hotleg = coolprop.density_PT(P=p.P_design, T=lp.T_hot_ref)
     wrong_m_dot_surge = rho_hotleg * surge_vol_rate
     assert dstate[0] != pytest.approx(wrong_m_dot_surge, rel=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Layer 1: outputs() and telemetry()
+# ---------------------------------------------------------------------------
+def test_outputs_at_design_returns_design_pressure_and_level():
+    p = default_params()
+    pzr = Pressurizer(p)
+    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
+    assert set(out.keys()) == {"P", "level", "T_sat", "m_dot_surge", "subcooling_margin"}
+    assert out["P"] == pytest.approx(p.P_design, rel=1e-3)
+    assert out["level"] == pytest.approx(p.level_design, abs=1e-3)
+
+
+def test_outputs_subcooling_margin_is_T_sat_minus_T_hotleg():
+    p = default_params()
+    pzr = Pressurizer(p)
+    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
+    expected = out["T_sat"] - p.loop_params.T_hot_ref
+    assert out["subcooling_margin"] == pytest.approx(expected, rel=1e-9)
+    assert out["subcooling_margin"] > 0
+
+
+def test_outputs_m_dot_surge_zero_at_design():
+    p = default_params()
+    pzr = Pressurizer(p)
+    out = pzr.outputs(pzr.initial_state(), inputs=_design_inputs(p))
+    assert out["m_dot_surge"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_outputs_requires_inputs_kwarg():
+    """Pressurizer is a 'computed' module — outputs(state) without inputs
+    must raise TypeError so the engine classifies it correctly."""
+    pzr = Pressurizer(default_params())
+    with pytest.raises(TypeError):
+        pzr.outputs(pzr.initial_state())
+
+
+def test_telemetry_includes_heater_on_and_spray_open():
+    p = default_params()
+    pzr = Pressurizer(p)
+    inputs = _design_inputs(p) | {"Q_heater": 0.6 * 1.8e6, "m_dot_spray": 5.0}
+    tele = pzr.telemetry(pzr.initial_state(), inputs=inputs)
+    assert "heater_on" in tele
+    assert "spray_open" in tele
+    assert tele["heater_on"] is True
+    assert tele["spray_open"] is True
+
+
+def test_telemetry_heater_on_false_below_threshold():
+    p = default_params()
+    pzr = Pressurizer(p)
+    inputs = _design_inputs(p) | {"Q_heater": 0.4 * 1.8e6, "m_dot_spray": 0.0}
+    tele = pzr.telemetry(pzr.initial_state(), inputs=inputs)
+    assert tele["heater_on"] is False
+    assert tele["spray_open"] is False
+
+
+def test_telemetry_without_inputs_returns_state_only_keys():
+    p = default_params()
+    pzr = Pressurizer(p)
+    tele = pzr.telemetry(pzr.initial_state())
+    assert "P" in tele
+    assert "level" in tele
+    assert "T_sat" in tele
+    assert tele.get("m_dot_surge") is None
+    assert tele.get("subcooling_margin") is None
+    assert tele.get("heater_on") is None
+    assert tele.get("spray_open") is None
