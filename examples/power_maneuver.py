@@ -1,11 +1,20 @@
 """Power-maneuver demo — slow rod insertion + withdrawal at hot full power.
 
 Demonstrates the operator's startup-rate meter (DPM) over a controlled
-maneuver. Starts at design steady state, slowly inserts rod to drop
-power by ~14%, holds, then re-withdraws to design. The SUR indicator
-transitions through subcritical → critical → supercritical → stable
-across the maneuver — the same shape an operator sees during load-follow
-or any controlled rod-driven power change at power.
+maneuver, and (at M2) the pressurizer pressure-control response to the
+thermal transient.
+
+Starts at design steady state, slowly inserts rod to drop power by ~14%,
+holds, then re-withdraws to design. The SUR indicator transitions through
+subcritical → critical → supercritical → stable across the maneuver — the
+same shape an operator sees during load-follow or any controlled rod-driven
+power change at power.
+
+The pressurizer story runs in parallel: insertion cools the primary, which
+drives an outsurge (water contracts → level drops → P falls). The heater
+band fires to restore pressure. On withdrawal the primary reheats, drives
+an insurge, and spray opens to condense excess steam. Both P and level
+should stay within acceptance-criterion bounds throughout.
 
 This is **NOT** a cold-startup approach-to-criticality. A real cold
 startup begins at deep-subcritical conditions where neutron count rate
@@ -47,22 +56,53 @@ PCM = 1e5
 
 
 def build_plant() -> SimEngine:
-    """M1 plant at design defaults — n=1, all temps at refs, rod at 0.5."""
+    """M2 plant at design defaults — n=1, all temps at refs, rod at 0.5,
+    P=15.5 MPa, level=0.5."""
+    from fission_sim.control.pressurizer_controller import (
+        PressurizerController,
+        PressurizerControllerParams,
+    )
+    from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
+
     engine = SimEngine()
+    loop_params = LoopParams()
+    pzr_params = PressurizerParams(loop_params=loop_params)
+    ctrl_params = PressurizerControllerParams()
+
     rod = engine.module(RodController(RodParams()), name="rod")
     core = engine.module(PointKineticsCore(CoreParams()), name="core")
-    loop = engine.module(PrimaryLoop(LoopParams()), name="loop")
+    loop = engine.module(PrimaryLoop(loop_params), name="loop")
     sg = engine.module(SteamGenerator(SGParams()), name="sg")
     sink = engine.module(SecondarySink(SinkParams()), name="sink")
+    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
+    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
     rod_cmd = engine.input("rod_command", default=0.5)
     scram = engine.input("scram", default=False)
+    P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
+    heater_manual = engine.input("heater_manual", default=None)
+    spray_manual = engine.input("spray_manual", default=None)
 
     rho_rod = rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    loop(power_thermal=core.power_thermal, Q_sg=Q_sg_sig)
+    pzr(
+        power_thermal=core.power_thermal,
+        Q_sg=Q_sg_sig,
+        T_hotleg=loop.T_hot,
+        T_coldleg=loop.T_cold,
+        Q_heater=pzr_ctrl.Q_heater,
+        m_dot_spray=pzr_ctrl.m_dot_spray,
+    )
+    pzr_ctrl(
+        P=pzr.P, P_setpoint=P_setpoint,
+        heater_manual=heater_manual, spray_manual=spray_manual,
+    )
+    loop(
+        power_thermal=core.power_thermal, Q_sg=Q_sg_sig,
+        m_dot_spray=pzr_ctrl.m_dot_spray, P_primary=pzr.P,
+    )
     engine.finalize()
     return engine
 
@@ -76,11 +116,8 @@ def scenario(t: float) -> dict:
         rod_command = 0.5 - 0.015 * (t - 30.0) / 120.0
     elif t < 360.0:
         rod_command = 0.485
-    elif t < 480.0:
-        # Withdraw: 0.485 → 0.5 over 120 s.
-        rod_command = 0.485 + 0.015 * (t - 360.0) / 120.0
     else:
-        rod_command = 0.5
+        rod_command = 0.485 + 0.015 * min(t - 360.0, 120.0) / 120.0
     return {"rod_command": rod_command, "scram": False}
 
 
@@ -89,13 +126,13 @@ def main() -> None:
     _final, dense = engine.run(t_end=900.0, scenario_fn=scenario, dense=True, max_step=0.5)
 
     print()
-    print("=" * 96)
-    print("  Power Maneuver Demo  —  controlled rod insertion + withdrawal at hot full power")
-    print("=" * 96)
+    print("=" * 100)
+    print("  Power Maneuver Demo  —  controlled rod insertion + withdrawal at hot full power  (M2)")
+    print("=" * 100)
     print()
     print("  Scenario:")
     print("    t =   0..30 s    hold at design (rod_command = 0.5, n = 1.0)")
-    print("    t =  30..150 s   ramp rod 0.500 → 0.485 (slow insertion, −210 pcm step)")
+    print("    t =  30..150 s   ramp rod 0.500 → 0.485 (slow insertion, −210 pcm)")
     print("    t = 150..360 s   hold at 0.485; power settles toward new equilibrium")
     print("    t = 360..480 s   ramp rod 0.485 → 0.500 (slow withdrawal back to design)")
     print("    t = 480..900 s   hold at 0.500; power returns to design")
@@ -104,29 +141,35 @@ def main() -> None:
     sample_t = np.array([0.0, 30.0, 60.0, 100.0, 150.0, 200.0, 300.0, 360.0, 420.0, 480.0, 600.0, 900.0])
 
     print("  Time-series at key points:")
-    header = "    " + "-" * 87
+    header = "    " + "-" * 93
     print(header)
     print(
         f"    {'t[s]':>6}  {'n':>9}  {'Q_core':>6}  {'T_fuel':>7}  {'T_avg':>6}"
-        f"  {'rod_cmd':>7}  {'rho_rod':>7}  {'rho_tot':>7}  {'SUR':>7}"
+        f"  {'P':>6}  {'level':>5}  {'Q_htr':>6}  {'m_spr':>5}"
+        f"  {'rho_tot':>7}  {'SUR':>7}"
     )
     print(
-        f"    {'':>6}  {'':>9}  {'[GW]':>6}  {'[K]':>7}  {'[K]':>6}  {'':>7}  {'[pcm]':>7}  {'[pcm]':>7}  {'[DPM]':>7}"
+        f"    {'':>6}  {'':>9}  {'[GW]':>6}  {'[K]':>7}  {'[K]':>6}"
+        f"  {'[MPa]':>6}  {'':>5}  {'[MW]':>6}  {'[kg/s]':>5}"
+        f"  {'[pcm]':>7}  {'[DPM]':>7}"
     )
     print(header)
     for ti in sample_t:
         snap = dense.at(float(ti))
-        rod_cmd = scenario(float(ti))["rod_command"]
         n = snap["core"]["n"]
         Q_core = snap["signals"]["power_thermal"] / 1e9
         T_fuel = snap["core"]["T_fuel"]
         T_avg = (snap["loop"]["T_hot"] + snap["loop"]["T_cold"]) / 2.0
-        rho_rod_pcm = snap["signals"]["rho_rod"] * PCM
+        P_MPa = snap["pzr"]["P"] / 1e6
+        level = snap["pzr"]["level"]
+        Q_htr_MW = snap["signals"]["Q_heater"] / 1e6
+        m_spr = snap["signals"]["m_dot_spray"]
         rho_tot_pcm = snap["core"]["rho_total"] * PCM
         sur = snap["core"]["startup_rate_dpm"]
         print(
             f"    {ti:6.1f}  {n:9.3e}  {Q_core:6.3f}  {T_fuel:7.2f}  {T_avg:6.2f}"
-            f"  {rod_cmd:7.4f}  {rho_rod_pcm:+7.1f}  {rho_tot_pcm:+7.1f}  {sur:+7.2f}"
+            f"  {P_MPa:6.3f}  {level:5.3f}  {Q_htr_MW:6.3f}  {m_spr:5.2f}"
+            f"  {rho_tot_pcm:+7.1f}  {sur:+7.2f}"
         )
     print(header)
     print()
@@ -146,6 +189,15 @@ def main() -> None:
     print("  The startup-rate meter is the operator's primary 'is the reactor")
     print("  approaching where I want it' indicator. Magnitude tells you how fast;")
     print("  sign tells you direction; zero tells you you've arrived.")
+    print()
+    print("  Pressurizer response (new at M2):")
+    print("    * t = 30..150: outsurge as primary cools → P falls below setpoint;")
+    print("      heaters fire (Q_htr > 0) once error exceeds the 150 kPa deadband.")
+    print("    * t = 150..360: heaters at small steady duty to balance the residual")
+    print("      outsurge mass loss and hold pressure within deadband.")
+    print("    * t = 360..480: insurge as primary reheats → P rises; spray opens to")
+    print("      condense excess steam.")
+    print("    * Throughout: |P − 15.5 MPa| stays well within 0.5 MPa (acceptance criterion 2).")
     print()
 
 
