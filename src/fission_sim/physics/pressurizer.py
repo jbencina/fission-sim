@@ -1,0 +1,139 @@
+"""Two-phase pressurizer with heaters and spray (L1 fidelity).
+
+The pressurizer is a vertical vessel attached to the primary loop hot
+leg via a surge line. It contains a saturated mixture of liquid water
+and steam: the liquid pool sits at the bottom with electrical heaters
+submerged in it; spray nozzles at the top inject cooler water from
+the cold leg to condense steam during overpressure.
+
+It is the *primary system's* pressure controller — by adjusting how
+much water is liquid vs. vapor, it sets the saturation pressure of the
+whole primary loop. As primary water expands and contracts (with
+temperature changes), volume surges into and out of the pressurizer
+through the surge line.
+
+At L1 we model:
+- Two states (M_pzr, U_pzr) — total mass and internal energy of the
+  saturated mixture in the vessel.
+- Saturation closure via CoolProp's (D, U) → P inversion.
+- Surge mass flow with direction-branched density (subcooled-liquid
+  ρ on insurge, saturated-liquid ρ on outsurge).
+- Heater = continuous Q_heater [W] input, no actuator dynamics.
+- Spray = continuous m_dot_spray [kg/s] input, no valve dynamics.
+- Sealed primary system (no PORV venting, no CVCS at M2).
+
+Physics specification: see ``docs/superpowers/specs/2026-05-08-pressurizer-design.md``.
+
+References
+----------
+Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed.,
+CRC Press, 2012. (Open-system first law for fixed-volume control
+volumes, §6.2 Eq. 6-13.)
+
+Tong, L. S. and Weisman, J. *Thermal Analysis of Pressurized Water
+Reactors*, 3rd ed., American Nuclear Society, 1996. (Pressurizer
+design and pressure control, §6.4 / §7.3.)
+
+Moran, M. J. and Shapiro, H. N. *Fundamentals of Engineering
+Thermodynamics*. (Two-phase mixtures, lever rule on specific volume,
+§3.6 Eq. 3.7.)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from fission_sim.physics import coolprop
+from fission_sim.physics.primary_loop import LoopParams
+
+
+@dataclass(frozen=True)
+class PressurizerParams:
+    """Parameters for the L1 two-phase pressurizer.
+
+    Defaults represent a Westinghouse 4-loop centroid (~1800 ft³ vessel
+    at 15.5 MPa primary pressure with half water level at design).
+
+    Parameters
+    ----------
+    V_pzr : float
+        Total internal vessel volume [m³]. Default 51.0 ≈ 1800 ft³ —
+        Westinghouse 4-loop FSAR family typical.
+    P_design : float
+        Primary design pressure [Pa]. Default 1.55e7 = 15.5 MPa.
+    level_design : float
+        Fractional water level at design (V_l / V_pzr). Default 0.5
+        gives equal margin for insurge expansion and outsurge contraction.
+    loop_params : LoopParams
+        Reference to the primary loop's params, needed by the pressurizer
+        to compute surge mass flow from the loop's energy imbalance. Pass
+        the same instance the loop uses; default ``LoopParams()`` covers
+        the all-defaults plant.
+    M_pzr_initial : float, optional
+        Initial total mass [kg]. If None, derived in ``__post_init__`` so
+        the design state has level=level_design and pressure=P_design.
+    U_pzr_initial : float, optional
+        Initial total internal energy [J]. If None, derived alongside
+        M_pzr_initial.
+
+    Notes
+    -----
+    Frozen dataclass; ``__post_init__`` uses ``object.__setattr__`` to
+    fill in derived defaults — standard pattern for frozen + derived.
+    """
+
+    # Total internal volume. Source: NRC Westinghouse Standard Plant FSAR
+    # §5.4.10 lists pressurizer vessel volumes in the 1700–1850 ft³ range
+    # for 4-loop plants. 51 m³ ≈ 1800 ft³ is mid-family.
+    V_pzr: float = 51.0  # [m³]
+
+    # Design pressure — primary system setpoint. Westinghouse 4-loop
+    # nominal is 2235–2250 psia ≈ 15.4–15.5 MPa.
+    P_design: float = 1.55e7  # [Pa]
+
+    # Design water level. Half-full gives equal capacity in either
+    # direction; real plants run closer to 60 % at full power.
+    level_design: float = 0.5  # [dimensionless, 0..1]
+
+    # Composed loop params for surge computation. The pressurizer needs
+    # M_hot, M_cold, c_p, V_loop, beta_T_primary to compute dT_avg/dt and
+    # hence surge_volume_rate from (Q_core, Q_sg). The cleanest way to
+    # share these between the two modules is composition.
+    loop_params: LoopParams = field(default_factory=LoopParams)
+
+    # Derived in __post_init__ from (P_design, level_design, V_pzr).
+    M_pzr_initial: float | None = None  # [kg]
+    U_pzr_initial: float | None = None  # [J]
+
+    def __post_init__(self) -> None:
+        """Derive ``M_pzr_initial`` and ``U_pzr_initial`` so the initial
+        pressurizer state corresponds exactly to (P_design, level_design).
+
+        Saturation closure inversion: at the design pressure, query
+        CoolProp for the saturated-liquid and saturated-vapor densities
+        and internal energies. Split the vessel into water and steam
+        sub-volumes by ``level_design``. Sum masses and internal energies
+        to get the totals.
+
+        This makes the design point a true equilibrium when paired with
+        the loop and controller in their corresponding design states.
+        """
+        if self.M_pzr_initial is None or self.U_pzr_initial is None:
+            P = self.P_design
+            rho_l = coolprop.sat_liquid_density(P=P)
+            rho_v = coolprop.sat_vapor_density(P=P)
+            u_l = coolprop.sat_liquid_internal_energy(P=P)
+            u_v = coolprop.sat_vapor_internal_energy(P=P)
+            V_l = self.level_design * self.V_pzr
+            V_v = self.V_pzr - V_l
+            M_l = V_l * rho_l
+            M_v = V_v * rho_v
+            object.__setattr__(self, "M_pzr_initial", M_l + M_v)
+            object.__setattr__(self, "U_pzr_initial", M_l * u_l + M_v * u_v)
+
+
+class Pressurizer:
+    """Placeholder — math added in Tasks B2 (skeleton), C1–C3 (closure + derivatives + outputs)."""
+
+    def __init__(self, params: PressurizerParams) -> None:
+        self.params = params
