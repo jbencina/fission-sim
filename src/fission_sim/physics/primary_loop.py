@@ -54,6 +54,17 @@ class LoopParams:
     T_cold_ref : float, optional
         Cold-leg reference temperature [K]. If None, derived as
         ``T_avg_ref - ΔT_design / 2``.
+    V_loop : float
+        Total primary loop liquid volume excluding the pressurizer [m³].
+        Used by the pressurizer to compute surge mass flow from volumetric
+        thermal expansion.
+    beta_T_primary : float
+        Volumetric thermal expansion coefficient of primary water at the
+        design point [1/K]. Frozen at 583 K, 15.5 MPa (3.3e-3 /K,
+        verified via CoolProp — Task A1).
+    M_loop_initial : float, optional
+        Initial liquid mass in the loop (excluding pressurizer) [kg]. If
+        None, derived in __post_init__ as ``M_hot + M_cold``.
 
     Notes
     -----
@@ -93,20 +104,52 @@ class LoopParams:
     T_hot_ref: float | None = None  # [K]
     T_cold_ref: float | None = None  # [K]
 
-    def __post_init__(self) -> None:
-        """Derive ``T_hot_ref`` and ``T_cold_ref`` from steady-state self-consistency.
+    # --- M2 additions: loop volume and thermal expansion for surge ---
 
-        At the design point both temperature derivatives are zero, which means
-        ``Q_core = ṁ · c_p · (T_hot − T_cold)``. Solving for ΔT and centering
-        on ``T_avg_ref`` gives:
+    # Total primary loop water volume EXCLUDING pressurizer. Used to
+    # compute volumetric expansion under temperature change. The
+    # pressurizer reads this (via composed LoopParams) for its own
+    # surge calculation.
+    #
+    # SIMPLIFICATION: this is a flat constant; the real value would
+    # come from CAD of the loop-piping + RPV downcomer + plenum
+    # volumes. Westinghouse 4-loop primary inventory is ~250–270 m³
+    # total, of which ~50 m³ is the pressurizer and ~30 m³ is each of
+    # the four SG primary sides. Subtracting gives ~80–100 m³ for
+    # piping + RPV. We use 175 m³ here as a conservative L1 estimate;
+    # implementer should verify against the W Tech Systems Manual
+    # §3.1 before publishing benchmark results.
+    V_loop: float = 175.0  # [m³]
+
+    # Volumetric thermal expansion coefficient β_T = (1/V)·(∂V/∂T)_P.
+    # Frozen at the design point: 583 K, 15.5 MPa. Verified via CoolProp
+    # in Task A1: actual value 3.256e-3 /K, rounded to 3.3e-3.
+    #
+    # SIMPLIFICATION: real β_T varies ~50 % across the 568–598 K
+    # operating range (~2.0e-3 to ~3.0e-3 /K, sometimes higher near
+    # 583 K). Frozen-at-design under-predicts surge magnitude during
+    # cooldowns (where T is below T_design and β is smaller) and
+    # over-predicts during heatups. L2 reads β from CoolProp every step.
+    beta_T_primary: float = 3.3e-3  # [1/K] — verified via CoolProp at design
+
+    # Initial liquid mass tracked for mass conservation across
+    # the sealed primary system (loop + pressurizer). If None,
+    # derived in __post_init__ as M_hot + M_cold.
+    M_loop_initial: float | None = None  # [kg]
+
+    def __post_init__(self) -> None:
+        """Derive ``T_hot_ref``, ``T_cold_ref``, and ``M_loop_initial``.
+
+        Temperatures: at the design point both temperature derivatives
+        are zero, which means ``Q_core = ṁ · c_p · (T_hot − T_cold)``.
+        Solving for ΔT and centering on ``T_avg_ref``:
 
             ΔT_design  = Q_design / (m_dot * c_p)
             T_hot_ref  = T_avg_ref + ΔT_design / 2
             T_cold_ref = T_avg_ref − ΔT_design / 2
 
-        With defaults (Q=3 GW, ṁ=17000 kg/s, c_p=5500 J/(kg·K)), ΔT ≈ 32 K
-        giving ``T_hot_ref ≈ 596 K`` (~323 °C) and ``T_cold_ref ≈ 564 K``
-        (~291 °C) — the textbook PWR temperatures.
+        Mass: at the design point with no surge or spray, the loop
+        liquid inventory equals the lumped baseline (M_hot + M_cold).
         """
         if self.T_hot_ref is None or self.T_cold_ref is None:
             delta_T = self.Q_design / (self.m_dot * self.c_p)
@@ -115,6 +158,8 @@ class LoopParams:
             # Frozen dataclass; bypass the freeze to set the derived defaults.
             object.__setattr__(self, "T_hot_ref", T_hot)
             object.__setattr__(self, "T_cold_ref", T_cold)
+        if self.M_loop_initial is None:
+            object.__setattr__(self, "M_loop_initial", self.M_hot + self.M_cold)
 
 
 class PrimaryLoop:
@@ -131,6 +176,12 @@ class PrimaryLoop:
             ``power_thermal`` output; same name used to enable auto-wiring).
         Q_sg : float [W]
             Heat removed from the loop by the steam generator.
+        m_dot_spray : float [kg/s]
+            Mass flow rate of cold-leg water sprayed into the pressurizer.
+            Positive means water leaving the loop (from controller).
+        m_dot_surge : float [kg/s]
+            Net mass flow from/to the pressurizer surge line. Positive means
+            water leaving the loop into the pressurizer (from pressurizer).
 
     Ports out (returned by ``outputs()``):
         T_hot : float [K]
@@ -142,9 +193,10 @@ class PrimaryLoop:
         T_cool : float [K]
             What the core sees as coolant temperature (= ``T_avg`` at L1).
 
-    State vector (length ``state_size`` = 2, names in ``state_labels``):
-        index 0 : T_hot  — hot-leg temperature [K]
-        index 1 : T_cold — cold-leg temperature [K]
+    State vector (length ``state_size`` = 3, names in ``state_labels``):
+        index 0 : T_hot   — hot-leg temperature [K]
+        index 1 : T_cold  — cold-leg temperature [K]
+        index 2 : M_loop  — liquid mass in the loop (excluding pressurizer) [kg]
 
     Notes
     -----
@@ -155,9 +207,9 @@ class PrimaryLoop:
     is coupled to the core and SG.
     """
 
-    state_size: int = 2
-    state_labels: tuple[str, ...] = ("T_hot", "T_cold")
-    input_ports: tuple[str, ...] = ("power_thermal", "Q_sg")
+    state_size: int = 3
+    state_labels: tuple[str, ...] = ("T_hot", "T_cold", "M_loop")
+    input_ports: tuple[str, ...] = ("power_thermal", "Q_sg", "m_dot_spray", "m_dot_surge")
     output_ports: tuple[str, ...] = ("T_hot", "T_cold", "T_avg", "T_cool")
 
     def __init__(self, params: LoopParams) -> None:
@@ -174,64 +226,74 @@ class PrimaryLoop:
     def initial_state(self) -> np.ndarray:
         """Return the design-point steady-state vector.
 
-        At the design point both temperature derivatives are zero by
-        construction (``LoopParams.__post_init__`` derives ``T_hot_ref`` and
-        ``T_cold_ref`` to make this true).
+        At design, both temperature derivatives are zero by construction
+        and the loop's liquid inventory equals ``M_hot + M_cold``. The
+        third state ``M_loop`` is the dynamic inventory that drains
+        when surge or spray pushes water into the pressurizer.
 
         Returns
         -------
-        np.ndarray, shape (2,)
-            ``[T_hot_ref, T_cold_ref]`` in K.
+        np.ndarray, shape (3,)
+            ``[T_hot_ref, T_cold_ref, M_loop_initial]``.
         """
         p = self.params
-        return np.array([p.T_hot_ref, p.T_cold_ref])
+        return np.array([p.T_hot_ref, p.T_cold_ref, p.M_loop_initial])
 
     def derivatives(self, state: np.ndarray, inputs: dict) -> np.ndarray:
-        """Compute dstate/dt for the two-leg primary loop energy balance.
+        """Two-leg energy balance + liquid inventory conservation.
 
-        Pure function of ``state`` and ``inputs`` — no per-step state on
-        ``self``. The adaptive ODE solver may call this function speculatively
-        many times per step with hypothetical states it later discards.
+        State and energy-balance equations unchanged from M1. The new
+        third equation closes the conservation loop with the pressurizer:
+
+            dM_loop/dt = − ṁ_surge − ṁ_spray
+
+        The negative signs reflect that mass leaving the loop into the
+        pressurizer reduces the loop's inventory. ``ṁ_surge`` and
+        ``ṁ_spray`` are inputs computed by the pressurizer and the
+        controller respectively; the loop just records the bookkeeping.
+
+        SIMPLIFICATION: ``M_hot`` and ``M_cold`` parameters in the
+        energy balance represent **lumped pipe-metal-plus-water
+        effective thermal inertia** in water-equivalent units, NOT the
+        instantaneous water mass. They stay constant. The few-hundred-kg
+        liquid-inventory shifts during a transient do not move them
+        appreciably — pipe metal dominates the thermal time constant.
+        Promoting them to a single coupled state would be a clean L2
+        step.
 
         Parameters
         ----------
-        state : np.ndarray, shape (2,)
-            ``[T_hot, T_cold]`` in K.
+        state : np.ndarray, shape (3,)
+            ``[T_hot, T_cold, M_loop]``.
         inputs : dict
-            Required keys:
-
-            - ``power_thermal`` : float [W] — heat from the core (matches the
-              core's ``power_thermal`` output port name for auto-wiring).
-            - ``Q_sg`` : float [W] — heat removed by the SG.
+            See ``input_ports`` for required keys.
 
         Returns
         -------
-        np.ndarray, shape (2,)
-            ``[dT_hot/dt, dT_cold/dt]`` in K/s.
+        np.ndarray, shape (3,)
+            ``[dT_hot/dt, dT_cold/dt, dM_loop/dt]``.
 
         Notes
         -----
-        Equations (see ``.docs/design.md`` §5.2 and Todreas eq 6.18):
+        Equations (.docs/design.md §5.2 and Todreas eq 6.18 for energy;
+        spec §3.3 for mass conservation):
 
             M_hot  · c_p · dT_hot/dt  = Q_core − ṁ · c_p · (T_hot − T_cold)
             M_cold · c_p · dT_cold/dt = ṁ · c_p · (T_hot − T_cold) − Q_sg
-
-        Physically:
-
-        - The hot leg gains heat from the core (Q_core) and loses heat by
-          mixing with cooler return water at rate Q_flow = ṁ · c_p · ΔT.
-        - The cold leg gains Q_flow from the hot leg and loses Q_sg to the SG.
-        - Mass flow ṁ is constant at L1 (no pump dynamics, no coastdown).
+            dM_loop/dt                = − ṁ_surge − ṁ_spray
         """
         p = self.params
 
         # --- decode the state slice into named locals ---
         T_hot = state[0]
         T_cold = state[1]
+        # M_loop = state[2]  # not used in energy equations; ṁ_surge + ṁ_spray determine d/dt directly
 
         # --- decode inputs ---
         power_thermal = inputs["power_thermal"]  # heat from core [W]
         Q_sg = inputs["Q_sg"]
+        m_dot_spray = inputs["m_dot_spray"]  # cold-leg spray to pressurizer [kg/s]
+        m_dot_surge = inputs["m_dot_surge"]  # surge line mass flow [kg/s]
 
         # --- heat carried from hot leg to cold leg by mass flow ---
         # ṁ · c_p · ΔT, dimensions [W]. This is the rate at which warm water
@@ -249,10 +311,15 @@ class PrimaryLoop:
         # --- cold-leg energy balance ---
         dT_cold_dt = (Q_flow - Q_sg) / (p.M_cold * p.c_p)
 
+        # --- mass conservation across the sealed primary system ---
+        # Spec §3.3. Positive ṁ_surge / ṁ_spray mean mass leaving the loop.
+        dM_loop_dt = -m_dot_surge - m_dot_spray
+
         # --- assemble derivative vector matching state layout ---
         dstate = np.empty(self.state_size)
         dstate[0] = dT_hot_dt
         dstate[1] = dT_cold_dt
+        dstate[2] = dM_loop_dt
         return dstate
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
@@ -294,22 +361,23 @@ class PrimaryLoop:
 
         Parameters
         ----------
-        state : np.ndarray, shape (2,)
+        state : np.ndarray, shape (3,)
         inputs : dict, optional
             If provided (with the same keys as ``derivatives``),
             ``power_thermal`` and ``Q_sg`` are echoed. If omitted, those keys
-            are reported as None; ``Q_flow`` is always computable from state
-            alone.
+            are reported as None; ``Q_flow`` and ``M_loop`` are always
+            computable from state alone.
 
         Returns
         -------
         dict
             Keys: ``T_hot``, ``T_cold``, ``T_avg``, ``T_cool``, ``delta_T``,
-            ``Tref``, ``power_thermal``, ``Q_sg``, ``Q_flow``. ``Tref`` is the
-            T_avg setpoint for the current load — at L1/M1 (no turbine) it
-            is constant ``T_avg_ref``; M3 will make it a function of turbine
-            demand. Real-plant operators watch ``T_avg − Tref`` as the
-            primary control signal.
+            ``Tref``, ``power_thermal``, ``Q_sg``, ``Q_flow``, ``M_loop``.
+            ``Tref`` is the T_avg setpoint for the current load — at L1/M1
+            (no turbine) it is constant ``T_avg_ref``; M3 will make it a
+            function of turbine demand. Real-plant operators watch
+            ``T_avg − Tref`` as the primary control signal. ``M_loop`` is the
+            current liquid inventory (loop only, excluding pressurizer) in kg.
         """
         p = self.params
         T_hot = state[0]
@@ -324,6 +392,8 @@ class PrimaryLoop:
         # load). Exposed now as a placeholder so future UI / control work
         # can already key off it; M3 turbine integration makes it dynamic.
         out["Tref"] = p.T_avg_ref
+        # M_loop: current liquid mass in the loop (third state, always present).
+        out["M_loop"] = state[2]
 
         if inputs is not None:
             out["power_thermal"] = inputs.get("power_thermal")

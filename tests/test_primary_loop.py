@@ -27,19 +27,39 @@ def test_loop_params_defaults_are_consistent():
     assert (p.T_hot_ref + p.T_cold_ref) / 2 == pytest.approx(p.T_avg_ref)
 
 
+def test_loop_params_has_V_loop_and_beta_T_defaults():
+    """LoopParams now exposes V_loop, beta_T_primary, M_loop_initial."""
+    p = default_params()
+    assert p.V_loop == 175.0
+    assert 3.0e-3 < p.beta_T_primary < 3.5e-3
+    # M_loop_initial defaults to M_hot + M_cold via __post_init__
+    assert p.M_loop_initial == pytest.approx(p.M_hot + p.M_cold)
+
+
+def test_loop_params_explicit_M_loop_initial_overrides_derived():
+    p = LoopParams(M_loop_initial=42000.0)
+    assert p.M_loop_initial == 42000.0
+
+
 def test_state_layout_indices():
     loop = PrimaryLoop(default_params())
-    assert loop.state_size == 2
-    assert loop.state_labels == ("T_hot", "T_cold")
+    assert loop.state_size == 3
+    assert loop.state_labels == ("T_hot", "T_cold", "M_loop")
+
+
+def test_input_ports_include_m_dot_spray_and_m_dot_surge():
+    loop = PrimaryLoop(default_params())
+    assert loop.input_ports == ("power_thermal", "Q_sg", "m_dot_spray", "m_dot_surge")
 
 
 def test_initial_state_is_design_steady_state():
     p = default_params()
     loop = PrimaryLoop(p)
     s = loop.initial_state()
-    assert s.shape == (2,)
+    assert s.shape == (3,)
     assert s[0] == pytest.approx(p.T_hot_ref)
     assert s[1] == pytest.approx(p.T_cold_ref)
+    assert s[2] == pytest.approx(p.M_loop_initial)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +67,12 @@ def test_initial_state_is_design_steady_state():
 # ---------------------------------------------------------------------------
 def _design_inputs(p: LoopParams) -> dict:
     """Inputs that, with initial_state, yield zero derivatives."""
-    return {"power_thermal": p.Q_design, "Q_sg": p.Q_design}
+    return {
+        "power_thermal": p.Q_design,
+        "Q_sg": p.Q_design,
+        "m_dot_spray": 0.0,
+        "m_dot_surge": 0.0,
+    }
 
 
 def test_design_steady_state_balances():
@@ -76,6 +101,24 @@ def test_more_q_sg_cools_cold_leg():
     assert dstate[1] < 0  # dT_cold/dt < 0
 
 
+def test_positive_surge_drains_loop_mass():
+    """ṁ_surge > 0 means mass leaves loop → dM_loop/dt < 0."""
+    p = default_params()
+    loop = PrimaryLoop(p)
+    inputs = _design_inputs(p) | {"m_dot_surge": 1.0}
+    dstate = loop.derivatives(loop.initial_state(), inputs)
+    assert dstate[2] == pytest.approx(-1.0)
+
+
+def test_spray_drains_loop_mass():
+    """ṁ_spray > 0 means cold-leg water leaves to pzr → dM_loop/dt < 0."""
+    p = default_params()
+    loop = PrimaryLoop(p)
+    inputs = _design_inputs(p) | {"m_dot_spray": 5.0}
+    dstate = loop.derivatives(loop.initial_state(), inputs)
+    assert dstate[2] == pytest.approx(-5.0)
+
+
 # ---------------------------------------------------------------------------
 # Layer 2+: outputs and telemetry
 # ---------------------------------------------------------------------------
@@ -93,7 +136,8 @@ def test_outputs_t_avg_and_t_cool_track_state():
     """T_avg and T_cool should follow the actual state, not just defaults."""
     p = default_params()
     loop = PrimaryLoop(p)
-    s = np.array([600.0, 570.0])
+    # State is now shape (3,): [T_hot, T_cold, M_loop]
+    s = np.array([600.0, 570.0, p.M_loop_initial])
     out = loop.outputs(s)
     assert out["T_hot"] == pytest.approx(600.0)
     assert out["T_cold"] == pytest.approx(570.0)
@@ -104,7 +148,8 @@ def test_outputs_t_avg_and_t_cool_track_state():
 def test_telemetry_includes_delta_t_and_q_flow():
     p = default_params()
     loop = PrimaryLoop(p)
-    s = np.array([600.0, 570.0])
+    # State is now shape (3,): [T_hot, T_cold, M_loop]
+    s = np.array([600.0, 570.0, p.M_loop_initial])
     inputs = {"power_thermal": 2.5e9, "Q_sg": 2.5e9}
     tele = loop.telemetry(s, inputs)
     expected_keys = {
@@ -117,6 +162,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
         "power_thermal",
         "Q_sg",
         "Q_flow",
+        "M_loop",
     }
     assert set(tele.keys()) == expected_keys
     assert tele["Tref"] == pytest.approx(p.T_avg_ref)
@@ -124,6 +170,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
     assert tele["Q_flow"] == pytest.approx(p.m_dot * p.c_p * 30.0)
     assert tele["power_thermal"] == pytest.approx(2.5e9)
     assert tele["Q_sg"] == pytest.approx(2.5e9)
+    assert tele["M_loop"] == pytest.approx(p.M_loop_initial)
 
 
 def test_telemetry_without_inputs_reports_none_for_input_keys():
@@ -152,6 +199,8 @@ def _integrate(loop, q_core_fn, q_sg_fn, t_end, t_start=0.0, max_step=0.5):
             {
                 "power_thermal": q_core_fn(t),
                 "Q_sg": q_sg_fn(t),
+                "m_dot_spray": 0.0,
+                "m_dot_surge": 0.0,
             },
         )
 
@@ -246,7 +295,7 @@ def test_loop_energy_balance_at_steady_70pct():
     assert sol.success
     # Verify steady state: derivatives near zero at the end
     final_state = sol.y[:, -1]
-    final_inputs = {"power_thermal": Q, "Q_sg": Q}
+    final_inputs = {"power_thermal": Q, "Q_sg": Q, "m_dot_spray": 0.0, "m_dot_surge": 0.0}
     final_dstate = loop.derivatives(final_state, final_inputs)
     assert np.allclose(final_dstate, 0.0, atol=1e-3)
     # Now check the analytical prediction
