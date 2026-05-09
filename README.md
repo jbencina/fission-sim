@@ -95,28 +95,43 @@ moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
 
 ### PrimaryLoop (`src/fission_sim/physics/primary_loop.py`)
 
-L1 lumped primary loop: hot leg + cold leg, constant flow, constant pressure,
-single-phase liquid. See `.docs/design.md` §5.2 for physics.
+L1 lumped primary loop: hot leg + cold leg + liquid inventory, constant flow,
+constant pressure, single-phase liquid. See `.docs/design.md` §5.2 for physics.
+M2 added a third state (`M_loop`) and two new input ports to close mass
+conservation with the pressurizer.
 
 **Constructor**
 
     PrimaryLoop(params: LoopParams)
 
-**State vector** (`state_size = 2`)
+**State vector** (`state_size = 3`)
 
-    state_labels = ("T_hot", "T_cold")
-    units:        K, K
+    state_labels = ("T_hot", "T_cold", "M_loop")
+    units:        K, K, kg
 
-| Index | Name    | Meaning                                           |
-|------:|---------|---------------------------------------------------|
-| 0     | T_hot   | Coolant temperature exiting the core              |
-| 1     | T_cold  | Coolant temperature returning to the core         |
+| Index | Name    | Meaning                                                              |
+|------:|---------|----------------------------------------------------------------------|
+| 0     | T_hot   | Coolant temperature exiting the core [K]                             |
+| 1     | T_cold  | Coolant temperature returning to the core [K]                        |
+| 2     | M_loop  | Liquid mass in the loop pipes (excluding pressurizer) [kg]           |
 
 **Methods**
 
     initial_state() -> np.ndarray
+        [T_hot_ref, T_cold_ref, M_loop_initial]
+
     derivatives(state, inputs) -> np.ndarray
-        inputs: {"power_thermal": float [W], "Q_sg": float [W]}
+        inputs: {
+            "power_thermal": float [W],
+            "Q_sg":          float [W],
+            "m_dot_spray":   float [kg/s],   # spray flow leaving the loop into the pzr
+            "P_primary":     float [Pa],     # pzr.P (state-derived); drives surge density
+        }
+
+        dM_loop/dt = −m_dot_surge − m_dot_spray
+        where m_dot_surge is computed internally via compute_m_dot_surge() from
+        surge.py (identical call to what Pressurizer.derivatives() makes), keeping
+        M_loop + M_pzr = const to solver tolerance.
 
     outputs(state, inputs=None) -> {
         "T_hot":  float [K],
@@ -126,23 +141,220 @@ single-phase liquid. See `.docs/design.md` §5.2 for physics.
     }
 
     telemetry(state, inputs=None) -> outputs() ∪ {
-        "delta_T", "Q_flow", "power_thermal", "Q_sg",
+        "delta_T", "Q_flow", "Tref", "M_loop",
+        "power_thermal", "Q_sg",
     }
-        delta_T and Q_flow are computable from state alone.
+        delta_T, Q_flow, Tref, and M_loop are computable from state alone.
         power_thermal and Q_sg are echoed from inputs (None when inputs omitted).
 
 **LoopParams (frozen dataclass)**
 
-| Field         | Units    | Default                                | Source / note                          |
-|---------------|----------|----------------------------------------|----------------------------------------|
-| `m_dot`       | kg/s     | 1.85e4                                 | W4-loop full-power flow (~140 Mlb/hr)  |
-| `c_p`         | J/(kg·K) | 5500                                   | Water at ~310°C, 15.5 MPa              |
-| `M_hot`       | kg       | 1.5e4                                  | Lumped hot-leg water mass              |
-| `M_cold`      | kg       | 1.5e4                                  | Lumped cold-leg water mass             |
-| `Q_design`    | W        | 3.0e9                                  | Match core's P_design                  |
-| `T_avg_ref`   | K        | 583                                    | W4-loop full-power T_avg ~310 °C       |
-| `T_hot_ref`   | K        | derived: T_avg_ref + ΔT_design/2 ≈ 598 | ΔT = Q_design/(m_dot·c_p) ≈ 29.5 K     |
-| `T_cold_ref`  | K        | derived: T_avg_ref − ΔT_design/2 ≈ 568 | (same)                                 |
+| Field              | Units    | Default                                 | Source / note                          |
+|--------------------|----------|-----------------------------------------|----------------------------------------|
+| `m_dot`            | kg/s     | 1.85e4                                  | W4-loop full-power flow (~140 Mlb/hr)  |
+| `c_p`              | J/(kg·K) | 5500                                    | Water at ~310°C, 15.5 MPa              |
+| `M_hot`            | kg       | 1.5e4                                   | Lumped hot-leg thermal inertia         |
+| `M_cold`           | kg       | 1.5e4                                   | Lumped cold-leg thermal inertia        |
+| `Q_design`         | W        | 3.0e9                                   | Match core's P_design                  |
+| `T_avg_ref`        | K        | 583                                     | W4-loop full-power T_avg ~310 °C       |
+| `T_hot_ref`        | K        | derived: T_avg_ref + ΔT_design/2 ≈ 598  | ΔT = Q_design/(m_dot·c_p) ≈ 29.5 K    |
+| `T_cold_ref`       | K        | derived: T_avg_ref − ΔT_design/2 ≈ 568  | (same)                                 |
+| `V_loop`           | m³       | 175.0                                   | Primary loop volume excluding pzr; conservative L1 estimate |
+| `beta_T_primary`   | 1/K      | 3.3e-3                                  | Frozen at design (583 K, 15.5 MPa); verified via CoolProp Task A1 |
+| `M_loop_initial`   | kg       | derived: M_hot + M_cold                 | Initial loop liquid inventory; None → derived |
+
+### Pressurizer (`src/fission_sim/physics/pressurizer.py`)
+
+L1 two-phase saturated water/steam vessel with electric heaters and cold-leg
+spray. The primary system's pressure controller: by adjusting how much of its
+inventory is liquid vs. vapor, it sets the saturation pressure of the whole
+primary loop. Liquid surges into/out of the pressurizer through the surge line
+as primary water thermally expands and contracts.
+
+Composes a `LoopParams` reference so it can compute surge mass flow from the
+loop's energy imbalance; consumes that reference inside `derivatives()` via the
+shared `surge.py` helper. The pressurizer is classified as **state-derived** by
+the engine (P, level, T_sat follow directly from the state vector via the
+saturation closure), which breaks the algebraic loop with `PressurizerController`
+— P is available to the controller before the controller's outputs (Q_heater,
+m_dot_spray) are needed by the pressurizer's *derivatives*.
+
+**Constructor**
+
+    Pressurizer(params: PressurizerParams)
+
+**State vector** (`state_size = 2`)
+
+    state_labels = ("M_pzr", "U_pzr")
+    units:        kg, J
+
+| Index | Name   | Meaning                                              |
+|------:|--------|------------------------------------------------------|
+| 0     | M_pzr  | Total mass (water + steam) in vessel [kg]            |
+| 1     | U_pzr  | Total internal energy (water + steam) in vessel [J]  |
+
+**Methods**
+
+    initial_state() -> np.ndarray
+        [M_pzr_initial, U_pzr_initial] derived from (P_design, level_design, V_pzr)
+        in PressurizerParams.__post_init__.
+
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {
+            "power_thermal": float [W],
+            "Q_sg":          float [W],
+            "T_hotleg":      float [K],   # sets ρ and h of insurge water
+            "T_coldleg":     float [K],   # sets h of spray water
+            "Q_heater":      float [W],   # from controller
+            "m_dot_spray":   float [kg/s], # from controller
+        }
+
+        Equations (open-system first law, rigid vessel; Todreas & Kazimi §6.2 Eq. 6-13):
+            dM_pzr/dt = m_dot_surge + m_dot_spray
+            dU_pzr/dt = Q_heater + m_dot_surge·h_hotleg + m_dot_spray·h_coldleg
+
+    outputs(state, inputs=None) -> {
+        "P":     float [Pa],          # pressurizer / primary system pressure
+        "level": float [0..1],        # fractional water level V_l / V_pzr
+        "T_sat": float [K],           # saturation temperature at current P
+    }
+        State-derived: succeeds with inputs=None (no inputs required).
+
+    telemetry(state, inputs=None) -> outputs() ∪ {
+        "x", "M_l", "M_v", "M_pzr", "U_pzr",          # always present
+        "m_dot_surge", "subcooling_margin",              # None when inputs omitted
+        "heater_on", "spray_open", "Q_heater", "m_dot_spray",  # None when inputs omitted
+    }
+
+**PressurizerParams (frozen dataclass)**
+
+| Field            | Units | Default                               | Source / note                                          |
+|------------------|-------|---------------------------------------|--------------------------------------------------------|
+| `V_pzr`          | m³    | 51.0                                  | ~1800 ft³; Westinghouse 4-loop FSAR §5.4.10 range      |
+| `P_design`       | Pa    | 1.55e7                                | 15.5 MPa; W4-loop nominal                              |
+| `level_design`   | —     | 0.5                                   | Half-full; equal margin for insurge/outsurge           |
+| `loop_params`    | —     | LoopParams()                          | Composed reference; pass the same instance as the loop |
+| `M_pzr_initial`  | kg    | None → derived                        | Derived in __post_init__ from saturation closure at design |
+| `U_pzr_initial`  | J     | None → derived                        | Derived alongside M_pzr_initial                        |
+
+**SaturationState (frozen dataclass)**
+
+Returned by `saturation_state(M, U, V)`. Fields: `P` [Pa], `T_sat` [K],
+`rho_l` [kg/m³], `rho_v` [kg/m³], `h_l` [J/kg], `h_v` [J/kg],
+`x` [—], `level` [—], `M_l` [kg], `M_v` [kg].
+
+**`saturation_state(M, U, V) -> SaturationState`**
+
+Module-level function. Inverts CoolProp's saturation surface using the (D, U)
+pair (`D = M/V`, `u = U/M`) to find pressure, then evaluates all saturation
+properties at that pressure. Decomposes total mass into liquid and vapor via the
+lever rule on specific volume (Moran & Shapiro §3.6 Eq. 3.7).
+
+### PressurizerController (`src/fission_sim/control/pressurizer_controller.py`)
+
+Stateless proportional-with-deadband pressure controller (L1). First inhabitant
+of the new `src/fission_sim/control/` subpackage.
+
+**Constructor**
+
+    PressurizerController(params: PressurizerControllerParams)
+
+**State vector** (`state_size = 0`)
+
+    state_labels = ()
+    derivatives() returns np.zeros(0) — stateless.
+
+**Methods**
+
+    initial_state() -> np.ndarray    # np.zeros(0)
+    derivatives(state, inputs) -> np.ndarray   # np.zeros(0)
+
+    outputs(state, *, inputs) -> {
+        "Q_heater":    float [W],      # in [0, Q_heater_max]
+        "m_dot_spray": float [kg/s],   # in [0, m_dot_spray_max]
+    }
+        inputs: {
+            "P":             float [Pa],         # measured pzr pressure
+            "P_setpoint":    float [Pa],         # pressure setpoint
+            "heater_manual": float | None,       # 0..1 duty override (None = auto)
+            "spray_manual":  float | None,       # 0..1 duty override (None = auto)
+        }
+
+    telemetry(state, inputs=None) -> {
+        "Q_heater", "m_dot_spray", "P", "P_setpoint",
+        "heater_manual", "spray_manual",
+    }
+        All values are None when inputs is omitted.
+
+**Control logic** (`err = P_setpoint − P`):
+
+- `|err| ≤ deadband`: both actuators idle (0).
+- `err > deadband` (underpressure): `heater_duty = clip(K_p_heater · (err − deadband), 0, 1)`.
+- `err < −deadband` (overpressure): `spray_duty = clip(K_p_spray · (−err − deadband), 0, 1)`.
+- Manual overrides: `heater_manual` / `spray_manual` bypass the auto path when not None.
+- Final demands: `Q_heater = heater_duty · Q_heater_max`, `m_dot_spray = spray_duty · m_dot_spray_max`.
+
+**PressurizerControllerParams (frozen dataclass)**
+
+| Field                | Units | Default  | Source / note                                                  |
+|----------------------|-------|----------|----------------------------------------------------------------|
+| `Q_heater_max`       | W     | 1.8e6    | 1800 kW; Tong & Weisman §7.3 (W4-loop installed capacity)     |
+| `m_dot_spray_max`    | kg/s  | 25.0     | W4-loop spray sizing (~150 gpm per valve × 2 valves)          |
+| `deadband`           | Pa    | 1.5e5    | ±150 kPa; matches W4-loop variable-heater band                 |
+| `K_p_heater`         | 1/Pa  | 2.0e-4   | Saturates at ~5 kPa beyond deadband (effectively bang-bang)    |
+| `K_p_spray`          | 1/Pa  | 2.0e-4   | Same as K_p_heater for symmetry                                |
+| `P_setpoint_default` | Pa    | 1.55e7   | Primary design pressure; used as engine default when not wired |
+
+### CoolProp wrapper (`src/fission_sim/physics/coolprop.py`)
+
+Thin pass-through to CoolProp (IAPWS-97). Per `.docs/design.md` §3.3, all
+water/steam property calls in the project go through this module. Concentrating
+the dependency here lets results be cached, the backend swapped, or simplified
+correlations substituted without touching any physics module.
+
+All inputs and outputs are SI (Pa, K, kg/m³, J/kg, 1/K).
+
+**Functions**
+
+| Function                       | Arguments | Returns          | Notes                                  |
+|--------------------------------|-----------|------------------|----------------------------------------|
+| `density_PT(P, T)`             | Pa, K     | kg/m³            | Subcooled liquid density               |
+| `enthalpy_PT(P, T)`            | Pa, K     | J/kg             | Subcooled liquid specific enthalpy     |
+| `T_sat(P)`                     | Pa        | K                | Saturation temperature                 |
+| `sat_liquid_density(P)`        | Pa        | kg/m³            | Q = 0 branch                          |
+| `sat_vapor_density(P)`         | Pa        | kg/m³            | Q = 1 branch                          |
+| `sat_liquid_enthalpy(P)`       | Pa        | J/kg             | Q = 0 branch                          |
+| `sat_vapor_enthalpy(P)`        | Pa        | J/kg             | Q = 1 branch                          |
+| `sat_liquid_internal_energy(P)`| Pa        | J/kg             | Q = 0 branch                          |
+| `sat_vapor_internal_energy(P)` | Pa        | J/kg             | Q = 1 branch                          |
+| `beta_T(P, T)`                 | Pa, K     | 1/K              | (1/V)·(∂V/∂T)_P; ~3.3e-3 at design   |
+| `P_from_DU(D, U)`              | kg/m³, J/kg| Pa             | Inverts saturation surface (D, U) → P |
+
+### Surge helper (`src/fission_sim/physics/surge.py`)
+
+Module-level pure function shared between `Pressurizer.derivatives()` and
+`PrimaryLoop.derivatives()`. Extracted to avoid duplicating the surge-mass
+formula and to guarantee that both modules apply exactly the same value,
+keeping the sealed-primary-system invariant `M_loop + M_pzr = const` to
+solver tolerance.
+
+**`compute_m_dot_surge(*, power_thermal, Q_sg, T_hotleg, P_primary, rho_l_sat, loop_params) -> float`**
+
+Returns signed surge mass flow [kg/s] into the pressurizer (positive = insurge,
+negative = outsurge).
+
+Algorithm:
+1. `dT_avg/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)` — loop energy imbalance.
+2. `surge_volume_rate = beta_T_primary · V_loop · dT_avg/dt` — volumetric expansion.
+3. Direction-branched density conversion:
+   - Insurge (≥ 0): hot-leg subcooled liquid `ρ_hotleg(P_primary, T_hotleg)` from CoolProp.
+   - Outsurge (< 0): saturated liquid `rho_l_sat` (passed in; pressurizer has it already
+     from `saturation_state()`; loop computes it via `coolprop.sat_liquid_density(P_primary)`).
+
+The density asymmetry (~715 vs ~595 kg/m³ at design) is real and important: using
+a single value inflates the conservation-test residual to the size of the tolerance.
+
+References: Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13, §6.4.
 
 ### SteamGenerator (`src/fission_sim/physics/steam_generator.py`)
 
@@ -407,6 +619,17 @@ output (matplotlib, ASCII text, or full state dump).
 | `τ` | Rod controller first-order lag time constant | s |
 | `v_normal`, `v_scram` | Rod motion rate caps (normal / scram) | 1/s |
 | `ρ_total_worth` | Reactivity slope per unit rod position | — |
+| `M_pzr`, `U_pzr` | Pressurizer total mass / internal energy | kg, J |
+| `V_pzr` | Pressurizer vessel volume | m³ |
+| `ṁ_surge`, `ṁ_spray` | Surge / spray mass flow (positive = into pressurizer) | kg/s |
+| `x` | Steam quality (vapor mass fraction) | — |
+| `level` | Fractional water level in pressurizer (V_l / V_pzr) | — |
+| `β_T` | Volumetric thermal expansion coefficient of primary water | 1/K |
+| `V_loop` | Primary loop liquid volume excluding pressurizer | m³ |
+| `M_loop` | Liquid mass in the loop (excluding pressurizer) | kg |
+| `P` | Pressurizer / primary system pressure | Pa |
+| `T_sat` | Saturation temperature at current P | K |
+| `Q_heater` | Pressurizer heater electrical power | W |
 
 ### Acronyms
 
@@ -473,7 +696,7 @@ In: thermal power produced. Out: heat conducted from fuel to coolant.
 
 ### Primary loop — `primary_loop.py`
 
-State: `T_hot`, `T_cold`. Single-phase water, constant flow ṁ.
+State: `T_hot`, `T_cold`, `M_loop`. Single-phase water, constant flow ṁ.
 
 **Heat carried by flow:**
 
@@ -493,12 +716,59 @@ M_hot · c_p · dT_hot/dt = power_thermal − Q_flow
 M_cold · c_p · dT_cold/dt = Q_flow − Q_sg
 ```
 
+**Loop liquid inventory (mass conservation with pressurizer):**
+
+```
+dM_loop/dt = −ṁ_surge − ṁ_spray
+```
+
+`ṁ_surge` is computed internally from `(power_thermal, Q_sg, T_hot, P_primary)`
+via `surge.compute_m_dot_surge`. Both the loop and the pressurizer call this
+function with the same arguments, so `d/dt(M_loop + M_pzr) = 0` exactly.
+
 **Outputs:**
 
 ```
 T_avg  = (T_hot + T_cold) / 2
 T_cool = T_avg                # what the core sees, L1
 ```
+
+### Pressurizer — `pressurizer.py`
+
+State: `M_pzr` (mass [kg]), `U_pzr` (internal energy [J]). Two-phase
+saturated mixture in a rigid vessel.
+
+**Saturation closure** (inverts CoolProp's saturation surface):
+
+```
+ρ_avg = M_pzr / V_pzr
+u_avg = U_pzr / M_pzr
+P     = CoolProp(D=ρ_avg, U=u_avg)     # pressure from (density, specific u)
+```
+
+**Lever rule** (decomposes mixture into liquid and vapor fractions):
+
+```
+x     = (1/ρ_avg − 1/ρ_l) / (1/ρ_v − 1/ρ_l)   # quality (vapor mass fraction)
+level = M_l / ρ_l / V_pzr                        # fractional water level
+```
+
+**Mass balance** (open-system first law on a rigid control volume,
+Todreas & Kazimi §6.2 Eq. 6-13):
+
+```
+dM_pzr/dt = ṁ_surge + ṁ_spray
+```
+
+**Energy balance** (P·dV term vanishes — rigid vessel):
+
+```
+dU_pzr/dt = Q_heater + ṁ_surge · h_hotleg + ṁ_spray · h_coldleg
+```
+
+`h_hotleg` and `h_coldleg` are subcooled-liquid enthalpies at (P, T_hotleg)
+and (P, T_coldleg) respectively — NOT saturation values, because primary water
+at 568–598 K is well subcooled relative to T_sat ≈ 618 K at 15.5 MPa.
 
 ### Steam generator — `steam_generator.py`
 
@@ -567,5 +837,22 @@ The slice's acceptance pass machine-verifies all of the following (see `tests/te
 
 ## Roadmap
 
-Tracked in `.docs/design.md` §4. This slice covers the first piece of
-Milestone 1 (Drivable Reactor Core).
+Tracked in `.docs/design.md` §4.
+
+**Milestone 1 — Drivable Reactor Core** — complete. PointKineticsCore,
+PrimaryLoop, SteamGenerator, SecondarySink, RodController, SimEngine.
+
+**Milestone 2 — Pressurizer** — complete. Added:
+- `src/fission_sim/physics/coolprop.py` — CoolProp wrapper (IAPWS-97)
+- `src/fission_sim/physics/pressurizer.py` — two-phase pressurizer with saturation closure
+- `src/fission_sim/physics/surge.py` — shared surge helper (mass conservation)
+- `src/fission_sim/control/pressurizer_controller.py` — proportional-with-deadband pressure controller
+- `PrimaryLoop` extended: `state_size` 2→3 (`M_loop`), new inputs `m_dot_spray` and `P_primary`
+- `LoopParams` extended: `V_loop`, `beta_T_primary`, `M_loop_initial`
+
+M2 acceptance tests: `tests/test_m2_acceptance.py` — steady-state pressure hold,
+insurge/outsurge transients, heater step, spray step, and mass conservation
+invariant (`M_loop + M_pzr` constant to solver tolerance).
+
+Future milestones: full secondary side, real SG with two-phase, RPS, decay
+heat, PORV/CVCS, multi-loop geometry.
