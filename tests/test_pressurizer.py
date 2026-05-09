@@ -188,10 +188,6 @@ def test_spray_raises_mass_and_lowers_internal_energy_relative_to_pure_insurge()
     assert dstate[1] == pytest.approx(m_spray * h_cold, rel=1e-6)
 
 
-@pytest.mark.xfail(
-    reason="needs LoopParams.beta_T_primary and V_loop added in Task F1; unmark in F2",
-    strict=True,
-)
 def test_insurge_uses_hotleg_density():
     """Force a positive surge_volume_rate via raising power_thermal above
     Q_sg. The resulting m_dot_surge should equal ρ_hotleg · surge_vol_rate."""
@@ -208,10 +204,6 @@ def test_insurge_uses_hotleg_density():
     assert dstate[0] == pytest.approx(expected_m_dot_surge, rel=5e-3)
 
 
-@pytest.mark.xfail(
-    reason="needs LoopParams.beta_T_primary and V_loop added in Task F1; unmark in F2",
-    strict=True,
-)
 def test_outsurge_uses_saturated_liquid_density():
     """Force negative surge_volume_rate via lowering power_thermal below
     Q_sg. The resulting m_dot_surge should equal ρ_l_sat · surge_vol_rate."""
@@ -323,10 +315,6 @@ def _integrate_pressurizer(pzr, inputs_fn, t_end, t_start=0.0, max_step=0.5):
     )
 
 
-@pytest.mark.xfail(
-    reason="needs LoopParams.beta_T_primary added in Task F1; unmark in F2",
-    strict=True,
-)
 def test_steady_insurge_ramp_raises_pressure():
     """A constant +1% power excess for 30 s drives steady insurge;
     pressure should rise monotonically."""
@@ -348,10 +336,6 @@ def test_steady_insurge_ramp_raises_pressure():
     assert P_end > P0
 
 
-@pytest.mark.xfail(
-    reason="needs LoopParams.beta_T_primary added in Task F1; unmark in F2",
-    strict=True,
-)
 def test_steady_outsurge_ramp_lowers_pressure():
     """A constant −1% power deficit for 30 s drives steady outsurge;
     pressure should fall monotonically."""
