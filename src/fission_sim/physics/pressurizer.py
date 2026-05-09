@@ -134,6 +134,125 @@ class PressurizerParams:
             object.__setattr__(self, "U_pzr_initial", M_l * u_l + M_v * u_v)
 
 
+@dataclass(frozen=True)
+class SaturationState:
+    """Snapshot of the saturated mixture's intensive + decomposed state.
+
+    Returned by ``saturation_state()``. Field meanings:
+
+    Attributes
+    ----------
+    P : float
+        Pressure [Pa].
+    T_sat : float
+        Saturation temperature [K].
+    rho_l : float
+        Saturated-liquid density [kg/m³].
+    rho_v : float
+        Saturated-vapor density [kg/m³].
+    h_l : float
+        Saturated-liquid specific enthalpy [J/kg].
+    h_v : float
+        Saturated-vapor specific enthalpy [J/kg].
+    x : float
+        Quality (vapor mass fraction) [dimensionless, 0..1].
+    level : float
+        Fractional water level (V_l / V_pzr) [dimensionless].
+    M_l : float
+        Liquid mass [kg].
+    M_v : float
+        Vapor mass [kg].
+    """
+
+    P: float
+    T_sat: float
+    rho_l: float
+    rho_v: float
+    h_l: float
+    h_v: float
+    x: float
+    level: float
+    M_l: float
+    M_v: float
+
+
+def saturation_state(M: float, U: float, V: float) -> SaturationState:
+    """Compute the saturated mixture's intensive + decomposed state.
+
+    Inverts CoolProp's saturation surface using the (D, U) pair to find
+    pressure, then evaluates all saturation properties at that pressure.
+    Decomposes the total mass into liquid and vapor sub-amounts via the
+    lever rule on specific volume.
+
+    Parameters
+    ----------
+    M : float
+        Total mass in the vessel (water + steam) [kg].
+    U : float
+        Total internal energy in the vessel [J].
+    V : float
+        Vessel internal volume [m³] (constant for a rigid tank).
+
+    Returns
+    -------
+    SaturationState
+        Frozen dataclass of all derived quantities.
+
+    Notes
+    -----
+    Equations:
+        ρ_avg = M / V                                              # average density
+        u_avg = U / M                                              # specific internal energy
+        P     = CoolProp(D=ρ_avg, U=u_avg)                         # saturation P from (D,U)
+        T_sat, ρ_l, ρ_v, h_l, h_v from CoolProp at (P, Q=0|1)      # saturation curve
+
+    Lever rule on specific volume v = 1/ρ (Moran & Shapiro §3.6 Eq. 3.7;
+    algebraically equivalent to the standard form on quality):
+        v_avg = (1 − x) · v_l + x · v_v
+        x = (v_avg − v_l) / (v_v − v_l)
+
+    Then:
+        M_l = (1 − x) · M
+        M_v = x · M
+        V_l = M_l / ρ_l
+        level = V_l / V
+    """
+    rho_avg = M / V
+    u_avg = U / M
+
+    # Invert saturation surface: pressure such that the mixture at this
+    # density and specific internal energy lies on the saturation dome.
+    P = coolprop.P_from_DU(D=rho_avg, U=u_avg)
+
+    T_sat = coolprop.T_sat(P=P)
+    rho_l = coolprop.sat_liquid_density(P=P)
+    rho_v = coolprop.sat_vapor_density(P=P)
+    h_l = coolprop.sat_liquid_enthalpy(P=P)
+    h_v = coolprop.sat_vapor_enthalpy(P=P)
+
+    # Lever rule on specific volume v = 1/ρ. Algebraically identical to the
+    # standard quality decomposition; this form falls out cleanly because
+    # we already have densities. Moran & Shapiro §3.6 Eq. 3.7.
+    x = (1.0 / rho_avg - 1.0 / rho_l) / (1.0 / rho_v - 1.0 / rho_l)
+
+    M_l = (1.0 - x) * M
+    M_v = x * M
+    V_l = M_l / rho_l
+
+    return SaturationState(
+        P=P,
+        T_sat=T_sat,
+        rho_l=rho_l,
+        rho_v=rho_v,
+        h_l=h_l,
+        h_v=h_v,
+        x=x,
+        level=V_l / V,
+        M_l=M_l,
+        M_v=M_v,
+    )
+
+
 class Pressurizer:
     """Two-phase pressurizer (L1 fidelity).
 
