@@ -217,6 +217,25 @@ def test_outsurge_uses_saturated_liquid_density():
     assert dstate[0] != pytest.approx(wrong_m_dot_surge, rel=1e-3)
 
 
+def test_outsurge_removes_saturated_liquid_enthalpy():
+    """Outsurge is liquid leaving the saturated pressurizer pool.
+
+    Its energy term must use saturated-liquid enthalpy, not hot-leg
+    subcooled-liquid enthalpy. The two differ by ~150 kJ/kg at design.
+    """
+    p = default_params()
+    pzr = Pressurizer(p)
+    lp = p.loop_params
+    state0 = pzr.initial_state()
+    inputs = _design_inputs(p) | {"power_thermal": 0.99 * lp.Q_design}
+
+    dstate = pzr.derivatives(state0, inputs)
+    sat = saturation_state(M=state0[0], U=state0[1], V=p.V_pzr)
+
+    assert dstate[0] < 0.0
+    assert dstate[1] == pytest.approx(dstate[0] * sat.h_l, rel=5e-3)
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: outputs() and telemetry()
 # ---------------------------------------------------------------------------

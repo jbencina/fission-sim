@@ -22,6 +22,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from fission_sim.physics import coolprop
+
 
 @dataclass(frozen=True)
 class LoopParams:
@@ -38,15 +40,18 @@ class LoopParams:
     c_p : float
         Specific heat of primary water at average conditions [J/(kg·K)].
     M_hot : float
-        Lumped water mass on the hot-leg side [kg].
+        Lumped water-equivalent thermal inertia on the hot-leg side [kg].
     M_cold : float
-        Lumped water mass on the cold-leg side [kg].
+        Lumped water-equivalent thermal inertia on the cold-leg side [kg].
     Q_design : float
         Design heat flow through the loop [W] (= core's P_design).
     T_avg_ref : float
         Design average primary temperature [K]. Should match the core's
         ``T_cool_ref`` so that the moderator-feedback term is zero at the
         coupled design point.
+    P_ref : float
+        Reference primary pressure [Pa]. Used only to derive the initial
+        physical loop inventory from ``V_loop`` and CoolProp density.
     T_hot_ref : float, optional
         Hot-leg reference temperature [K]. If None, derived in __post_init__
         as ``T_avg_ref + ΔT_design / 2`` where
@@ -64,7 +69,7 @@ class LoopParams:
         verified via CoolProp — Task A1).
     M_loop_initial : float, optional
         Initial liquid mass in the loop (excluding pressurizer) [kg]. If
-        None, derived in __post_init__ as ``M_hot + M_cold``.
+        None, derived in __post_init__ as ``V_loop * rho(P_ref, T_avg_ref)``.
 
     Notes
     -----
@@ -86,9 +91,10 @@ class LoopParams:
     # condition.
     c_p: float = 5500.0  # [J/(kg·K)]
 
-    # Lumped water masses on each leg. Order of magnitude estimate for a 4-loop
-    # PWR primary inventory (~270 m³ of water at ~720 kg/m³ ≈ 200000 kg total,
-    # split roughly evenly between hot side and cold side legs).
+    # Lumped water-equivalent thermal inertia on each leg. These are not the
+    # physical liquid inventory; M_loop_initial below tracks that separately.
+    # SIMPLIFICATION: pipe metal, vessel metal, and coolant thermal inertia are
+    # collapsed into water-equivalent masses for the two energy balances.
     M_hot: float = 1.5e4  # [kg]
     M_cold: float = 1.5e4  # [kg]
 
@@ -99,6 +105,10 @@ class LoopParams:
     # feedback is zero at the coupled design point. Westinghouse 4-loop full
     # power T_avg is typically 583-588 K (310-315 °C); 583 K is mid-range.
     T_avg_ref: float = 583.0  # [K] (~310 °C)
+
+    # Reference pressure for deriving the initial physical loop liquid mass
+    # from CoolProp density. Nominal Westinghouse 4-loop primary pressure.
+    P_ref: float = 1.55e7  # [Pa]
 
     # Reference leg temperatures. None means "derive from energy balance".
     T_hot_ref: float | None = None  # [K]
@@ -132,9 +142,9 @@ class LoopParams:
     # over-predicts during heatups. L2 reads β from CoolProp every step.
     beta_T_primary: float = 3.3e-3  # [1/K] — verified via CoolProp at design
 
-    # Initial liquid mass tracked for mass conservation across
-    # the sealed primary system (loop + pressurizer). If None,
-    # derived in __post_init__ as M_hot + M_cold.
+    # Initial liquid mass tracked for mass conservation across the sealed
+    # primary system (loop + pressurizer). If None, derive from physical loop
+    # volume and CoolProp density at reference primary conditions.
     M_loop_initial: float | None = None  # [kg]
 
     def __post_init__(self) -> None:
@@ -149,7 +159,7 @@ class LoopParams:
             T_cold_ref = T_avg_ref − ΔT_design / 2
 
         Mass: at the design point with no surge or spray, the loop
-        liquid inventory equals the lumped baseline (M_hot + M_cold).
+        liquid inventory equals ``V_loop * rho(P_ref, T_avg_ref)``.
         """
         if self.T_hot_ref is None or self.T_cold_ref is None:
             delta_T = self.Q_design / (self.m_dot * self.c_p)
@@ -159,7 +169,8 @@ class LoopParams:
             object.__setattr__(self, "T_hot_ref", T_hot)
             object.__setattr__(self, "T_cold_ref", T_cold)
         if self.M_loop_initial is None:
-            object.__setattr__(self, "M_loop_initial", self.M_hot + self.M_cold)
+            rho_ref = coolprop.density_PT(P=self.P_ref, T=self.T_avg_ref)
+            object.__setattr__(self, "M_loop_initial", self.V_loop * rho_ref)
 
 
 class PrimaryLoop:

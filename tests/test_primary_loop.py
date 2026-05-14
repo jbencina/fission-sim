@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from scipy.integrate import solve_ivp
 
+from fission_sim.physics import coolprop
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 
 
@@ -32,8 +33,9 @@ def test_loop_params_has_V_loop_and_beta_T_defaults():
     p = default_params()
     assert p.V_loop == 175.0
     assert 3.0e-3 < p.beta_T_primary < 3.5e-3
-    # M_loop_initial defaults to M_hot + M_cold via __post_init__
-    assert p.M_loop_initial == pytest.approx(p.M_hot + p.M_cold)
+    # M_loop_initial is physical liquid inventory, not thermal inertia.
+    rho_avg = coolprop.density_PT(P=p.P_ref, T=p.T_avg_ref)
+    assert p.M_loop_initial == pytest.approx(p.V_loop * rho_avg)
 
 
 def test_loop_params_explicit_M_loop_initial_overrides_derived():

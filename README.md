@@ -157,11 +157,12 @@ conservation with the pressurizer.
 | `M_cold`           | kg       | 1.5e4                                   | Lumped cold-leg thermal inertia        |
 | `Q_design`         | W        | 3.0e9                                   | Match core's P_design                  |
 | `T_avg_ref`        | K        | 583                                     | W4-loop full-power T_avg ~310 °C       |
+| `P_ref`            | Pa       | 1.55e7                                  | Primary design pressure for initial density |
 | `T_hot_ref`        | K        | derived: T_avg_ref + ΔT_design/2 ≈ 598  | ΔT = Q_design/(m_dot·c_p) ≈ 29.5 K    |
 | `T_cold_ref`       | K        | derived: T_avg_ref − ΔT_design/2 ≈ 568  | (same)                                 |
 | `V_loop`           | m³       | 175.0                                   | Primary loop volume excluding pzr; conservative L1 estimate |
 | `beta_T_primary`   | 1/K      | 3.3e-3                                  | Frozen at design (583 K, 15.5 MPa); verified via CoolProp Task A1 |
-| `M_loop_initial`   | kg       | derived: M_hot + M_cold                 | Initial loop liquid inventory; None → derived |
+| `M_loop_initial`   | kg       | derived: V_loop·ρ(P_ref,T_avg_ref) ≈ 1.23e5 | Initial physical loop liquid inventory; None → derived |
 
 ### Pressurizer (`src/fission_sim/physics/pressurizer.py`)
 
@@ -211,7 +212,10 @@ m_dot_spray) are needed by the pressurizer's *derivatives*.
 
         Equations (open-system first law, rigid vessel; Todreas & Kazimi §6.2 Eq. 6-13):
             dM_pzr/dt = m_dot_surge + m_dot_spray
-            dU_pzr/dt = Q_heater + m_dot_surge·h_hotleg + m_dot_spray·h_coldleg
+            dU_pzr/dt = Q_heater + m_dot_surge·h_surge + m_dot_spray·h_coldleg
+
+        h_surge is hot-leg subcooled-liquid enthalpy for insurge and saturated-
+        liquid enthalpy for outsurge.
 
     outputs(state, inputs=None) -> {
         "P":     float [Pa],          # pressurizer / primary system pressure
@@ -276,8 +280,8 @@ of the new `src/fission_sim/control/` subpackage.
         inputs: {
             "P":             float [Pa],         # measured pzr pressure
             "P_setpoint":    float [Pa],         # pressure setpoint
-            "heater_manual": float | None,       # 0..1 duty override (None = auto)
-            "spray_manual":  float | None,       # 0..1 duty override (None = auto)
+            "heater_manual": float | None,       # duty override, clipped to 0..1 (None = auto)
+            "spray_manual":  float | None,       # duty override, clipped to 0..1 (None = auto)
         }
 
     telemetry(state, inputs=None) -> {
@@ -291,7 +295,7 @@ of the new `src/fission_sim/control/` subpackage.
 - `|err| ≤ deadband`: both actuators idle (0).
 - `err > deadband` (underpressure): `heater_duty = clip(K_p_heater · (err − deadband), 0, 1)`.
 - `err < −deadband` (overpressure): `spray_duty = clip(K_p_spray · (−err − deadband), 0, 1)`.
-- Manual overrides: `heater_manual` / `spray_manual` bypass the auto path when not None.
+- Manual overrides: `heater_manual` / `spray_manual` bypass the auto path when not None, then clip to `[0, 1]`.
 - Final demands: `Q_heater = heater_duty · Q_heater_max`, `m_dot_spray = spray_duty · m_dot_spray_max`.
 
 **PressurizerControllerParams (frozen dataclass)**
@@ -610,7 +614,7 @@ output (matplotlib, ASCII text, or full state dump).
 | `ṁ` | Primary mass flow rate | kg/s |
 | `c_p` | Specific heat of water | J/(kg·K) |
 | `c_p_fuel` | Specific heat of fuel | J/(kg·K) |
-| `M_hot`, `M_cold` | Lumped water mass in hot / cold leg | kg |
+| `M_hot`, `M_cold` | Lumped water-equivalent thermal inertia in hot / cold leg | kg |
 | `M_fuel` | Lumped fuel mass | kg |
 | `hA_fc` | Fuel-to-coolant heat-transfer coefficient × area | W/K |
 | `UA` | SG overall heat-transfer coefficient × area | W/K |
@@ -763,12 +767,13 @@ dM_pzr/dt = ṁ_surge + ṁ_spray
 **Energy balance** (P·dV term vanishes — rigid vessel):
 
 ```
-dU_pzr/dt = Q_heater + ṁ_surge · h_hotleg + ṁ_spray · h_coldleg
+dU_pzr/dt = Q_heater + ṁ_surge · h_surge + ṁ_spray · h_coldleg
 ```
 
-`h_hotleg` and `h_coldleg` are subcooled-liquid enthalpies at (P, T_hotleg)
-and (P, T_coldleg) respectively — NOT saturation values, because primary water
-at 568–598 K is well subcooled relative to T_sat ≈ 618 K at 15.5 MPa.
+For insurge (`ṁ_surge >= 0`), `h_surge` is hot-leg subcooled-liquid enthalpy
+at `(P, T_hotleg)`. For outsurge (`ṁ_surge < 0`), it is saturated-liquid
+enthalpy from the pressurizer state (`h_l`). `h_coldleg` is subcooled-liquid
+enthalpy at `(P, T_coldleg)` for spray.
 
 ### Steam generator — `steam_generator.py`
 
@@ -848,9 +853,9 @@ PrimaryLoop, SteamGenerator, SecondarySink, RodController, SimEngine.
 - `src/fission_sim/physics/surge.py` — shared surge helper (mass conservation)
 - `src/fission_sim/control/pressurizer_controller.py` — proportional-with-deadband pressure controller
 - `PrimaryLoop` extended: `state_size` 2→3 (`M_loop`), new inputs `m_dot_spray` and `P_primary`
-- `LoopParams` extended: `V_loop`, `beta_T_primary`, `M_loop_initial`
+- `LoopParams` extended: `P_ref`, `V_loop`, `beta_T_primary`, `M_loop_initial`
 
-M2 acceptance tests: `tests/test_m2_acceptance.py` — steady-state pressure hold,
+M2 acceptance tests: `tests/test_pressurizer_plant.py` — steady-state pressure hold,
 insurge/outsurge transients, heater step, spray step, and mass conservation
 invariant (`M_loop + M_pzr` constant to solver tolerance).
 

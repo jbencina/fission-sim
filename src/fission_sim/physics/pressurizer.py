@@ -359,7 +359,10 @@ class Pressurizer:
         Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13):
 
             dM/dt = ṁ_surge + ṁ_spray
-            dU/dt = Q_heater + ṁ_surge · h_hotleg + ṁ_spray · h_coldleg
+            dU/dt = Q_heater + ṁ_surge · h_surge + ṁ_spray · h_coldleg
+
+        where ``h_surge`` is direction-specific: hot-leg subcooled-liquid
+        enthalpy for insurge, saturated-liquid enthalpy for outsurge.
 
         The ``P · dV`` flow-work term that appears in the general open-
         system first law vanishes because V_pzr is constant (rigid tank).
@@ -391,19 +394,23 @@ class Pressurizer:
         m_dot_spray = inputs["m_dot_spray"]
         Q_heater = inputs["Q_heater"]
 
-        # Subcooled-liquid enthalpies of the incoming water streams.
-        # NOT saturation values — primary water at 568/598 K is well
-        # below T_sat ≈ 618 K at 15.5 MPa.
+        # Direction-specific surge enthalpy:
+        #   insurge  (ṁ_surge >= 0): hot-leg subcooled liquid enters the pzr.
+        #   outsurge (ṁ_surge < 0): saturated liquid leaves the pzr pool.
+        # Spray is always cold-leg subcooled liquid entering the pzr.
         T_hotleg = inputs["T_hotleg"]
         T_coldleg = inputs["T_coldleg"]
-        h_hotleg = coolprop.enthalpy_PT(P=sat.P, T=T_hotleg)
+        if m_dot_surge >= 0.0:
+            h_surge = coolprop.enthalpy_PT(P=sat.P, T=T_hotleg)
+        else:
+            h_surge = sat.h_l
         h_coldleg = coolprop.enthalpy_PT(P=sat.P, T=T_coldleg)
 
         # Mass balance.
         dM_dt = m_dot_surge + m_dot_spray
 
         # Energy balance.
-        dU_dt = Q_heater + m_dot_surge * h_hotleg + m_dot_spray * h_coldleg
+        dU_dt = Q_heater + m_dot_surge * h_surge + m_dot_spray * h_coldleg
 
         dstate = np.empty(self.state_size)
         dstate[0] = dM_dt

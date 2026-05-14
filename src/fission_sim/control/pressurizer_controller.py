@@ -141,10 +141,10 @@ class PressurizerController:
             spray_duty (auto)  = clip(K_p_spray · (−err − deadband), 0, 1)
                                   if err < −deadband else 0
 
-        Manual overrides bypass the auto path:
+        Manual overrides bypass the auto path and are clipped to [0, 1]:
 
-            heater_duty = heater_manual if heater_manual is not None
-            spray_duty  = spray_manual  if spray_manual  is not None
+            heater_duty = clip(heater_manual, 0, 1) if heater_manual is not None
+            spray_duty  = clip(spray_manual,  0, 1) if spray_manual  is not None
 
         Final demands scale by the actuator maxima:
 
@@ -185,7 +185,7 @@ class PressurizerController:
 
         # Heater duty: auto when heater_manual is None, override otherwise.
         if heater_manual is not None:
-            heater_duty = heater_manual
+            heater_duty = float(np.clip(heater_manual, 0.0, 1.0))
         elif err > p.deadband:
             # Outside deadband low — proportional demand saturated at 1.
             heater_duty = float(np.clip(p.K_p_heater * (err - p.deadband), 0.0, 1.0))
@@ -194,7 +194,7 @@ class PressurizerController:
 
         # Spray duty: auto when spray_manual is None, override otherwise.
         if spray_manual is not None:
-            spray_duty = spray_manual
+            spray_duty = float(np.clip(spray_manual, 0.0, 1.0))
         elif err < -p.deadband:
             # Outside deadband high — proportional demand saturated at 1.
             spray_duty = float(np.clip(p.K_p_spray * (-err - p.deadband), 0.0, 1.0))

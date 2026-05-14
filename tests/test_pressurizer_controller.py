@@ -156,6 +156,30 @@ def test_heater_manual_zero_disables_during_underpressure():
     assert out["Q_heater"] == 0.0
 
 
+def test_heater_manual_override_clips_to_unit_interval():
+    """Manual duty stays in [0, 1] so output remains within actuator limits."""
+    p = default_params()
+    ctrl = PressurizerController(p)
+
+    below = ctrl.outputs(np.zeros(0), inputs=_at_setpoint(p) | {"heater_manual": -0.25})
+    above = ctrl.outputs(np.zeros(0), inputs=_at_setpoint(p) | {"heater_manual": 1.5})
+
+    assert below["Q_heater"] == 0.0
+    assert above["Q_heater"] == pytest.approx(p.Q_heater_max)
+
+
+def test_spray_manual_override_clips_to_unit_interval():
+    """Manual spray duty stays in [0, 1] so output remains within actuator limits."""
+    p = default_params()
+    ctrl = PressurizerController(p)
+
+    below = ctrl.outputs(np.zeros(0), inputs=_at_setpoint(p) | {"spray_manual": -0.25})
+    above = ctrl.outputs(np.zeros(0), inputs=_at_setpoint(p) | {"spray_manual": 1.5})
+
+    assert below["m_dot_spray"] == 0.0
+    assert above["m_dot_spray"] == pytest.approx(p.m_dot_spray_max)
+
+
 def test_outputs_requires_inputs_kwarg():
     """Controller is a 'computed' module — outputs(state) without
     inputs must raise."""
