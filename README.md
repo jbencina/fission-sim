@@ -1,8 +1,16 @@
 # fission-sim
 
-PWR simulator. Personal learning project. Read `.docs/design.md` for goals
-and architecture; this README is the **living API reference** for what
-the code currently exposes.
+PWR simulator. Personal learning project.
+
+This README has two jobs:
+
+1. Introduce the physics in approachable language for readers who are curious
+   about reactors but are not nuclear engineers.
+2. Document the current Python API so examples, tests, and future changes have
+   one place to check what each component exposes.
+
+Read `.docs/design.md` for the original goals and architecture. Treat this file
+as the **living guide** to what the code currently does.
 
 ## Quickstart
 
@@ -31,16 +39,70 @@ Algebraic components (e.g. `SteamGenerator`) use it.
 All time-evolving state for the whole plant lives in one flat numpy
 vector. Each component declares the slot it owns.
 
-## Component API reference
+## Component guide and API reference
+
+Each component section follows the same learning path:
+
+- **What it represents** — the real plant part or modeling idea.
+- **Equations used** — the formulas the code evaluates.
+- **State and parameters** — what changes over time vs. what stays fixed.
+- **API** — how the component is called from examples or the simulation engine.
 
 ### PointKineticsCore (`src/fission_sim/physics/core.py`)
 
 L1 point kinetics with six lumped delayed-neutron groups + Doppler +
 moderator temperature feedback. See `.docs/design.md` §5.1 for physics.
 
+**What it represents**
+
+The core is where fission heat is produced. At L1 we do not model the shape of
+the core or where neutrons are inside it. Instead, the whole core is collapsed
+into one "point" with one normalized neutron population `n`. If `n = 1`, the
+reactor is at design thermal power; if `n = 0.5`, it is at half power.
+
+The important educational idea is delayed neutrons. Most neutrons appear
+immediately after fission, but a small fraction arrive later from radioactive
+decay products. Those delayed neutrons stretch reactor response from
+microseconds to seconds and make control possible, so the model tracks six
+delayed-neutron precursor groups.
+
+**Equations used**
+
+Point kinetics tracks neutron population and precursor buildup/decay:
+
+```text
+dn/dt   = ((ρ − β) / Λ) · n + Σᵢ λᵢ · Cᵢ
+dCᵢ/dt = (βᵢ / Λ) · n − λᵢ · Cᵢ
+```
+
+Reactivity `ρ` is the "how far from exactly critical are we?" number:
+
+```text
+ρ = ρ_rod + α_f · (T_fuel − T_fuel_ref) + α_m · (T_cool − T_cool_ref)
+```
+
+`ρ_rod` comes from the rods. The two temperature terms are feedbacks. Because
+`α_f` and `α_m` are negative, hotter fuel or coolant pushes reactivity down,
+which tends to stabilize power.
+
+Fuel temperature is a simple energy balance:
+
+```text
+M_fuel · c_p_fuel · dT_fuel/dt = n · P_design − hA_fc · (T_fuel − T_cool)
+```
+
+In plain language: fuel heats up when fission power exceeds heat transfer to
+coolant, and cools down when heat transfer exceeds fission power.
+
+**API**
+
 **Constructor**
 
     PointKineticsCore(params: CoreParams)
+
+**State and parameters**
+
+State changes during a simulation. Parameters are fixed constants for one run.
 
 **State vector** (`state_size = 8`)
 
@@ -100,9 +162,54 @@ constant pressure, single-phase liquid. See `.docs/design.md` §5.2 for physics.
 M2 added a third state (`M_loop`) and two new input ports to close mass
 conservation with the pressurizer.
 
+**What it represents**
+
+The primary loop is the sealed water circuit that carries heat from the core to
+the steam generator. In a real PWR it includes pumps, pipes, the reactor vessel,
+and steam-generator tubes. At L1 this is simplified into two temperature lumps:
+hot leg and cold leg.
+
+The hot leg is water leaving the core. The cold leg is water returning from the
+steam generator. Their temperature difference tells us how much heat the moving
+water is carrying.
+
+**Equations used**
+
+First compute the heat carried by flow:
+
+```text
+Q_flow = m_dot · c_p · (T_hot − T_cold)
+```
+
+Then apply one energy balance to each leg:
+
+```text
+M_hot  · c_p · dT_hot/dt  = power_thermal − Q_flow
+M_cold · c_p · dT_cold/dt = Q_flow − Q_sg
+```
+
+`power_thermal` heats the hot leg. `Q_sg` is heat removed by the steam
+generator. If those are equal at steady state, temperatures stop drifting.
+
+The loop also tracks liquid inventory so it can exchange water with the
+pressurizer:
+
+```text
+dM_loop/dt = −m_dot_surge − m_dot_spray
+```
+
+Positive surge or spray means mass leaves the loop and enters the pressurizer.
+
+**API**
+
 **Constructor**
 
     PrimaryLoop(params: LoopParams)
+
+**State and parameters**
+
+`T_hot`, `T_cold`, and `M_loop` are state. The flow rate, heat capacity, thermal
+inertias, and reference temperatures are parameters.
 
 **State vector** (`state_size = 3`)
 
@@ -180,9 +287,59 @@ saturation closure), which breaks the algebraic loop with `PressurizerController
 — P is available to the controller before the controller's outputs (Q_heater,
 m_dot_spray) are needed by the pressurizer's *derivatives*.
 
+**What it represents**
+
+The pressurizer is the primary loop's pressure cushion. It is a tank connected
+to the hot leg, partly filled with liquid water and partly with steam. Heating
+the tank makes more steam pressure; spraying cooler water into the steam space
+condenses steam and lowers pressure.
+
+The central learning idea is that, while the primary loop remains liquid, the
+pressurizer intentionally contains a saturated water/steam mixture. The pressure
+of that saturated mixture sets the pressure of the whole primary side.
+
+**Equations used**
+
+The state stores total mass `M_pzr` and total internal energy `U_pzr`. From those
+and the fixed vessel volume, the code asks CoolProp for the saturation pressure:
+
+```text
+rho_avg = M_pzr / V_pzr
+u_avg   = U_pzr / M_pzr
+P       = CoolProp(D=rho_avg, U=u_avg)
+```
+
+Then it uses the lever rule to split the mixture into liquid and vapor:
+
+```text
+x     = (1/rho_avg − 1/rho_l) / (1/rho_v − 1/rho_l)
+level = (M_l / rho_l) / V_pzr
+```
+
+`x` is steam quality: the fraction of the mass that is vapor. `level` is the
+fraction of the vessel volume occupied by liquid water.
+
+Mass and energy follow open-system balances:
+
+```text
+dM_pzr/dt = m_dot_surge + m_dot_spray
+dU_pzr/dt = Q_heater + m_dot_surge · h_surge + m_dot_spray · h_coldleg
+```
+
+Surge is water moving between loop and pressurizer as the primary coolant
+expands or contracts. Spray is cold-leg water deliberately injected into the
+pressurizer. Heater power adds energy without adding mass.
+
+**API**
+
 **Constructor**
 
     Pressurizer(params: PressurizerParams)
+
+**State and parameters**
+
+State is total mass and total internal energy. Pressure, level, quality, and
+saturation temperature are derived from that state.
 
 **State vector** (`state_size = 2`)
 
@@ -259,9 +416,51 @@ lever rule on specific volume (Moran & Shapiro §3.6 Eq. 3.7).
 Stateless proportional-with-deadband pressure controller (L1). First inhabitant
 of the new `src/fission_sim/control/` subpackage.
 
+**What it represents**
+
+This is the simple automatic pressure controller. It reads measured pressure and
+a pressure setpoint, then asks for heater power when pressure is low or spray
+flow when pressure is high.
+
+There is no time-evolving controller state at L1. It is just a formula that
+turns pressure error into actuator demand.
+
+**Equations used**
+
+Start with pressure error:
+
+```text
+err = P_setpoint − P
+```
+
+If pressure is close enough to the setpoint, the controller does nothing. That
+"quiet zone" is the deadband:
+
+```text
+if |err| <= deadband:
+    heater_duty = 0
+    spray_duty = 0
+```
+
+Outside the deadband, proportional gains turn error into duty fractions:
+
+```text
+heater_duty = clip(K_p_heater · (err − deadband), 0, 1)      # low pressure
+spray_duty  = clip(K_p_spray · (−err − deadband), 0, 1)      # high pressure
+```
+
+The final outputs scale those fractions by physical actuator limits.
+
+**API**
+
 **Constructor**
 
     PressurizerController(params: PressurizerControllerParams)
+
+**State and parameters**
+
+There is no state. Parameters are actuator capacities, deadband, gains, and the
+default pressure setpoint.
 
 **State vector** (`state_size = 0`)
 
@@ -318,6 +517,34 @@ correlations substituted without touching any physics module.
 
 All inputs and outputs are SI (Pa, K, kg/m³, J/kg, 1/K).
 
+**What it represents**
+
+Water and steam properties are nonlinear. Density, enthalpy, saturation
+temperature, and internal energy all change with pressure and temperature. This
+project does not hand-code those property correlations; it calls CoolProp
+through this small wrapper.
+
+**Formulas used**
+
+There is no reactor equation here. Each function asks CoolProp to evaluate a
+thermodynamic property, for example:
+
+```text
+rho = density(P, T)
+h   = enthalpy(P, T)
+T_sat = saturation_temperature(P)
+P = pressure(D, U)
+```
+
+The wrapper exists so the rest of the code can say what property it needs
+without caring which CoolProp backend is fastest or safest for that query.
+
+**State and parameters**
+
+There is no simulation state in this wrapper. Its "inputs" are thermodynamic
+coordinates such as `(P, T)`, `(P, Q)`, or `(D, U)`, and its outputs are water
+or steam properties in SI units.
+
 **Functions**
 
 | Function                       | Arguments | Returns          | Notes                                  |
@@ -342,6 +569,44 @@ formula and to guarantee that both modules apply exactly the same value,
 keeping the sealed-primary-system invariant `M_loop + M_pzr = const` to
 solver tolerance.
 
+**What it represents**
+
+Primary water expands when it heats and contracts when it cools. Because the
+primary system is sealed, that volume change must go somewhere. The surge helper
+turns loop heat imbalance into a signed mass flow between the loop and the
+pressurizer.
+
+**Equations used**
+
+The helper first estimates how fast average loop temperature is changing:
+
+```text
+dT_avg/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)
+```
+
+That temperature change becomes a volume expansion or contraction:
+
+```text
+surge_volume_rate = beta_T_primary · V_loop · dT_avg/dt
+```
+
+Finally it converts volume flow to mass flow using the density of the water that
+is actually crossing the surge line:
+
+```text
+m_dot_surge = rho_surge · surge_volume_rate
+```
+
+Insurge uses hot-leg subcooled density. Outsurge uses saturated-liquid density
+from the pressurizer.
+
+**State and parameters**
+
+There is no state. The helper reads current heat flows, hot-leg temperature,
+primary pressure, saturated-liquid density, and loop parameters.
+
+**API**
+
 **`compute_m_dot_surge(*, power_thermal, Q_sg, T_hotleg, P_primary, rho_l_sat, loop_params) -> float`**
 
 Returns signed surge mass flow [kg/s] into the pressurizer (positive = insurge,
@@ -365,9 +630,32 @@ References: Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13, §6.4.
 L1 algebraic heat exchanger: `Q_sg = UA · (T_avg − T_secondary)`. No state.
 See `.docs/design.md` §5.3 for physics.
 
+**What it represents**
+
+The steam generator transfers heat from primary water to the secondary side.
+Real steam generators contain thousands of tubes and boiling secondary water.
+At L1, all of that is collapsed into one heat-transfer equation.
+
+**Equation used**
+
+```text
+Q_sg = UA · (T_avg − T_secondary)
+```
+
+`UA` is a heat-transfer strength. A bigger temperature difference or bigger
+`UA` moves more heat. The model uses one average temperature difference instead
+of a detailed tube-by-tube or boiling model.
+
+**API**
+
 **Constructor**
 
     SteamGenerator(params: SGParams)
+
+**State and parameters**
+
+There is no state. The parameters define the design temperatures, design heat
+duty, and derived `UA`.
 
 **State vector** (`state_size = 0`)
 
@@ -400,9 +688,32 @@ See `.docs/design.md` §5.3 for physics.
 L1 stand-in for the entire secondary side (turbine + condenser + feedwater).
 Constant `T_secondary`; no state, no inputs. See `.docs/design.md` §5.4.
 
+**What it represents**
+
+This is a placeholder for everything on the secondary side: boiling water in the
+steam generator, turbine, condenser, and feedwater system. For now it simply
+holds the secondary temperature fixed so the primary-side simulator has
+somewhere to send heat.
+
+**Equation used**
+
+```text
+T_secondary = constant
+```
+
+That is intentionally crude. It means the secondary side can absorb any heat the
+steam generator sends without its own temperature changing. Later milestones
+replace this with real secondary-side dynamics.
+
+**API**
+
 **Constructor**
 
     SecondarySink(params: SinkParams)
+
+**State and parameters**
+
+There is no state. The only parameter is the fixed secondary temperature.
 
 **State vector** (`state_size = 0`)
 
@@ -428,9 +739,50 @@ plus linear (L1) rod-worth function. Bridges operator decisions
 (rod_command, scram) to physics (rho_rod into the core). See
 `.docs/design.md` §5.5 for physics.
 
+**What it represents**
+
+Control rods absorb neutrons. Inserting rods lowers reactivity; withdrawing rods
+raises it. This component models one combined rod bank, not individual rods.
+
+It also models the fact that rods cannot teleport. Normal motion is slow motor
+drive. A scram is a fast insertion command, roughly a gravity drop.
+
+**Equations used**
+
+First decide what position the rods are trying to reach:
+
+```text
+rod_command_effective = 0 if scram else rod_command
+```
+
+Then move the actual rod position toward that command with a rate limit:
+
+```text
+v_lower = −v_scram if scram else −v_normal
+drod_position/dt = clip((rod_command_effective − rod_position) / tau,
+                        v_lower,
+                        +v_normal)
+```
+
+Finally convert rod position to reactivity:
+
+```text
+rho_rod = rho_total_worth · (rod_position − rod_position_critical)
+```
+
+At the design position, `rho_rod = 0`. Moving below that inserts negative
+reactivity. Moving above it adds positive reactivity.
+
+**API**
+
 **Constructor**
 
     RodController(params: RodParams)
+
+**State and parameters**
+
+State is only actual rod position. Parameters define rod speed, scram speed,
+total rod worth, and the design/critical position.
 
 **State vector** (`state_size = 1`)
 
