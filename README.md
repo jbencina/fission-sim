@@ -2,11 +2,11 @@
 
 > This project is **not** for any real-world use and was built as a side-project for personal learning. Information was collected from public sources on search engines, Wikipedia, etc. The author does not have any training or experience in this space so components are likely incorrect, incomplete, and over simplifications.
 
-fission-sim is a pressurized-water-reactor learning simulator with two ways to
-use it:
+fission-sim is a pressurized-water-reactor learning simulator which allows you to interact with the reactor by inserting and removing control rods. Changes to
+the reactor state then affect reactivity, temperature, and pressure within the system. This is a hobby learning project to work with complex multi-stage systems
+and likely contains bugs and mistakes.
 
-- A browser dashboard for live telemetry, charts, and operator controls.
-- CLI/example scripts for text reports, plots, and quick model experiments.
+Both a CLI and React UI are available to interact with the simulation.
 
 ![fission-sim web UI — SCRAM transient with live charts, status tiles, and operator controls](assets/web-ui.png)
 
