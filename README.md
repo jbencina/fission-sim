@@ -8,6 +8,8 @@ use it:
 - A browser dashboard for live telemetry, charts, and operator controls.
 - CLI/example scripts for text reports, plots, and quick model experiments.
 
+![fission-sim web UI — SCRAM transient with live charts, status tiles, and operator controls](assets/web-ui.png)
+
 Read `.docs/design.md` for the original goals and architecture. Treat this file
 as the **living guide** to what the code currently does.
 
