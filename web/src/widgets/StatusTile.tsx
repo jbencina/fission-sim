@@ -66,6 +66,11 @@ export interface StatusTileProps {
   secondary?: string
   /** Alarm band — controls border and value text colour. */
   band?: 'green' | 'amber' | 'red'
+  /**
+   * HTML data-testid attribute for Playwright/testing selectors.
+   * Passed through to the root div of the tile.
+   */
+  'data-testid'?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +88,7 @@ export interface StatusTileProps {
  *   secondary — optional secondary annotation string
  *   band      — 'green' | 'amber' | 'red' colour band (default: 'green')
  */
-const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'green' }) => {
+const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'green', 'data-testid': testId }) => {
   const { border, value: valueClass } = BAND_CLASSES[band]
 
   return (
@@ -94,6 +99,7 @@ const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'gr
      */
     <div
       className={`group relative rounded-2xl bg-slate-900 border ${border} p-4 flex flex-col gap-1 cursor-default transition-colors`}
+      data-testid={testId}
     >
       {/* ── Top row: label + info icon ─────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-1">
@@ -108,7 +114,10 @@ const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'gr
 
       {/* ── Primary value + unit ───────────────────────────────────────────── */}
       <div className="flex items-baseline gap-1">
-        <span className={`text-3xl font-mono tabular-nums leading-none ${valueClass}`}>
+        <span
+          className={`text-3xl font-mono tabular-nums leading-none ${valueClass}`}
+          data-testid={testId ? `${testId}-value` : undefined}
+        >
           {value}
         </span>
         {tooltip.units && (

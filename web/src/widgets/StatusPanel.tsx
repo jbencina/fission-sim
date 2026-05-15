@@ -148,6 +148,7 @@ const StatusPanel: FC = () => {
         <StatusTile
           tooltip={TOOLTIPS.power_thermal}
           value={formatMW(powerW)}
+          data-testid="status-power_thermal"
         />
 
         {/* ── Primary pressure ─────────────────────────────────────────────── */}
