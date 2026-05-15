@@ -15,6 +15,7 @@ import type { FC } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import type { ConnectionStatus } from '../types/telemetry'
 import ChartGrid from '../charts/ChartGrid'
+import StatusPanel from '../widgets/StatusPanel'
 
 // ---------------------------------------------------------------------------
 // Colour/label maps for connection status chip
@@ -235,11 +236,7 @@ const AppShell: FC = () => {
 
           {/* ── Sidebar (1/3 width on lg+) ───────────────────────────────── */}
           <div className="flex flex-col gap-4">
-            <Placeholder
-              id="widgets"
-              label="Widgets — placeholder for feat-010"
-              className="flex-1 min-h-[200px]"
-            />
+            <StatusPanel />
             <Placeholder
               id="controls"
               label="Controls — placeholder for feat-011"
