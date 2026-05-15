@@ -661,5 +661,157 @@ class SimRuntime:
         """
         self._subscribers.discard(q)
 
+    # ------------------------------------------------------------------
+    # Command dispatch (feat-004)
+    # ------------------------------------------------------------------
+
+    async def handle_command(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+        """Validate and dispatch an operator command message.
+
+        This is the single entry-point for all commands arriving over the
+        WebSocket API. It validates the ``type`` field, applies range checks,
+        acquires the runtime lock for mutations that touch ``_CommandState``,
+        and calls the appropriate setter or lifecycle method.
+
+        Supported ``msg['type']`` values
+        ---------------------------------
+        set_rod_command
+            ``value: float`` in ``[0, 1]``.  Drives the rod controller toward
+            the requested position.
+        scram
+            No extra fields.  Forces full rod insertion (effective rod_command = 0).
+        reset_scram
+            No extra fields.  Clears the scram latch, restoring operator rod control.
+        pause
+            No extra fields.  Suspends engine stepping (wall-clock loop keeps running).
+        resume
+            No extra fields.  Resumes engine stepping after a pause.
+        reset
+            No extra fields.  Rebuilds the engine from t = 0 while preserving
+            ``P_setpoint``, ``speed``, and the user's last ``rod_command``.
+            The scram latch is cleared on reset.
+        set_speed
+            ``value: float`` — must be one of ``{1, 2, 5, 10}``.
+        set_pressure_setpoint
+            ``value: float`` [Pa] — must be in ``[10e6, 20e6]``.
+
+        Parameters
+        ----------
+        msg : dict
+            Parsed JSON message from the WebSocket client.  Must contain at
+            least ``"type": str``.
+
+        Returns
+        -------
+        dict or None
+            Returns ``None`` on success.  Returns an error dict of the form
+            ``{"type": "error", "detail": "<reason>"}`` for unknown command
+            types or out-of-range values.  This method does **not** raise on
+            bad input — the caller (recv loop in ``app.py``) decides how to
+            relay the error to the client.
+
+        Notes
+        -----
+        Mutations to ``_CommandState`` are serialised via ``self._lock``.
+        The ``reset()`` method acquires its own lock internally, so it is
+        *not* called while holding the lock here.
+        """
+        cmd_type = msg.get("type")
+
+        if cmd_type == "set_rod_command":
+            # Validate: rod command must be a number in [0, 1].
+            value = msg.get("value")
+            if not isinstance(value, (int, float)):
+                return {"type": "error", "detail": "set_rod_command requires a numeric 'value'"}
+            value = float(value)
+            if not (0.0 <= value <= 1.0):
+                return {
+                    "type": "error",
+                    "detail": f"set_rod_command value {value!r} is out of range [0, 1]",
+                }
+            async with self._lock:
+                self.set_rod_command(value)
+            return None
+
+        elif cmd_type == "scram":
+            async with self._lock:
+                self.scram()
+            return None
+
+        elif cmd_type == "reset_scram":
+            async with self._lock:
+                self.reset_scram()
+            return None
+
+        elif cmd_type == "pause":
+            # pause() and resume() only touch self._cmd.running — safe to call
+            # without the lock since it is a boolean assignment in CPython, but
+            # we acquire it for correctness in all cases.
+            async with self._lock:
+                self.pause()
+            return None
+
+        elif cmd_type == "resume":
+            async with self._lock:
+                self.resume()
+            return None
+
+        elif cmd_type == "reset":
+            # reset() preserves P_setpoint, speed, and rod_command (handled
+            # inside _new_engine which reads self._cmd at call time).
+            # Scram latch is cleared so the operator starts fresh.
+            async with self._lock:
+                self._cmd.scrammed = False
+                self._cmd.rod_command = 0.5
+            # reset() manages its own locking and task lifecycle.
+            await self.reset()
+            return None
+
+        elif cmd_type == "set_speed":
+            # Allowed values: 1, 2, 5, 10 (integers or floats equal to those).
+            value = msg.get("value")
+            if not isinstance(value, (int, float)):
+                return {"type": "error", "detail": "set_speed requires a numeric 'value'"}
+            value = float(value)
+            _ALLOWED_SPEEDS = {1.0, 2.0, 5.0, 10.0}
+            if value not in _ALLOWED_SPEEDS:
+                return {
+                    "type": "error",
+                    "detail": f"set_speed value {value!r} must be one of {sorted(_ALLOWED_SPEEDS)}",
+                }
+            async with self._lock:
+                self.set_speed(value)
+            return None
+
+        elif cmd_type == "set_pressure_setpoint":
+            # Validate: must be within [10 MPa, 20 MPa] = [10e6, 20e6] Pa.
+            value = msg.get("value")
+            if not isinstance(value, (int, float)):
+                return {
+                    "type": "error",
+                    "detail": "set_pressure_setpoint requires a numeric 'value'",
+                }
+            value = float(value)
+            _P_MIN_PA = 10e6   # 10 MPa — minimum plausible primary pressure [Pa]
+            _P_MAX_PA = 20e6   # 20 MPa — maximum plausible primary pressure [Pa]
+            if not (_P_MIN_PA <= value <= _P_MAX_PA):
+                return {
+                    "type": "error",
+                    "detail": (
+                        f"set_pressure_setpoint value {value:.3e} Pa is out of range "
+                        f"[{_P_MIN_PA:.3e}, {_P_MAX_PA:.3e}] Pa"
+                    ),
+                }
+            async with self._lock:
+                self.set_pressure_setpoint(value)
+            return None
+
+        else:
+            # Unknown command type — return an error frame; do not disconnect.
+            return {
+                "type": "error",
+                "detail": f"unknown command type: {cmd_type!r}",
+            }
+
 
 __all__ = ["SimRuntime"]

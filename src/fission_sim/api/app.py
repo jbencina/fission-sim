@@ -174,8 +174,11 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     async def _recv_task() -> None:
         """Read JSON commands from the client and dispatch them to the runtime.
 
-        If ``runtime.handle_command`` is not yet defined (it will be added in
-        feat-004), replies with an error frame so the client is not left silent.
+        Calls ``runtime.handle_command(msg)`` for every received message.
+        If the method returns a dict with ``type == "error"``, that dict is
+        forwarded to the client as a JSON frame.  A ``None`` return means
+        silent success — nothing is sent back.  If ``handle_command`` raises
+        unexpectedly, a generic error frame is sent and the exception is logged.
 
         Loops until the client disconnects, at which point
         ``WebSocketDisconnect`` propagates up to the parent scope.
@@ -183,16 +186,18 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         while True:
             msg: dict[str, Any] = await websocket.receive_json()
 
-            # Route to handle_command if it exists (feat-004 will wire it in).
-            handler = getattr(runtime, "handle_command", None)
-            if handler is not None:
-                await handler(msg)
-            else:
-                # Feat-004 not yet present — tell the client we don't know this
-                # command type yet rather than silently ignoring it.
+            try:
+                result = await runtime.handle_command(msg)
+            except Exception:
+                logger.exception("handle_command raised unexpectedly for msg=%r", msg)
                 await websocket.send_json(
-                    {"type": "error", "detail": "unknown command type"}
+                    {"type": "error", "detail": "internal server error processing command"}
                 )
+                continue
+
+            # Forward error frames to the client; None means silent success.
+            if isinstance(result, dict) and result.get("type") == "error":
+                await websocket.send_json(result)
 
     try:
         # Run send and recv concurrently. Either task completing (or raising)
