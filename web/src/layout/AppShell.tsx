@@ -14,6 +14,7 @@
 import type { FC } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import type { ConnectionStatus } from '../types/telemetry'
+import ChartGrid from '../charts/ChartGrid'
 
 // ---------------------------------------------------------------------------
 // Colour/label maps for connection status chip
@@ -228,11 +229,9 @@ const AppShell: FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
 
           {/* ── Charts column (2/3 width on lg+) ─────────────────────────── */}
-          <Placeholder
-            id="charts"
-            label="Charts area — placeholder for feat-009"
-            className="lg:col-span-2 min-h-[480px]"
-          />
+          <section id="charts" className="lg:col-span-2">
+            <ChartGrid />
+          </section>
 
           {/* ── Sidebar (1/3 width on lg+) ───────────────────────────────── */}
           <div className="flex flex-col gap-4">
