@@ -8,12 +8,17 @@ dependencies = [
     "scipy",
     "matplotlib",
     "coolprop",
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
     "ruff",
+    "httpx",
+    "pytest-asyncio",
 ]
 
 [build-system]
