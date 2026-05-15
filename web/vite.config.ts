@@ -5,7 +5,12 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    // Bind all interfaces so the dev server is reachable on the LAN.
+    // Vite prints both Local: and Network: URLs when host is true.
+    host: true,
     proxy: {
+      // Proxy targets stay on loopback — the proxy runs on the same host
+      // as the backend, so going through 127.0.0.1 avoids an extra hop.
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,

@@ -51,6 +51,11 @@ Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready (the Vite line `VITE vX.Y.Z ready` appears in the
 terminal).
 
+> **LAN access** — both servers bind `0.0.0.0`, so the dashboard is reachable
+> from any host on your network at `http://<your-machine-ip>:5173` (Vite
+> prints the LAN URL on the `Network:` line). There is **no authentication**
+> — only expose this on a trusted network.
+
 > **Windows users** — the `make dev` launcher is Unix-only (it relies on
 > Python's `os.kill` / `signal` APIs). Run the two processes in separate
 > terminals instead:

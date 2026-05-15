@@ -39,11 +39,13 @@ BOLD = "\033[1m"
 BACKEND_CMD = [
     "uv", "run", "uvicorn",
     "fission_sim.api.app:app",
-    "--host", "127.0.0.1",
+    "--host", "0.0.0.0",  # bind all interfaces — accessible on the LAN
     "--port", "8000",
     "--reload",
 ]
 
+# `npm run dev` calls `vite`; `web/vite.config.ts` sets `server.host: true` so
+# Vite also binds 0.0.0.0 and prints the LAN URL on the "Network:" line.
 FRONTEND_CMD = ["npm", "run", "dev", "--prefix", "web"]
 
 # ---------------------------------------------------------------------------
@@ -184,8 +186,9 @@ def _print_banner() -> None:
         f"\n{BOLD}╔══════════════════════════════════════════════╗{RESET}\n"
         f"{BOLD}║  fission-sim dev servers                     ║{RESET}\n"
         f"{BOLD}║                                              ║{RESET}\n"
-        f"{BOLD}║  Backend  → http://127.0.0.1:8000            ║{RESET}\n"
-        f"{BOLD}║  Frontend → http://127.0.0.1:5173            ║{RESET}\n"
+        f"{BOLD}║  Backend  → http://localhost:8000            ║{RESET}\n"
+        f"{BOLD}║  Frontend → http://localhost:5173            ║{RESET}\n"
+        f"{BOLD}║  Bound to 0.0.0.0 — LAN-reachable.           ║{RESET}\n"
         f"{BOLD}║                                              ║{RESET}\n"
         f"{BOLD}║  Press Ctrl-C to stop both servers.          ║{RESET}\n"
         f"{BOLD}╚══════════════════════════════════════════════╝{RESET}\n",
