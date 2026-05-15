@@ -67,6 +67,16 @@ export interface StatusTileProps {
   /** Alarm band — controls border and value text colour. */
   band?: 'green' | 'amber' | 'red'
   /**
+   * Which edge of the tile the tooltip anchors to.
+   *
+   * - 'left'  (default) — tooltip opens rightward from the tile's left edge.
+   *   Correct for left-column tiles where there is room to the right.
+   * - 'right' — tooltip opens leftward from the tile's right edge.
+   *   Use for right-column tiles that sit near the viewport edge, so the
+   *   tooltip extends inward instead of overflowing the viewport.
+   */
+  tooltipSide?: 'left' | 'right'
+  /**
    * HTML data-testid attribute for Playwright/testing selectors.
    * Passed through to the root div of the tile.
    */
@@ -83,12 +93,13 @@ export interface StatusTileProps {
  * A single readout card with CSS-only hover tooltip.
  *
  * Props:
- *   tooltip   — `{ title, body, units }` from tooltips.ts
- *   value     — formatted primary value string
- *   secondary — optional secondary annotation string
- *   band      — 'green' | 'amber' | 'red' colour band (default: 'green')
+ *   tooltip     — `{ title, body, units }` from tooltips.ts
+ *   value       — formatted primary value string
+ *   secondary   — optional secondary annotation string
+ *   band        — 'green' | 'amber' | 'red' colour band (default: 'green')
+ *   tooltipSide — 'left' | 'right' tooltip anchor edge (default: 'left')
  */
-const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'green', 'data-testid': testId }) => {
+const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'green', tooltipSide = 'left', 'data-testid': testId }) => {
   const { border, value: valueClass } = BAND_CLASSES[band]
 
   return (
@@ -138,13 +149,21 @@ const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'gr
        * z-50 ensures it floats above charts and neighbouring tiles.
        * min-w-[16rem] / max-w-xs keeps copy readable without overflow.
        *
-       * To avoid clipping at the right panel edge, the tooltip is left-aligned
-       * to the tile and constrained by max-w-xs (20rem). This keeps it visible
-       * even for the rightmost tiles in a 2-column grid.
+       * Horizontal anchor: controlled by `tooltipSide` prop.
+       *   'left'  → left-0  — tooltip extends rightward from the tile's left edge.
+       *             For left-column tiles; plenty of space to the right.
+       *   'right' → right-0 — tooltip extends leftward from the tile's right edge.
+       *             For right-column tiles near the viewport edge; extends inward
+       *             so the tooltip never pushes document.body.scrollWidth past
+       *             window.innerWidth (fixes DEF-02 on 1280 px viewports).
+       *
+       * NOTE: Tailwind purges class names that are only constructed dynamically.
+       * These two strings must appear verbatim (not concatenated at runtime) so
+       * the Tailwind scanner includes them in the output CSS bundle.
        */}
       <div
         className={[
-          'absolute left-0 top-[calc(100%+6px)]',
+          `absolute ${tooltipSide === 'right' ? 'right-0' : 'left-0'} top-[calc(100%+6px)]`,
           'z-50 min-w-[16rem] max-w-xs',
           'bg-slate-950 border border-slate-700 rounded-lg p-3',
           'text-xs text-slate-200 shadow-lg',

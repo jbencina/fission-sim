@@ -152,10 +152,12 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Primary pressure ─────────────────────────────────────────────── */}
+        {/* index 1 — right column → tooltipSide='right' so tooltip opens inward */}
         <StatusTile
           tooltip={TOOLTIPS.P_primary_MPa}
           value={pMPa !== null ? pMPa.toFixed(2) : '—'}
           band={pMPa !== null ? getBand('P_primary_MPa', pMPa) : 'green'}
+          tooltipSide="right"
         />
 
         {/* ── Hot-leg temperature ──────────────────────────────────────────── */}
@@ -166,10 +168,12 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Cold-leg temperature ─────────────────────────────────────────── */}
+        {/* index 3 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={TOOLTIPS.T_cold}
           value={tColdFmt.primary}
           secondary={tColdFmt.secondary}
+          tooltipSide="right"
         />
 
         {/* ── Average coolant temperature ──────────────────────────────────── */}
@@ -180,11 +184,13 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Fuel temperature ─────────────────────────────────────────────── */}
+        {/* index 5 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={TOOLTIPS.T_fuel}
           value={tFuelFmt.primary}
           secondary={tFuelFmt.secondary}
           band={tFuel !== null ? getBand('T_fuel', tFuel) : 'green'}
+          tooltipSide="right"
         />
 
         {/* ── Rod position ─────────────────────────────────────────────────── */}
@@ -194,9 +200,11 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Rod command ──────────────────────────────────────────────────── */}
+        {/* index 7 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={TOOLTIPS.rod_command}
           value={formatPercent(rodCmd)}
+          tooltipSide="right"
         />
 
         {/* ── SG heat transfer ─────────────────────────────────────────────── */}
@@ -206,10 +214,12 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Total reactivity ─────────────────────────────────────────────── */}
+        {/* index 9 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={{ ...TOOLTIPS.rho_total, units: 'pcm' }}
           value={formatPcm(rhoTotal)}
           band={rhoTotal !== null ? getBand('rho_total', rhoTotal * 1e5) : 'green'}
+          tooltipSide="right"
         />
 
         {/* ── Simulation time ──────────────────────────────────────────────── */}
@@ -219,9 +229,11 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Speed multiplier ─────────────────────────────────────────────── */}
+        {/* index 11 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={TOOLTIPS.speed}
           value={speed !== null ? `${speed}` : '—'}
+          tooltipSide="right"
         />
 
         {/* ── SCRAM status ─────────────────────────────────────────────────── */}
@@ -232,9 +244,11 @@ const StatusPanel: FC = () => {
         />
 
         {/* ── Running status ───────────────────────────────────────────────── */}
+        {/* index 13 — right column → tooltipSide='right' */}
         <StatusTile
           tooltip={TOOLTIPS.running}
           value={running === null ? '—' : running ? 'YES' : 'NO'}
+          tooltipSide="right"
         />
 
       </div>
