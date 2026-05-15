@@ -10,10 +10,11 @@ Both a CLI and React UI are available to interact with the simulation.
 
 ![fission-sim web UI — SCRAM transient with live charts, status tiles, and operator controls](assets/web-ui.png)
 
-Read `.docs/design.md` for the original goals and architecture. Treat this file
-as the **living guide** to what the code currently does.
+Read `.docs/design.md` for the original goals and architecture. Developer
+workflow, Web API details, architecture notes, and code-level conventions live
+in [DEVELOPMENT.md](DEVELOPMENT.md).
 
-## Install
+## Quickstart
 
 ### Prerequisites
 
@@ -21,20 +22,16 @@ as the **living guide** to what the code currently does.
 - Node.js 20+ (or 22+)
 - `uv` installed (see [astral.sh/uv](https://astral.sh/uv))
 
-### Quick setup
+### Install
 
     make install
 
 This runs `uv sync && npm install --prefix web` — it installs the Python
 package (in a `.venv`) and the frontend's Node dependencies in one step.
-Run this once after cloning or whenever `pyproject.toml` or `package.json`
-change.
 
-For Python-only use:
+For Python-only use, run `uv sync`.
 
-    uv sync
-
-## Run The Dashboard
+### Run The Dashboard
 
 The dashboard streams simulator telemetry at 10 Hz while running and exposes
 operator controls for rod command, SCRAM, pause/resume, reset, and simulation
@@ -63,7 +60,7 @@ terminal).
 >     uv run python -m fission_sim.api   # backend, port 8000
 >     npm run dev --prefix web           # frontend, port 5173
 
-## Run From The CLI
+### Run From The CLI
 
 The CLI scripts are useful when you want a quick simulation without a browser,
 or when you want to inspect the model's raw outputs.
@@ -76,40 +73,6 @@ or when you want to inspect the model's raw outputs.
 | `uv run python examples/power_maneuver.py` | Text report for a controlled rod-driven power maneuver |
 | `uv run python examples/run_primary.py` | Matplotlib plots for the coupled primary plant |
 | `uv run python examples/run_core.py` | Matplotlib plots for point kinetics only |
-
-Run the test suite with:
-
-    uv run pytest
-
-## Useful Make Targets
-
-| Target       | What it does                                                    |
-|--------------|-----------------------------------------------------------------|
-| `make install` | Install Python + Node dependencies (first-time setup)         |
-| `make dev`   | Start backend + frontend together (coloured, Ctrl-C to stop)   |
-| `make api`   | Backend only (`uvicorn` on port 8000)                          |
-| `make web`   | Frontend only (Vite dev server on port 5173)                   |
-| `make install-e2e` | Install Chromium for the Playwright smoke test           |
-| `make e2e`   | Run Playwright smoke test against an already-running stack      |
-| `make test`  | Full test suite — `uv run pytest` + `npm run test -- --run`    |
-| `make lint`  | Python (`ruff check`) + TypeScript (`eslint`) linting          |
-
-## End-To-End Smoke Test
-
-The Playwright smoke test verifies the browser can connect, reset to a known
-running state, SCRAM, and observe a large power drop.
-
-First install the browser once:
-
-    make install-e2e
-
-Then start the stack in one terminal:
-
-    make dev
-
-And run the smoke test in another:
-
-    make e2e
 
 ## How The Model Fits Together
 
@@ -163,266 +126,9 @@ with SciPy's BDF solver.
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested rod target vs. physical rod lag. |
 
-The detailed component guide and API reference below explain each model in
-more depth.
+The component guide below explains each model in more depth.
 
-## Web API reference
-
-The backend exposes one HTTP endpoint and one WebSocket endpoint. The Vite dev
-server proxies `/api` and `/ws` paths to the backend, so the browser always
-talks to port 5173 during development.
-
-### `GET /api/health`
-
-Liveness probe. Returns HTTP 200 with body:
-
-```json
-{"status": "ok"}
-```
-
-No simulation state is checked — this is a shallow ping.
-
-### `WebSocket /ws/telemetry`
-
-Bidirectional. Connect once; the server pushes telemetry frames at 10 Hz.
-The client may send command messages at any time.
-
-#### Telemetry frame (server → client)
-
-The server pushes one JSON object per step. All numeric fields use SI units
-internally; `P_primary_MPa` is a convenience conversion provided for display.
-
-```json
-{
-  "t": 42.7,
-  "power_thermal": 3000000000.0,
-  "T_hot": 597.7,
-  "T_cold": 568.3,
-  "T_avg": 583.0,
-  "T_fuel": 1100.0,
-  "rod_position": 0.5,
-  "P_primary_Pa": 15500000.0,
-  "P_primary_MPa": 15.5,
-  "Q_sg": 3000000000.0,
-  "rho_rod": 0.0,
-  "rho_doppler": 0.0,
-  "rho_moderator": 0.0,
-  "rho_total": 0.0,
-  "running": true,
-  "speed": 1.0,
-  "scrammed": false,
-  "rod_command": 0.5
-}
-```
-
-**Frame fields:**
-
-| Key | Type | Units | Description |
-|-----|------|-------|-------------|
-| `t` | float | s | Simulation time |
-| `power_thermal` | float | W | Fission thermal power |
-| `T_hot` | float | K | Hot-leg coolant temperature |
-| `T_cold` | float | K | Cold-leg coolant temperature |
-| `T_avg` | float | K | Average primary coolant temperature |
-| `T_fuel` | float | K | Lumped fuel temperature |
-| `rod_position` | float | — | Actual rod position (0 = inserted, 1 = withdrawn) |
-| `P_primary_Pa` | float | Pa | Primary system pressure from pressurizer |
-| `P_primary_MPa` | float | MPa | Same pressure, converted for display |
-| `Q_sg` | float | W | Heat removed by the steam generator |
-| `rho_rod` | float | — | Rod reactivity contribution (dimensionless) |
-| `rho_doppler` | float | — | Doppler (fuel-temperature) reactivity feedback |
-| `rho_moderator` | float | — | Moderator (coolant-temperature) reactivity feedback |
-| `rho_total` | float | — | Total reactivity (sum of all contributions) |
-| `running` | bool | — | Whether the simulator is currently stepping |
-| `speed` | float | — | Simulation speed multiplier (1.0 = real time) |
-| `scrammed` | bool | — | Whether a SCRAM is active |
-| `rod_command` | float | — | Operator's requested rod position |
-
-#### Command messages (client → server)
-
-Commands are JSON objects with a `"type"` discriminator. The server returns
-an acknowledgement frame such as `{"type": "ack", "command": "set_speed"}` on
-success, or an error frame `{"type": "error", "detail": "..."}` on failure.
-Errors do not disconnect the WebSocket.
-
-**`set_rod_command`** — move the control rod bank toward a target position.
-
-```json
-{"type": "set_rod_command", "value": 0.55}
-```
-
-`value`: float in `[0, 1]`. 0 = fully inserted (shutdown), 1 = fully
-withdrawn (maximum reactivity). The rod controller drives toward this position
-at a finite speed (~1%/s for normal motion).
-
----
-
-**`scram`** — emergency shutdown; forces rods to full insertion at scram speed.
-
-```json
-{"type": "scram"}
-```
-
-No extra fields. Sets `scrammed = true` in the runtime. The reactor does not
-go subcritical instantly — delayed-neutron precursors sustain a tail of
-fission heat for tens of seconds.
-
----
-
-**`reset_scram`** — clear the SCRAM latch and restore operator rod control.
-
-```json
-{"type": "reset_scram"}
-```
-
-No extra fields. In the simulator this is unconditional (no interlock logic at
-M2); a real plant requires independent safety system confirmation.
-
----
-
-**`pause`** — suspend engine stepping (background loop keeps running).
-
-```json
-{"type": "pause"}
-```
-
-No extra fields. The runtime publishes one transition frame with
-`running = false`; while paused, no additional telemetry frames are emitted.
-Resume with `resume`.
-
----
-
-**`resume`** — resume engine stepping after a `pause`.
-
-```json
-{"type": "resume"}
-```
-
-No extra fields.
-
----
-
-**`reset`** — rebuild the engine from t = 0.
-
-```json
-{"type": "reset"}
-```
-
-No extra fields. All state (temperatures, neutron population, pressurizer mass,
-rod position) returns to initial conditions. `P_setpoint` and `speed` are
-preserved; the SCRAM latch is cleared and `rod_command` resets to 0.5.
-
----
-
-**`set_speed`** — change the simulation speed multiplier.
-
-```json
-{"type": "set_speed", "value": 5}
-```
-
-`value`: one of `{1, 2, 5, 10}` (integers or float-equivalents). Values
-outside this set are rejected with an error frame.
-
----
-
-**`set_pressure_setpoint`** — adjust the pressurizer pressure setpoint.
-
-```json
-{"type": "set_pressure_setpoint", "value": 15500000.0}
-```
-
-`value`: float in `[10e6, 20e6]` Pa (10–20 MPa). Nominal design is
-15.5 MPa = 1.55e7 Pa. The pressurizer controller will heat or spray to reach
-this setpoint.
-
-## Architecture
-
-The simulator follows a strict four-layer stack with one-way downward
-dependencies. The web layer is a new top-level package (`fission_sim.api`)
-that sits above the existing engine/physics/control layers:
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  Browser (React / TypeScript)                                    │
-│  WebSocket frames in, telemetry frames out                       │
-└─────────────────────────┬────────────────────────────────────────┘
-                          │  HTTP / WebSocket (port 5173 dev, 8000 prod)
-┌─────────────────────────▼────────────────────────────────────────┐
-│  fission_sim.api  (Visualization tier)                           │
-│  FastAPI + uvicorn  ·  SimRuntime (asyncio step loop)            │
-│  app.py — routes    ·  runtime.py — engine bridge                │
-└─────────────────────────┬────────────────────────────────────────┘
-                          │  Python function calls only
-┌─────────────────────────▼────────────────────────────────────────┐
-│  fission_sim.engine  (Simulation engine)                         │
-│  SimEngine — owns state vector, wires components, drives BDF     │
-└──────────────────┬─────────────────────┬────────────────────────┘
-                   │                     │
-     ┌─────────────▼──────────┐ ┌────────▼────────────────────────┐
-     │  fission_sim.physics   │ │  fission_sim.control            │
-     │  Core, PrimaryLoop,    │ │  RodController,                 │
-     │  Pressurizer, SG, ...  │ │  PressurizerController          │
-     └────────────────────────┘ └─────────────────────────────────┘
-```
-
-**Layer rules (enforced, not aspirational):**
-
-- Physics never imports from control or API. The engine has zero domain
-  knowledge — only components, ports, and ODEs.
-- `fission_sim.api` is the only package that knows about asyncio, HTTP, or
-  WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
-- The Vite frontend is a completely separate process. During development the
-  Vite proxy (`/api`, `/ws` → `127.0.0.1:8000`) removes the need for CORS in
-  production builds; in dev the backend's permissive CORS policy allows
-  `localhost:5173`.
-
-See `.docs/design.md` §2–3 for the original four-layer design spec.
-
-## Frontend tech stack
-
-The browser dashboard is a single-page app in `web/`:
-
-| Technology | Version | Role |
-|---|---|---|
-| Vite | 5.x | Build tool and dev server (with backend proxy) |
-| React | 18.x | UI component tree |
-| TypeScript | 5.x (strict) | Type-safe frontend language |
-| Tailwind CSS | 3.x | Utility-first styling |
-| Recharts | 2.x | Time-series charts (power, temperature, pressure) |
-| Zustand | 5.x | Lightweight global state store for telemetry |
-| ESLint + Prettier | 8.x / 3.x | Lint and format |
-| Vitest | 4.x | Unit tests for store logic and utilities |
-
-During development, Vite's built-in proxy forwards `/api/*` and `/ws/*` to
-`http://127.0.0.1:8000` and `ws://127.0.0.1:8000` respectively, so the
-browser always talks to a single origin (`localhost:5173`) and no browser
-CORS preflight is needed.
-
-Deferred work (authentication, persistence, multi-user, replay) is tracked in
-`.docs/design.md`.
-
-## Design conventions
-
-Every component is a Python class that owns its parameters and equations
-but **not** its time-evolving state. State lives in a numpy vector owned
-by the caller (a driver script for now, the simulation engine later).
-Each component exposes the same surface — a constructor and four methods:
-
-    __init__(params)                            # takes a frozen Params dataclass
-    initial_state() -> np.ndarray
-    derivatives(state, inputs) -> np.ndarray
-    outputs(state, inputs=None) -> dict
-    telemetry(state, inputs=None) -> dict
-
-plus class attributes ``state_size`` and ``state_labels``. The three
-state-evaluation methods all take the same `(state, inputs)` shape; components
-that don't need inputs (most do not) accept the kwarg and ignore it.
-Algebraic components (e.g. `SteamGenerator`) use it.
-
-All time-evolving state for the whole plant lives in one flat numpy
-vector. Each component declares the slot it owns.
-
-## Component guide and API reference
+## Educational Component Guide
 
 Each component section follows the same learning path:
 
@@ -1205,112 +911,6 @@ total rod worth, and the design/critical position.
 | `rho_total_worth`        | dimensionless | 0.14                     | Reactivity slope per unit position; scram from design (0.5→0) gives −7000 pcm |
 | `rod_position_design`    | dimensionless | 0.5                      | Position at coupled-plant design steady state       |
 | `rod_position_critical`  | dimensionless | derived: `= rod_position_design` | Position where rod produces zero reactivity         |
-
-## Simulation engine
-
-`SimEngine` (in `src/fission_sim/engine/engine.py`) is the graph runner
-that owns global state, wires components, and steps time. It has zero
-physics imports — all it knows is components, ports, and ODEs.
-
-### API
-
-```python
-from fission_sim.engine import SimEngine
-
-engine = SimEngine()
-
-# 1. Register components — name defaults to snake_case of class name.
-rod  = engine.module(RodController(RodParams()),     name="rod")
-core = engine.module(PointKineticsCore(CoreParams()), name="core")
-loop = engine.module(PrimaryLoop(LoopParams()),      name="loop")
-sg   = engine.module(SteamGenerator(SGParams()),     name="sg")
-sink = engine.module(SecondarySink(SinkParams()),    name="sink")
-
-# 2. Declare external operator inputs (signals not produced by any module).
-rod_cmd = engine.input("rod_command", default=0.5)
-scram   = engine.input("scram", default=False)
-
-# 3. Wire by calling — the engine traces these calls to build the DAG.
-rho_rod = rod(rod_command=rod_cmd, scram=scram)
-T_sec   = sink()
-Q_sg    = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-core(rho_rod=rho_rod, T_cool=loop.T_cool)
-loop(power_thermal=core.power_thermal, Q_sg=Q_sg)
-
-# 4. Finalize (validates the graph and allocates state).
-engine.finalize()  # optional — auto-called on first step()/run()
-
-# 5a. Step-at-a-time (live/interactive use).
-snap = engine.step(dt=0.5, rod_command=0.515)
-print(snap["core"]["n"], snap["signals"]["power_thermal"])
-
-# 5b. Or run the whole scenario (batch use).
-def scenario(t):
-    return {"rod_command": 0.5 if t < 10 else 0.515, "scram": t >= 60.0}
-
-final = engine.run(t_end=300.0, scenario_fn=scenario)
-```
-
-### Snapshot dict shape
-
-Returned by `step()`, `run()`, and `engine.snapshot()`:
-
-```python
-{
-  "t": 5.0,
-  "signals": {
-    "rho_rod": 0.0, "T_cool": 583.0, "power_thermal": 3.0e9,
-    "Q_sg": 3.0e9, "T_avg": 583.0, "T_secondary": 558.0,
-    "rod_command": 0.5, "scram": False,
-  },
-  "core": {"n": 1.0, "T_fuel": 1100.0, ...},
-  "loop": {"T_hot": 597.7, "T_cold": 568.3, ...},
-  "rod":  {"rod_position": 0.5, "rho_rod": 0.0, ...},
-  "sg":   {...},
-  "sink": {},
-}
-```
-
-`signals` contains every wired signal by canonical name (externals +
-module outputs that have at least one consumer). Each `<module_name>` key
-holds that module's `telemetry()` dict.
-
-### Wiring rules
-
-- **Globally unique signal names.** Two modules cannot expose an output
-  port with the same name (caught at finalize).
-- **State-derived vs computed outputs.** State-derived outputs (e.g.,
-  `loop.T_avg`) are accessible as attributes before the module is called.
-  Computed outputs (e.g., `Q_sg = sg(...)`) come from the call return.
-- **Single output → call returns the Signal; multiple outputs → call
-  returns None.** Use attribute access for multi-output components.
-- **External defaults.** Externals not provided in `step()` /
-  `scenario_fn(t)` fall back to the declared default.
-
-### What gets validated at `finalize()`
-
-`EngineWiringError` is raised for: dangling inputs, signal name
-collisions, unused externals, unknown ports in `module(...)` calls, and
-cycles among computed-output modules.
-
-### `run(dense=True)`
-
-```python
-final, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
-mid = dense.at(150.0)            # snapshot at t = 150
-n_traj = dense.signal("power_thermal", np.linspace(0, 300, 1500)) / core_params.P_design
-```
-
-`dense.at(t)` returns a snapshot at the given time(s); `dense.signal(name,
-t_array)` returns a 1D array of values, falling back to module telemetry
-if the name isn't a wired signal.
-
-## Multi-component runners
-
-All runners (`run_primary.py`, `report_primary.py`, `dump_state.py`) and
-the coupled-plant tests (`test_primary_plant.py`) use `SimEngine` for
-wiring; they differ only in their `scenario_fn` and how they format the
-output (matplotlib, ASCII text, or full state dump).
 
 ## Glossary
 
