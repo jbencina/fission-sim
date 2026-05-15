@@ -398,7 +398,20 @@ class SimRuntime:
         stiff ODE solvers).
 
         Publishes a telemetry frame to all subscribers after each step.
+
+        Transition frames
+        -----------------
+        When ``running`` transitions True → False (pause) or False → True
+        (resume), exactly one telemetry frame reflecting the new state is
+        published immediately so subscribers see the updated ``running`` flag.
+        Between a pause and the next resume no further frames are published,
+        keeping CPU use negligible.
         """
+        # Tracks the running flag seen in the previous loop iteration.
+        # Initialised to True because _cmd.running starts as True — this
+        # ensures no spurious transition frame is published at startup.
+        last_running = True
+
         while True:
             t0_wall = time.monotonic()
 
@@ -410,6 +423,17 @@ class SimRuntime:
                 scrammed = self._cmd.scrammed
                 P_setpoint = self._cmd.P_setpoint
                 speed = self._cmd.speed
+
+            # Detect a running → paused or paused → running transition.
+            # When a transition is detected, publish one frame with the
+            # current engine state (without advancing simulation time) so
+            # subscribers immediately see the new ``running`` value.
+            state_changed = is_running != last_running
+            if state_changed:
+                transition_frame = _build_telemetry_frame(self._engine.snapshot(), self._cmd)
+                self._latest_frame = transition_frame
+                self._publish(transition_frame)
+                last_running = is_running
 
             if is_running:
                 # Advance simulation time by dt * speed (may be > 1× if speed > 1).
