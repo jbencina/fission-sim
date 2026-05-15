@@ -16,6 +16,7 @@ import { useTelemetryStore } from '../state/telemetryStore'
 import type { ConnectionStatus } from '../types/telemetry'
 import ChartGrid from '../charts/ChartGrid'
 import StatusPanel from '../widgets/StatusPanel'
+import ControlPanel from '../controls/ControlPanel'
 
 // ---------------------------------------------------------------------------
 // Colour/label maps for connection status chip
@@ -145,30 +146,6 @@ const Footer: FC<FooterProps> = ({ status }) => (
 )
 
 // ---------------------------------------------------------------------------
-// Placeholder section helper
-// ---------------------------------------------------------------------------
-
-interface PlaceholderProps {
-  id: string
-  label: string
-  className?: string
-}
-
-/**
- * Dashed-border placeholder for a layout region.
- * Subsequent features replace these with real content.
- */
-const Placeholder: FC<PlaceholderProps> = ({ id, label, className = '' }) => (
-  <section
-    id={id}
-    className={`flex items-center justify-center rounded border-2 border-dashed border-slate-700 bg-slate-900/40 text-slate-500 text-sm select-none ${className}`}
-    aria-label={label}
-  >
-    <span className="px-4 py-2 text-center">{label}</span>
-  </section>
-)
-
-// ---------------------------------------------------------------------------
 // Sim-clock formatter
 // ---------------------------------------------------------------------------
 
@@ -237,11 +214,7 @@ const AppShell: FC = () => {
           {/* ── Sidebar (1/3 width on lg+) ───────────────────────────────── */}
           <div className="flex flex-col gap-4">
             <StatusPanel />
-            <Placeholder
-              id="controls"
-              label="Controls — placeholder for feat-011"
-              className="flex-1 min-h-[200px]"
-            />
+            <ControlPanel />
           </div>
 
         </div>
