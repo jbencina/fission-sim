@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
@@ -33,6 +34,7 @@ def _fmt(v) -> str:
 
 
 def main() -> None:
+    print_disclaimer()
     engine = SimEngine()
     rod = engine.module(RodController(RodParams()), name="rod")
     core = engine.module(PointKineticsCore(CoreParams()), name="core")

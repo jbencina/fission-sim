@@ -86,11 +86,12 @@ def test_websocket_receives_at_least_5_frames():
         )
 
 
-def test_unknown_command_does_not_disconnect():
-    """Sending an unknown command must not cause a disconnect or exception.
+def test_command_does_not_disconnect():
+    """Sending a command must not cause a disconnect or exception.
 
-    In feat-003 the server may reply with an error frame or silently accept
-    the message — both are acceptable. We only assert the connection stays open.
+    Command-specific acknowledgement/error behavior is covered in
+    test_commands.py. This endpoint-level test only asserts the connection
+    stays open while telemetry continues.
     """
     with TestClient(app) as client:
         with client.websocket_connect("/ws/telemetry") as ws:

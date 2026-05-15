@@ -16,6 +16,7 @@ from fission_sim.control.pressurizer_controller import (
     PressurizerController,
     PressurizerControllerParams,
 )
+from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
@@ -78,6 +79,7 @@ def ascii_linear_chart(times, values, width=50, label="value", unit=""):
 
 
 def main() -> None:
+    print_disclaimer()
     core_params = CoreParams()
     loop_params = LoopParams()
     sg_params = SGParams()

@@ -10,13 +10,26 @@
  *   confirm the modal, wait 12 s, assert power dropped by ≥50%.
  */
 
-import { test, expect } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
+
+async function numericText(locator: Locator): Promise<number> {
+  const text = (await locator.textContent()) ?? ''
+  return parseFloat(text.trim())
+}
+
+async function resumeIfPaused(page: Page): Promise<void> {
+  const resume = page.getByRole('button', { name: /^resume$/i })
+  if (await resume.isVisible().catch(() => false)) {
+    await resume.click()
+  }
+}
 
 test('SCRAM drops thermal power', async ({ page }) => {
   await page.goto('/')
 
   // Wait for the WebSocket to connect — the UI shows a "Connected" chip.
   await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText(/personal learning project/i)).toBeVisible()
 
   // ── Reset to a clean steady-state before reading initial power ─────────────
   //
@@ -25,9 +38,14 @@ test('SCRAM drops thermal power', async ({ page }) => {
   // so this test always starts from the same known state (t=0, n=1, full power).
   //
   // Reset Simulation button text is "Reset Simulation" — click it, then confirm.
+  await resumeIfPaused(page)
   await page.getByRole('button', { name: /reset simulation/i }).click()
   // Confirm modal: the dialog has a confirm button with label "Reset".
   await page.getByRole('dialog').getByRole('button', { name: /reset/i }).click()
+
+  // Reset preserves run/speed state, so force a known running 1× baseline.
+  await resumeIfPaused(page)
+  await page.getByRole('button', { name: /^1×$/ }).click()
 
   // Give the simulator a moment to rebuild state and emit a fresh telemetry frame.
   await page.waitForTimeout(2_000)
@@ -53,8 +71,7 @@ test('SCRAM drops thermal power', async ({ page }) => {
   ).not.toBeNull()
 
   // Read and parse the initial power value in MW.
-  const initial = await powerValueSpan.textContent()
-  const initialMW = parseFloat((initial ?? '').trim())
+  const initialMW = await numericText(powerValueSpan)
   // Sanity check: the simulator starts at ~3000 MW (n=1 × 3000 MWth design).
   expect(initialMW).toBeGreaterThan(100)
 
@@ -71,12 +88,11 @@ test('SCRAM drops thermal power', async ({ page }) => {
 
   // ── Wait for power to drop ─────────────────────────────────────────────────
   //
-  // 12 s of simulator time (at 1× real-time) is enough to see the prompt
-  // neutron drop (< 1 s) and the subsequent delayed-neutron decay tail.
-  await page.waitForTimeout(12_000)
-
   // ── Assert power dropped by ≥50% ───────────────────────────────────────────
-  const after = await powerValueSpan.textContent()
-  const afterMW = parseFloat((after ?? '').trim())
-  expect(afterMW).toBeLessThan(initialMW * 0.5)
+  // Poll the live readout rather than sleeping a fixed interval; this handles
+  // both fast machines and temporarily slow simulator steps.
+  await expect.poll(
+    async () => numericText(powerValueSpan),
+    { timeout: 20_000, intervals: [500] },
+  ).toBeLessThan(initialMW * 0.5)
 })

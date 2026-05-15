@@ -17,6 +17,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { useTelemetryStore } from '../state/telemetryStore'
+import { toPowerPoints } from './chartData'
 import {
   GRID_STROKE,
   TICK_FILL,
@@ -24,17 +25,6 @@ import {
   TOOLTIP_WRAPPER_STYLE,
   X_AXIS_PROPS,
 } from './chartTheme'
-
-// ---------------------------------------------------------------------------
-// Chart data shape
-// ---------------------------------------------------------------------------
-
-interface PowerPoint {
-  /** Relative time in seconds; 0 = newest, -60 = oldest in window. */
-  t_rel: number
-  /** Thermal power in MW (raw Watts / 1e6). */
-  power_MW: number
-}
 
 // ---------------------------------------------------------------------------
 // PowerChart component
@@ -50,18 +40,8 @@ interface PowerPoint {
 const PowerChart: FC = () => {
   const history = useTelemetryStore((s) => s.history)
 
-  /** Derive chart-ready points, recalculated only when history length changes. */
-  const data = useMemo<PowerPoint[]>(() => {
-    if (history.length === 0) return []
-    const latest = history[history.length - 1].t
-    // Sample every other frame to reduce render load at 10 Hz (still 5 Hz resolution)
-    return history
-      .filter((_, i) => i % 2 === 0 || i === history.length - 1)
-      .map((frame) => ({
-        t_rel: +(frame.t - latest).toFixed(2),
-        power_MW: +(frame.power_thermal / 1e6).toFixed(3),
-      }))
-  }, [history.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  /** Derive chart-ready points whenever the rolling history array changes. */
+  const data = useMemo(() => toPowerPoints(history), [history])
 
   return (
     <div className="bg-slate-900/60 rounded-lg border border-slate-800 p-4 h-64 md:h-72 flex flex-col gap-2">

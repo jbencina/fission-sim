@@ -17,6 +17,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { useTelemetryStore } from '../state/telemetryStore'
+import { toPressurePoints } from './chartData'
 import {
   GRID_STROKE,
   TICK_FILL,
@@ -24,17 +25,6 @@ import {
   TOOLTIP_WRAPPER_STYLE,
   X_AXIS_PROPS,
 } from './chartTheme'
-
-// ---------------------------------------------------------------------------
-// Chart data shape
-// ---------------------------------------------------------------------------
-
-interface PressurePoint {
-  /** Relative time in seconds; 0 = newest. */
-  t_rel: number
-  /** Primary system pressure [MPa] */
-  P_MPa: number
-}
 
 // ---------------------------------------------------------------------------
 // PressureChart component
@@ -49,16 +39,7 @@ interface PressurePoint {
 const PressureChart: FC = () => {
   const history = useTelemetryStore((s) => s.history)
 
-  const data = useMemo<PressurePoint[]>(() => {
-    if (history.length === 0) return []
-    const latest = history[history.length - 1].t
-    return history
-      .filter((_, i) => i % 2 === 0 || i === history.length - 1)
-      .map((frame) => ({
-        t_rel: +(frame.t - latest).toFixed(2),
-        P_MPa: +frame.P_primary_MPa.toFixed(4),
-      }))
-  }, [history.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  const data = useMemo(() => toPressurePoints(history), [history])
 
   return (
     <div className="bg-slate-900/60 rounded-lg border border-slate-800 p-4 h-64 md:h-72 flex flex-col gap-2">

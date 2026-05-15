@@ -23,8 +23,8 @@ WebSocket /ws/telemetry
     Telemetry stream.  On connect the client is subscribed to the shared
     ``SimRuntime`` and receives telemetry frames as JSON at the runtime's
     configured cadence (default 10 Hz).  The client may also send JSON
-    command messages; unknown command types are answered with an error frame.
-    Real command dispatch is wired in feat-004.
+    command messages; successful commands are answered with an ack frame and
+    invalid command messages are answered with an error frame.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from fission_sim.api.runtime import SimRuntime
+from fission_sim.disclaimer import print_disclaimer
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     None
         Yields control to FastAPI while the server is running.
     """
+    print_disclaimer()
     runtime = SimRuntime()
     app.state.runtime = runtime
     await runtime.start()
@@ -175,16 +177,15 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         """Read JSON commands from the client and dispatch them to the runtime.
 
         Calls ``runtime.handle_command(msg)`` for every received message.
-        If the method returns a dict with ``type == "error"``, that dict is
-        forwarded to the client as a JSON frame.  A ``None`` return means
-        silent success — nothing is sent back.  If ``handle_command`` raises
-        unexpectedly, a generic error frame is sent and the exception is logged.
+        The response dict is forwarded to the client as a JSON frame.  If
+        ``handle_command`` raises unexpectedly, a generic error frame is sent
+        and the exception is logged.
 
         Loops until the client disconnects, at which point
         ``WebSocketDisconnect`` propagates up to the parent scope.
         """
         while True:
-            msg: dict[str, Any] = await websocket.receive_json()
+            msg: Any = await websocket.receive_json()
 
             try:
                 result = await runtime.handle_command(msg)
@@ -195,8 +196,9 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 )
                 continue
 
-            # Forward error frames to the client; None means silent success.
-            if isinstance(result, dict) and result.get("type") == "error":
+            # Forward command acknowledgements and validation errors to the
+            # client. Telemetry frames continue to flow through _send_task.
+            if isinstance(result, dict):
                 await websocket.send_json(result)
 
     try:

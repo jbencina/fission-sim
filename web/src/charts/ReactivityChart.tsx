@@ -23,6 +23,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 import { useTelemetryStore } from '../state/telemetryStore'
+import { toReactivityPoints } from './chartData'
 import {
   GRID_STROKE,
   TICK_FILL,
@@ -30,23 +31,6 @@ import {
   TOOLTIP_WRAPPER_STYLE,
   X_AXIS_PROPS,
 } from './chartTheme'
-
-// ---------------------------------------------------------------------------
-// Chart data shape
-// ---------------------------------------------------------------------------
-
-interface ReactivityPoint {
-  /** Relative time in seconds; 0 = newest. */
-  t_rel: number
-  /** Rod reactivity worth [pcm] */
-  rho_rod_pcm: number
-  /** Doppler feedback reactivity [pcm] */
-  rho_doppler_pcm: number
-  /** Moderator temperature feedback reactivity [pcm] */
-  rho_moderator_pcm: number
-  /** Total (net) reactivity [pcm] */
-  rho_total_pcm: number
-}
 
 // ---------------------------------------------------------------------------
 // ReactivityChart component
@@ -61,20 +45,7 @@ interface ReactivityPoint {
 const ReactivityChart: FC = () => {
   const history = useTelemetryStore((s) => s.history)
 
-  const data = useMemo<ReactivityPoint[]>(() => {
-    if (history.length === 0) return []
-    const latest = history[history.length - 1].t
-    return history
-      .filter((_, i) => i % 2 === 0 || i === history.length - 1)
-      .map((frame) => ({
-        t_rel: +(frame.t - latest).toFixed(2),
-        // Convert dimensionless reactivity to pcm (× 1e5)
-        rho_rod_pcm: +(frame.rho_rod * 1e5).toFixed(2),
-        rho_doppler_pcm: +(frame.rho_doppler * 1e5).toFixed(2),
-        rho_moderator_pcm: +(frame.rho_moderator * 1e5).toFixed(2),
-        rho_total_pcm: +(frame.rho_total * 1e5).toFixed(2),
-      }))
-  }, [history.length]) // eslint-disable-line react-hooks/exhaustive-deps
+  const data = useMemo(() => toReactivityPoints(history), [history])
 
   return (
     <div className="bg-slate-900/60 rounded-lg border border-slate-800 p-4 h-64 md:h-72 flex flex-col gap-2">

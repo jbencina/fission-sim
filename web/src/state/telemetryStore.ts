@@ -41,7 +41,8 @@ export interface TelemetryState {
 
   /**
    * Append a new telemetry frame to history and update `latest`.
-   * Drops the oldest frame when history exceeds HISTORY_CAP.
+   * Drops the oldest frame when history exceeds HISTORY_CAP. If simulation time
+   * moves backward, treats it as a backend reset and starts a fresh history.
    */
   pushFrame: (frame: Frame) => void;
 
@@ -50,6 +51,9 @@ export interface TelemetryState {
 
   /** Record an error message (or clear with null). */
   setError: (error: string | null) => void;
+
+  /** Clear rolling chart history while preserving the latest telemetry frame. */
+  clearHistory: () => void;
 
   /**
    * Send a command to the backend via the WebSocket.
@@ -94,9 +98,12 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
 
   pushFrame: (frame: Frame) =>
     set((state) => {
-      // Append and drop oldest beyond cap.
-      const history =
-        state.history.length < HISTORY_CAP
+      // Backend reset is visible as simulation time moving backward. Start a
+      // fresh history so charts do not mix pre-reset and post-reset points.
+      const timeRolledBack = state.latest !== null && frame.t < state.latest.t;
+      const history = timeRolledBack
+        ? [frame]
+        : state.history.length < HISTORY_CAP
           ? [...state.history, frame]
           : [...state.history.slice(1), frame];
       return { latest: frame, history };
@@ -105,6 +112,8 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
   setStatus: (status: ConnectionStatus) => set({ status }),
 
   setError: (error: string | null) => set({ lastError: error }),
+
+  clearHistory: () => set({ history: [] }),
 
   sendCommand: (cmd: Command) => {
     // Delegate to the registered send function; drop silently if not wired yet.

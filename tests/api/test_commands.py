@@ -48,6 +48,20 @@ def _recv_frame(ws: WebSocketTestSession) -> dict[str, Any]:
     return json.loads(ws.receive_text())
 
 
+def _recv_until(
+    ws: WebSocketTestSession,
+    predicate: Callable[[dict[str, Any]], bool],
+    *,
+    max_frames: int = 10,
+) -> dict[str, Any]:
+    """Receive frames until *predicate* matches, or fail after max_frames."""
+    for _ in range(max_frames):
+        frame = _recv_frame(ws)
+        if predicate(frame):
+            return frame
+    pytest.fail(f"No matching frame received within {max_frames} frames")
+
+
 def _collect_until(
     ws: WebSocketTestSession,
     *,
@@ -279,3 +293,36 @@ def test_unknown_command_type_returns_error():
                 _recv_frame(ws)
             except Exception as exc:
                 pytest.fail(f"Connection closed after unknown command: {exc}")
+
+
+def test_valid_command_returns_ack_frame():
+    """Successful commands should return an acknowledgement frame."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/telemetry") as ws:
+            _recv_frame(ws)
+
+            ws.send_json({"type": "set_speed", "value": 2})
+
+            ack = _recv_until(
+                ws,
+                lambda frame: frame.get("type") == "ack",
+                max_frames=10,
+            )
+            assert ack["command"] == "set_speed"
+
+
+def test_non_object_command_returns_validation_error():
+    """A JSON array/string command should be a client error, not an internal error."""
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws/telemetry") as ws:
+            _recv_frame(ws)
+
+            ws.send_text("[]")
+
+            error = _recv_until(
+                ws,
+                lambda frame: frame.get("type") == "error",
+                max_frames=10,
+            )
+            assert "JSON object" in error["detail"]
+            assert "internal server error" not in error["detail"]

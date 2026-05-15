@@ -178,7 +178,7 @@ export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 // ---------------------------------------------------------------------------
 
 /** Required numeric keys that every valid Frame must contain. */
-const REQUIRED_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
+const NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   't',
   'power_thermal',
   'T_hot',
@@ -193,20 +193,31 @@ const REQUIRED_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   'rho_doppler',
   'rho_moderator',
   'rho_total',
-  'running',
   'speed',
-  'scrammed',
   'rod_command',
+];
+
+/** Required boolean keys that every valid Frame must contain. */
+const BOOLEAN_FRAME_KEYS: ReadonlyArray<keyof Frame> = ['running', 'scrammed'];
+
+/** Required keys that every valid Frame must contain. */
+const REQUIRED_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
+  ...NUMERIC_FRAME_KEYS,
+  ...BOOLEAN_FRAME_KEYS,
 ];
 
 /**
  * Type guard: returns true if `value` is a valid Frame.
  *
- * Only checks that required keys are present — does not validate numeric
- * ranges. Safe to call on the result of `JSON.parse()`.
+ * Checks required keys, primitive types, and finite numeric values. It does
+ * not validate domain-specific operating ranges.
  */
 export function isFrame(value: unknown): value is Frame {
   if (typeof value !== 'object' || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return REQUIRED_FRAME_KEYS.every((k) => k in obj);
+  if (!REQUIRED_FRAME_KEYS.every((k) => k in obj)) return false;
+  if (!NUMERIC_FRAME_KEYS.every((k) => typeof obj[k] === 'number' && Number.isFinite(obj[k]))) {
+    return false;
+  }
+  return BOOLEAN_FRAME_KEYS.every((k) => typeof obj[k] === 'boolean');
 }

@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
 
+from fission_sim.disclaimer import print_disclaimer
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
@@ -50,6 +51,7 @@ def T_cool_fn(t: float, T_ref: float = 580.0) -> float:
 
 
 def main() -> None:
+    print_disclaimer()
     params = CoreParams()
     core = PointKineticsCore(params)
     y0 = core.initial_state()

@@ -104,6 +104,23 @@ def _terminate_children(timeout: float = 5.0) -> None:
             proc.wait()
 
 
+def _start_children(common_popen_kwargs: dict) -> tuple[subprocess.Popen, subprocess.Popen]:
+    """Start backend and frontend children, cleaning up on partial failure."""
+    try:
+        backend = subprocess.Popen(BACKEND_CMD, **common_popen_kwargs)
+        _children.append(backend)
+
+        frontend = subprocess.Popen(FRONTEND_CMD, **common_popen_kwargs)
+        _children.append(frontend)
+    except Exception:
+        if _children:
+            _terminate_children()
+            _children.clear()
+        raise
+
+    return backend, frontend
+
+
 def _sigint_handler(signum, frame):  # noqa: ANN001
     """Handle Ctrl-C (SIGINT): terminate children, restore default handler, re-raise.
 
@@ -225,11 +242,7 @@ def main() -> int:
         start_new_session=True,  # child becomes its own process-group leader
     )
 
-    backend = subprocess.Popen(BACKEND_CMD, **common_popen_kwargs)
-    _children.append(backend)
-
-    frontend = subprocess.Popen(FRONTEND_CMD, **common_popen_kwargs)
-    _children.append(frontend)
+    backend, frontend = _start_children(common_popen_kwargs)
 
     # One reader thread per child — daemons so they don't block interpreter exit.
     threads = [

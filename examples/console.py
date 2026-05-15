@@ -50,6 +50,7 @@ from fission_sim.control.pressurizer_controller import (
     PressurizerController,
     PressurizerControllerParams,
 )
+from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
@@ -322,6 +323,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    print_disclaimer()
     args = parse_args()
     if args.speed <= 0:
         sys.stderr.write(f"--speed must be > 0, got {args.speed}\n")

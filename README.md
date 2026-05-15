@@ -1,28 +1,17 @@
 # fission-sim
 
-PWR simulator. Personal learning project.
+> This project is **not** for any real-world use and was built as a side-project for personal learning. Information was collected from public sources on search engines, Wikipedia, etc. The author does not have any training or experience in this space so components are likely incorrect, incomplete, and over simplifications.
 
-This README has two jobs:
+fission-sim is a pressurized-water-reactor learning simulator with two ways to
+use it:
 
-1. Introduce the physics in approachable language for readers who are curious
-   about reactors but are not nuclear engineers.
-2. Document the current Python API so examples, tests, and future changes have
-   one place to check what each component exposes.
+- A browser dashboard for live telemetry, charts, and operator controls.
+- CLI/example scripts for text reports, plots, and quick model experiments.
 
 Read `.docs/design.md` for the original goals and architecture. Treat this file
 as the **living guide** to what the code currently does.
 
-## Quickstart
-
-    uv sync
-    uv run python examples/run_core.py
-    uv run pytest
-
-## Running the web UI
-
-The web UI is a live dashboard that streams telemetry from the PWR simulator
-at 10 Hz and lets you adjust rod position, pressure setpoint, and simulation
-speed in real time.
+## Install
 
 ### Prerequisites
 
@@ -30,7 +19,7 @@ speed in real time.
 - Node.js 20+ (or 22+)
 - `uv` installed (see [astral.sh/uv](https://astral.sh/uv))
 
-### First-time setup
+### Quick setup
 
     make install
 
@@ -39,7 +28,16 @@ package (in a `.venv`) and the frontend's Node dependencies in one step.
 Run this once after cloning or whenever `pyproject.toml` or `package.json`
 change.
 
-### Day-to-day launch
+For Python-only use:
+
+    uv sync
+
+## Run The Dashboard
+
+The dashboard streams simulator telemetry at 10 Hz while running and exposes
+operator controls for rod command, SCRAM, pause/resume, reset, and simulation
+speed. The backend also supports a pressure-setpoint command for scripts and
+experiments.
 
     make dev
 
@@ -63,7 +61,25 @@ terminal).
 >     uv run python -m fission_sim.api   # backend, port 8000
 >     npm run dev --prefix web           # frontend, port 5173
 
-### Useful make targets
+## Run From The CLI
+
+The CLI scripts are useful when you want a quick simulation without a browser,
+or when you want to inspect the model's raw outputs.
+
+| Command | What it shows |
+|---|---|
+| `uv run python examples/console.py` | Interactive terminal dashboard with live commands |
+| `uv run python examples/console.py --speed 60` | Same console, 60 simulated seconds per wall second |
+| `uv run python examples/report_primary.py` | Text-only primary-plant report, good over SSH |
+| `uv run python examples/power_maneuver.py` | Text report for a controlled rod-driven power maneuver |
+| `uv run python examples/run_primary.py` | Matplotlib plots for the coupled primary plant |
+| `uv run python examples/run_core.py` | Matplotlib plots for point kinetics only |
+
+Run the test suite with:
+
+    uv run pytest
+
+## Useful Make Targets
 
 | Target       | What it does                                                    |
 |--------------|-----------------------------------------------------------------|
@@ -71,8 +87,82 @@ terminal).
 | `make dev`   | Start backend + frontend together (coloured, Ctrl-C to stop)   |
 | `make api`   | Backend only (`uvicorn` on port 8000)                          |
 | `make web`   | Frontend only (Vite dev server on port 5173)                   |
+| `make install-e2e` | Install Chromium for the Playwright smoke test           |
+| `make e2e`   | Run Playwright smoke test against an already-running stack      |
 | `make test`  | Full test suite — `uv run pytest` + `npm run test -- --run`    |
 | `make lint`  | Python (`ruff check`) + TypeScript (`eslint`) linting          |
+
+## End-To-End Smoke Test
+
+The Playwright smoke test verifies the browser can connect, reset to a known
+running state, SCRAM, and observe a large power drop.
+
+First install the browser once:
+
+    make install-e2e
+
+Then start the stack in one terminal:
+
+    make dev
+
+And run the smoke test in another:
+
+    make e2e
+
+## How The Model Fits Together
+
+The simulator is not a plant procedure trainer. It is a small dynamic model
+built to make the major feedback loops visible.
+
+The shortest mental model is:
+
+1. **Rod command changes reactivity.** Rods absorb neutrons. Inserting them
+   adds negative reactivity and tends to reduce power; withdrawing them tends
+   to increase power.
+2. **The core turns reactivity into heat.** Point kinetics tracks neutron
+   population, delayed-neutron precursors, and fuel temperature. Delayed
+   neutrons are why reactor power changes on human-observable timescales
+   instead of only prompt-neutron timescales.
+3. **The primary loop moves heat.** Hot-leg and cold-leg coolant temperatures
+   represent the sealed water loop carrying heat from the core to the steam
+   generator.
+4. **The steam generator removes heat.** In this model it is a simplified heat
+   sink. If core heat and steam-generator heat removal do not match, primary
+   temperatures move.
+5. **The pressurizer holds pressure.** A simplified pressurizer/controller pair
+   uses heater and spray behavior to move primary pressure back toward setpoint
+   during transients.
+
+### Main Pieces
+
+| Layer | Code | Role |
+|---|---|---|
+| Dashboard/API | `web/`, `src/fission_sim/api/` | Browser UI, WebSocket telemetry, operator commands |
+| Engine | `src/fission_sim/engine/` | Wires components, owns the state vector, advances time |
+| Control | `src/fission_sim/control/` | Pressurizer control logic |
+| Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, pressurizer |
+| Examples | `examples/` | CLI/report/plot drivers for common scenarios |
+
+Each physics component owns its parameters and equations, but not its evolving
+state. State lives in one numpy vector owned by `SimEngine`. Components expose
+`initial_state()`, `derivatives(...)`, `outputs(...)`, and `telemetry(...)`.
+The engine wires outputs into inputs, then integrates the coupled ODE system
+with SciPy's BDF solver.
+
+### What To Watch
+
+| Signal | Why it matters |
+|---|---|
+| `power_thermal` | Core heat output. After SCRAM it drops sharply, then decays more slowly. |
+| `rho_total` | Net reactivity. Near zero means roughly critical; negative means power tends down. |
+| `rho_rod`, `rho_doppler`, `rho_moderator` | The three visible reactivity contributions. |
+| `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
+| `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
+| `Q_sg` | Heat removed by the steam generator. Compare with core power. |
+| `rod_command` vs. `rod_position` | Requested rod target vs. physical rod lag. |
+
+The detailed component guide and API reference below explain each model in
+more depth.
 
 ## Web API reference
 
@@ -149,8 +239,9 @@ internally; `P_primary_MPa` is a convenience conversion provided for display.
 #### Command messages (client → server)
 
 Commands are JSON objects with a `"type"` discriminator. The server returns
-`null` on success or an error frame `{"type": "error", "detail": "..."}` on
-failure. Errors do not disconnect the WebSocket.
+an acknowledgement frame such as `{"type": "ack", "command": "set_speed"}` on
+success, or an error frame `{"type": "error", "detail": "..."}` on failure.
+Errors do not disconnect the WebSocket.
 
 **`set_rod_command`** — move the control rod bank toward a target position.
 
@@ -193,8 +284,9 @@ M2); a real plant requires independent safety system confirmation.
 {"type": "pause"}
 ```
 
-No extra fields. Telemetry frames continue at 10 Hz but simulation time stops
-advancing. Resume with `resume`.
+No extra fields. The runtime publishes one transition frame with
+`running = false`; while paused, no additional telemetry frames are emitted.
+Resume with `resume`.
 
 ---
 

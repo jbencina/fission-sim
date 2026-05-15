@@ -60,6 +60,17 @@ const ReactorIcon: FC = () => (
   </svg>
 )
 
+const DisclaimerBanner: FC = () => (
+  <div className="bg-amber-950/70 border-b border-amber-500/30 px-4 py-2 text-xs leading-relaxed text-amber-100">
+    <div className="max-w-screen-2xl mx-auto">
+      <span className="font-semibold">Learning-use disclaimer:</span>{' '}
+      fission-sim is a personal learning project, not for real-world use. Model
+      behavior, values, and explanations may be incorrect, incomplete, and
+      oversimplified.
+    </div>
+  </div>
+)
+
 // ---------------------------------------------------------------------------
 // Header sub-component
 // ---------------------------------------------------------------------------
@@ -196,6 +207,7 @@ const AppShell: FC = () => {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <Header simClock={simClock} status={status} scrammed={scrammed} />
+      <DisclaimerBanner />
 
       {/* ── Main content area ─────────────────────────────────────────────── */}
       <main className="flex-1 max-w-screen-2xl w-full mx-auto px-4 py-4">

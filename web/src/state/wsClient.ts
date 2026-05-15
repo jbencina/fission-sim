@@ -121,6 +121,16 @@ export function connectTelemetry(
         return;
       }
 
+      // Successful command acknowledgements are control-plane messages, not
+      // telemetry samples. They intentionally do not update chart/history state.
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        (parsed as Record<string, unknown>)['type'] === 'ack'
+      ) {
+        return;
+      }
+
       // Validate that the message is a full telemetry Frame.
       if (isFrame(parsed)) {
         onFrame(parsed);

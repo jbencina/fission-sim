@@ -689,7 +689,7 @@ class SimRuntime:
     # Command dispatch (feat-004)
     # ------------------------------------------------------------------
 
-    async def handle_command(self, msg: dict[str, Any]) -> dict[str, Any] | None:
+    async def handle_command(self, msg: Any) -> dict[str, Any]:
         """Validate and dispatch an operator command message.
 
         This is the single entry-point for all commands arriving over the
@@ -727,12 +727,13 @@ class SimRuntime:
 
         Returns
         -------
-        dict or None
-            Returns ``None`` on success.  Returns an error dict of the form
-            ``{"type": "error", "detail": "<reason>"}`` for unknown command
-            types or out-of-range values.  This method does **not** raise on
-            bad input — the caller (recv loop in ``app.py``) decides how to
-            relay the error to the client.
+        dict
+            Returns ``{"type": "ack", "command": "<command type>"}`` on
+            success.  Returns an error dict of the form ``{"type": "error",
+            "detail": "<reason>"}`` for unknown command types or out-of-range
+            values.  This method does **not** raise on bad input — the caller
+            (recv loop in ``app.py``) decides how to relay the response to the
+            client.
 
         Notes
         -----
@@ -740,7 +741,12 @@ class SimRuntime:
         The ``reset()`` method acquires its own lock internally, so it is
         *not* called while holding the lock here.
         """
+        if not isinstance(msg, dict):
+            return {"type": "error", "detail": "command message must be a JSON object"}
+
         cmd_type = msg.get("type")
+        if not isinstance(cmd_type, str):
+            return {"type": "error", "detail": "command message requires string field 'type'"}
 
         if cmd_type == "set_rod_command":
             # Validate: rod command must be a number in [0, 1].
@@ -755,17 +761,17 @@ class SimRuntime:
                 }
             async with self._lock:
                 self.set_rod_command(value)
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "scram":
             async with self._lock:
                 self.scram()
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "reset_scram":
             async with self._lock:
                 self.reset_scram()
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "pause":
             # pause() and resume() only touch self._cmd.running — safe to call
@@ -773,12 +779,12 @@ class SimRuntime:
             # we acquire it for correctness in all cases.
             async with self._lock:
                 self.pause()
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "resume":
             async with self._lock:
                 self.resume()
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "reset":
             # reset() preserves P_setpoint, speed, and rod_command (handled
@@ -789,7 +795,7 @@ class SimRuntime:
                 self._cmd.rod_command = 0.5
             # reset() manages its own locking and task lifecycle.
             await self.reset()
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "set_speed":
             # Allowed values: 1, 2, 5, 10 (integers or floats equal to those).
@@ -805,7 +811,7 @@ class SimRuntime:
                 }
             async with self._lock:
                 self.set_speed(value)
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "set_pressure_setpoint":
             # Validate: must be within [10 MPa, 20 MPa] = [10e6, 20e6] Pa.
@@ -828,7 +834,7 @@ class SimRuntime:
                 }
             async with self._lock:
                 self.set_pressure_setpoint(value)
-            return None
+            return {"type": "ack", "command": cmd_type}
 
         else:
             # Unknown command type — return an error frame; do not disconnect.

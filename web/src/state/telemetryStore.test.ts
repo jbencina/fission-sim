@@ -7,6 +7,7 @@
  * - setStatus updates the status field
  * - setError updates the lastError field
  * - reset returns state to defaults
+ * - reset/time rollback clears stale chart history
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -87,6 +88,18 @@ describe('pushFrame', () => {
     // The last frame should be the newest.
     expect(history[history.length - 1].t).toBe(HISTORY_CAP);
   });
+
+  it('clears stale history when simulation time moves backward', () => {
+    useTelemetryStore.getState().pushFrame(makeFrame(10));
+    useTelemetryStore.getState().pushFrame(makeFrame(11));
+
+    const resetFrame = makeFrame(0.1);
+    useTelemetryStore.getState().pushFrame(resetFrame);
+
+    const { history, latest } = useTelemetryStore.getState();
+    expect(latest).toEqual(resetFrame);
+    expect(history).toEqual([resetFrame]);
+  });
 });
 
 describe('setStatus', () => {
@@ -140,5 +153,23 @@ describe('reset', () => {
     useTelemetryStore.getState().setError('an error');
     useTelemetryStore.getState().reset();
     expect(useTelemetryStore.getState().lastError).toBeNull();
+  });
+});
+
+describe('clearHistory', () => {
+  it('clears chart history without dropping the latest telemetry or connection state', () => {
+    const latest = makeFrame(6);
+    useTelemetryStore.getState().pushFrame(makeFrame(5));
+    useTelemetryStore.getState().pushFrame(latest);
+    useTelemetryStore.getState().setStatus('connected');
+    useTelemetryStore.getState().setError('old warning');
+
+    useTelemetryStore.getState().clearHistory();
+
+    const state = useTelemetryStore.getState();
+    expect(state.history).toHaveLength(0);
+    expect(state.latest).toEqual(latest);
+    expect(state.status).toBe('connected');
+    expect(state.lastError).toBe('old warning');
   });
 });

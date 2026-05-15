@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.integrate import solve_ivp
 
+from fission_sim.disclaimer import print_disclaimer
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
@@ -88,6 +89,7 @@ def ascii_log_chart(times, values, width=50, vmin=None, vmax=None, label="value"
 
 
 def main() -> None:
+    print_disclaimer()
     params = CoreParams()
     core = PointKineticsCore(params)
     y0 = core.initial_state()

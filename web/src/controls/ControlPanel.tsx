@@ -140,6 +140,7 @@ const ControlPanel: FC = () => {
   const status = useTelemetryStore((s) => s.status)
   const latest = useTelemetryStore((s) => s.latest)
   const sendCommand = useTelemetryStore((s) => s.sendCommand)
+  const clearHistory = useTelemetryStore((s) => s.clearHistory)
 
   // Convenience booleans derived from latest frame.
   const connected = status === 'connected'
@@ -194,8 +195,9 @@ const ControlPanel: FC = () => {
 
   const handleResetConfirm = useCallback(() => {
     setResetDialogOpen(false)
+    clearHistory()
     sendCommand({ type: 'reset' })
-  }, [sendCommand])
+  }, [clearHistory, sendCommand])
 
   const handleSetSpeed = useCallback(
     (value: 1 | 2 | 5 | 10) => {
