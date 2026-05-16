@@ -13,6 +13,14 @@ References
 ----------
 IAPWS Industrial Formulation 1997 for the Thermodynamic Properties of
 Water and Steam (IAPWS-IF97). Implemented by the CoolProp library.
+
+Public references:
+
+- CoolProp IF97 Steam/Water Properties documentation:
+  https://coolprop.org/fluid_properties/IF97.html
+- IAPWS, Revised Release on the Industrial Formulation 1997 for the
+  Thermodynamic Properties of Water and Steam:
+  https://iapws.org/documents/release/IF97-Rev
 """
 
 from __future__ import annotations

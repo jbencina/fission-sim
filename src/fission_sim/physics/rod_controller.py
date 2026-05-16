@@ -15,6 +15,17 @@ References
 ----------
 Lamarsh, J. R. and Baratta, A. J. *Introduction to Nuclear Engineering*,
 3rd ed., Prentice Hall, 2001. (Control rod theory and rod worth, Ch. 7-8.)
+
+Public references:
+
+- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
+  Pressurized Water Reactor Systems*, for PWR control-rod and reactor
+  system context:
+  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+- Nuclear-power.com, "SCRAM - Reactor Trip", for public PWR scram timing
+  context. The rate-limited first-order tracker is this simulator's L1
+  actuator approximation:
+  https://www.nuclear-power.com/nuclear-power/reactor-physics/reactor-dynamics/scram-reactor-trip/
 """
 
 from __future__ import annotations
@@ -94,8 +105,9 @@ class RodParams:
     # ~1 inch/s on a ~12 ft (3.66 m) core gives ~1%/s in fractional units.
     v_normal: float = 0.01  # [1/s]
 
-    # Scram speed limit (rate cap). Real plants use gravity-drop scrams that
-    # fully insert in ~1.5–2.5 s. With v_scram=0.5/s and the default τ=1s,
+    # Scram speed limit (rate cap). Public PWR references describe control
+    # rods as rapidly inserted during a scram, typically within a few seconds.
+    # With v_scram=0.5/s and the default τ=1s,
     # the clip binds for the bulk of any realistic scram (initial error ≈
     # 0.5; raw_rate = 0.5/τ = 0.5, exactly at the cap). Result: full
     # insertion in ~2 s, matching real PWR scram timing.

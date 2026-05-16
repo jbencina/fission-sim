@@ -16,6 +16,20 @@ Duderstadt, J. J. and Hamilton, L. J. *Nuclear Reactor Analysis*, Wiley,
 
 Keepin, G. R. *Physics of Nuclear Kinetics*, Addison-Wesley, 1965.
 (Six-group delayed neutron data for U-235 thermal fission.)
+
+Public references:
+
+- West & Lemley, "Solutions to the point reactor kinetics equations for
+  step reactivity", OSTI 411554. Public abstract reproduces the point
+  kinetics equations with delayed-neutron groups:
+  https://www.osti.gov/biblio/411554
+- O'Rourke, Ramsey & Temple, "Lie group analysis of the point-reactor
+  neutron kinetics equations for various reactivity models", Annals of
+  Nuclear Energy 160 (2021), open-access manuscript:
+  https://laro.lanl.gov/esploro/outputs/journalArticle/Lie-group-analysis-of-the-point-reactor/9916362119803761
+- U.S. NRC glossary entries for fuel and moderator temperature coefficients:
+  https://www.nrc.gov/reading-rm/basic-ref/glossary/fuel-temperature-coefficient-of-reactivity
+  https://www.nrc.gov/reading-rm/basic-ref/glossary/moderator-temperature-coefficient-of-reactivity
 """
 
 from __future__ import annotations
@@ -358,14 +372,16 @@ class PointKineticsCore:
         rho_rod = inputs["rho_rod"]
         T_cool = inputs["T_cool"]
 
-        # --- total reactivity (Lamarsh eq 9.39) ---
+        # --- total reactivity (Lamarsh eq 9.39; NRC public glossary for
+        # fuel/moderator temperature-coefficient sign convention) ---
         # rho is dimensionless. "pcm" (per cent mille = 1e-5) is just a
         # display unit; nothing internal uses it.
         rho_doppler = p.alpha_f * (T_fuel - p.T_fuel_ref)
         rho_moderator = p.alpha_m * (T_cool - p.T_cool_ref)
         rho = rho_rod + rho_doppler + rho_moderator
 
-        # --- point kinetics equations (Lamarsh eq 7.26-7.28) ---
+        # --- point kinetics equations (Lamarsh eq 7.26-7.28; public
+        # forms also appear in OSTI 411554 / West & Lemley) ---
         # dn/dt has two parts:
         #   1) ((rho - beta) / Lambda) * n: net effect of prompt neutrons
         #      (becomes positive only when rho > beta = "prompt critical",

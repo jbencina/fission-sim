@@ -20,6 +20,14 @@ Tong, L. S. and Weisman, J. *Thermal Analysis of Pressurized Water
 Reactors*, 3rd ed., American Nuclear Society, 1996. (Pressure control,
 §6.4 / §7.3 — including the variable/backup heater bank scheme that
 we collapse to one continuous duty.)
+
+Public reference:
+
+- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
+  Pressurized Water Reactor Systems*, describes pressurizer pressure
+  control by electrical heaters and spray. The proportional-with-deadband
+  equations below are this simulator's L1 controller approximation:
+  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
 """
 
 from __future__ import annotations

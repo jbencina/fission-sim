@@ -10,6 +10,13 @@ References
 ----------
 Lamarsh, J. R. and Baratta, A. J. *Introduction to Nuclear Engineering*, 3rd ed.,
 Prentice Hall, 2001 (PWR overview).
+
+Public reference:
+
+- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
+  Pressurized Water Reactor Systems*, for the primary/secondary loop and
+  steam-generator context:
+  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
 """
 
 from __future__ import annotations

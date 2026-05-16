@@ -29,6 +29,17 @@ calling it with ``P_primary`` (from ``pzr.P``, a state-derived output
 available in the state-derived pass) rather than the old wired port.
 Both modules call the same pure function with the same inputs at the
 same time step → conservation holds exactly to solver tolerance.
+
+Public references:
+
+- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
+  Pressurized Water Reactor Systems*, describes pressurizer surge caused
+  by primary-coolant thermal expansion/contraction:
+  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+- Claire Yu Yan, *Introduction to Engineering Thermodynamics*, §5.2,
+  gives the public control-volume mass/energy balance and volumetric to
+  mass flow relation used by this helper:
+  https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
 """
 
 from __future__ import annotations
@@ -111,6 +122,8 @@ def compute_m_dot_surge(
     ----------
     Todreas & Kazimi Vol. 1, §6.2 Eq. 6-13 (energy balance form on a
     rigid control volume); §6.4 (volumetric expansion under heating).
+    Public cross-check: NRC PWR Systems manual for surge behavior, and
+    Yan §5.2 for ``m_dot = rho * volume_flow`` and control-volume balances.
     """
     lp = loop_params
 

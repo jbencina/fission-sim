@@ -983,13 +983,28 @@ total rod worth, and the design/critical position.
 
 All physics uses SI units internally — K, Pa, kg, s, m, J, W. Reactivity is stored dimensionless; pcm is *display only*. Temperatures are absolute (K), never Celsius. All scalars are float64.
 
+### Public Equation References
+
+The source files retain the textbook citations used while developing the model. The public references below are the external checks for the equations and model assumptions documented in this README:
+
+| Area | Equations / assumptions covered | Public reference |
+|------|---------------------------------|------------------|
+| Point kinetics | `dn/dt`, `dC_i/dt`, delayed-neutron groups, initial precursor steady state | [OSTI 411554, West & Lemley, "Solutions to the point reactor kinetics equations for step reactivity"](https://www.osti.gov/biblio/411554); [LANL open-access manuscript, O'Rourke et al., *Annals of Nuclear Energy* 160](https://laro.lanl.gov/esploro/outputs/journalArticle/Lie-group-analysis-of-the-point-reactor/9916362119803761) |
+| Reactivity feedback | Fuel/Doppler and moderator temperature coefficient sign conventions | [U.S. NRC fuel temperature coefficient glossary](https://www.nrc.gov/reading-rm/basic-ref/glossary/fuel-temperature-coefficient-of-reactivity); [U.S. NRC moderator temperature coefficient glossary](https://www.nrc.gov/reading-rm/basic-ref/glossary/moderator-temperature-coefficient-of-reactivity) |
+| Control-volume balances | `dM/dt = Σṁ_in − Σṁ_out`, `dU/dt = Q + Σṁh` forms used by the loop/pressurizer | [Introduction to Engineering Thermodynamics, §5.2 Mass and energy conservation equations in a control volume](https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/) |
+| Saturated mixture closure | Two-phase quality and lever rule on specific volume | [LibreTexts Engineering Thermodynamics, §2.4 Phase diagrams](https://eng.libretexts.org/Bookshelves/Mechanical_Engineering/Introduction_to_Engineering_Thermodynamics_%28Yan%29/02%253A_Thermodynamic_Properties_of_a_Pure_Substance/2.04%253A_Phase_diagrams) |
+| Heat transfer / steam generator | `Q = UA·ΔT`, LMTD simplification, overall heat-transfer coefficient | [ASHRAE Handbook, Ch. 48 Heat Exchangers](https://handbook.ashrae.org/Handbooks/S16/IP/S16_Ch48/s16_ch48_ip.aspx); [DOE-HDBK-1012/2-92 Thermodynamics, Heat Transfer, and Fluid Flow](https://www.steamtablesonline.com/pdf/Thermodynamics-Volume2.pdf) |
+| Water/steam properties | CoolProp water property calls and IAPWS-IF97 backend | [CoolProp IF97 Steam/Water Properties](https://coolprop.org/fluid_properties/IF97.html); [IAPWS IF97 Revised Release](https://iapws.org/documents/release/IF97-Rev) |
+| PWR plant context | Pressurizer steam-water equilibrium, heaters/spray, surge from coolant expansion, primary/secondary separation | [U.S. NRC Reactor Concepts Manual: Pressurized Water Reactor Systems](https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf) |
+| Rod scram timing | Rapid rod insertion / fall into the core for PWR scram timing; L1 tracker is calibrated to this public behavior | [Nuclear-power.com, "SCRAM - Reactor Trip"](https://www.nuclear-power.com/nuclear-power/reactor-physics/reactor-dynamics/scram-reactor-trip/) |
+
 ## Equations
 
-The simulator implements the equations below. Each appears as a comment above its implementation in the corresponding source file, with a textbook citation.
+The simulator implements the equations below. Each appears near its implementation in the corresponding source file, with the textbook citation and the public cross-checks listed above.
 
 ### Point kinetics — `core.py`
 
-State: `n`, `C1..C6`, `T_fuel`. References: Lamarsh §7.4, Duderstadt eq 7.16, Keepin (1965).
+State: `n`, `C1..C6`, `T_fuel`. References: Lamarsh §7.4, Duderstadt eq 7.16, Keepin (1965), plus the OSTI/LANL public point-kinetics references above.
 
 **Total reactivity** (sum of three contributions):
 
@@ -1036,6 +1051,7 @@ In: thermal power produced. Out: heat conducted from fuel to coolant.
 ### Primary loop — `primary_loop.py`
 
 State: `T_hot`, `T_cold`, `M_loop`. Single-phase water, constant flow ṁ.
+Public cross-checks: control-volume conservation from Yan §5.2 and heat-transfer terminology from DOE-HDBK-1012/2-92.
 
 **Heat carried by flow:**
 
@@ -1076,6 +1092,7 @@ T_cool = T_avg                # what the core sees, L1
 
 State: `M_pzr` (mass [kg]), `U_pzr` (internal energy [J]). Two-phase
 saturated mixture in a rigid vessel.
+Public cross-checks: NRC PWR Systems for pressurizer behavior, Yan §5.2 for open-system mass/energy balances, LibreTexts §2.4 for the lever rule, and CoolProp/IAPWS for properties.
 
 **Saturation closure** (inverts CoolProp's saturation surface):
 
@@ -1113,6 +1130,7 @@ enthalpy at `(P, T_coldleg)` for spray.
 ### Steam generator — `steam_generator.py`
 
 No state. Algebraic.
+Public cross-checks: ASHRAE Handbook Ch. 48 and DOE-HDBK-1012/2-92 for `Q = UA·ΔT_lm`; this model intentionally substitutes one average ΔT.
 
 ```
 Q_sg = UA · (T_avg − T_secondary)
@@ -1124,6 +1142,7 @@ Q_sg = UA · (T_avg − T_secondary)
 ### Secondary sink — `secondary_sink.py`
 
 No state, no inputs.
+Public cross-check: NRC PWR Systems for secondary-side/steam-generator context.
 
 ```
 T_secondary = const   # 558 K (saturation at ~6.9 MPa)
@@ -1132,6 +1151,7 @@ T_secondary = const   # 558 K (saturation at ~6.9 MPa)
 ### Rod controller — `rod_controller.py`
 
 State: `rod_position` (dimensionless, 0 = fully inserted, 1 = fully withdrawn).
+Public cross-check: NRC PWR Systems for control-rod plant context and Nuclear-power.com's SCRAM article for the few-second PWR insertion timescale. The first-order lag plus rate cap is an L1 actuator approximation, not a reactor-physics law.
 
 **Effective command** (scram override):
 
