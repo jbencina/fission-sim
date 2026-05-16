@@ -14,6 +14,15 @@ Prentice Hall, 2001. (PWR steam generator overview, Ch. 4.)
 
 Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1: Thermal Hydraulic
 Fundamentals*, 2nd ed., CRC Press, 2012. (Heat exchanger sizing.)
+
+Public references:
+
+- ASHRAE Handbook, Chapter 48, Heat Exchangers, gives the standard
+  heat-exchanger rate form using U, A, and LMTD:
+  https://handbook.ashrae.org/Handbooks/S16/IP/S16_Ch48/s16_ch48_ip.aspx
+- DOE Fundamentals Handbook, *Thermodynamics, Heat Transfer, and Fluid
+  Flow*, Vol. 2, defines LMTD and overall heat-transfer coefficient:
+  https://www.steamtablesonline.com/pdf/Thermodynamics-Volume2.pdf
 """
 
 from __future__ import annotations
@@ -169,6 +178,8 @@ class SteamGenerator:
         if inputs is None:
             raise TypeError("SteamGenerator.outputs requires `inputs` with T_avg and T_secondary")
         # SIMPLIFICATION: Q = UA * ΔT (single average ΔT, not log mean).
+        # Public references for the standard heat-exchanger form:
+        # ASHRAE Handbook Ch. 48 and DOE-HDBK-1012/2-92.
         # Real heat exchangers use LMTD = (ΔT_in − ΔT_out) / ln(ΔT_in / ΔT_out)
         # which is more accurate when the ΔT varies along the tube length.
         T_avg = inputs["T_avg"]

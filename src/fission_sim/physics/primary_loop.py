@@ -14,6 +14,16 @@ Prentice Hall, 2001. (PWR primary loop, Ch. 4.)
 
 Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed., CRC Press,
 2012. (Energy balance, Ch. 6.)
+
+Public references:
+
+- Claire Yu Yan, *Introduction to Engineering Thermodynamics*, §5.2,
+  mass and energy conservation equations for a control volume:
+  https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
+- DOE Fundamentals Handbook, *Thermodynamics, Heat Transfer, and Fluid
+  Flow*, Vol. 2, heat transfer terminology and overall heat-transfer
+  coefficient:
+  https://www.steamtablesonline.com/pdf/Thermodynamics-Volume2.pdf
 """
 
 from __future__ import annotations
@@ -301,8 +311,8 @@ class PrimaryLoop:
 
         Notes
         -----
-        Equations (.docs/design.md §5.2 and Todreas eq 6.18 for energy;
-        spec §3.3 for mass conservation):
+        Equations (.docs/design.md §5.2, Todreas eq 6.18 for energy,
+        and public control-volume balances from Yan §5.2):
 
             M_hot  · c_p · dT_hot/dt  = Q_core − ṁ · c_p · (T_hot − T_cold)
             M_cold · c_p · dT_cold/dt = ṁ · c_p · (T_hot − T_cold) − Q_sg

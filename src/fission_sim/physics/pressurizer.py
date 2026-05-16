@@ -37,6 +37,22 @@ design and pressure control, §6.4 / §7.3.)
 Moran, M. J. and Shapiro, H. N. *Fundamentals of Engineering
 Thermodynamics*. (Two-phase mixtures, lever rule on specific volume,
 §3.6 Eq. 3.7.)
+
+Public references:
+
+- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
+  Pressurized Water Reactor Systems*, describes pressurizer steam-water
+  equilibrium, heaters, spray, and surge response:
+  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+- Claire Yu Yan, *Introduction to Engineering Thermodynamics*, §5.2,
+  gives the control-volume mass and energy conservation equations:
+  https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
+- LibreTexts Engineering Thermodynamics §2.4 gives the saturated
+  liquid-vapor quality/lever-rule relations on specific volume:
+  https://eng.libretexts.org/Bookshelves/Mechanical_Engineering/Introduction_to_Engineering_Thermodynamics_%28Yan%29/02%253A_Thermodynamic_Properties_of_a_Pure_Substance/2.04%253A_Phase_diagrams
+- CoolProp / IAPWS references for water and steam property evaluations:
+  https://coolprop.org/fluid_properties/IF97.html
+  https://iapws.org/documents/release/IF97-Rev
 """
 
 from __future__ import annotations
@@ -207,7 +223,8 @@ def saturation_state(M: float, U: float, V: float) -> SaturationState:
         T_sat, ρ_l, ρ_v, h_l, h_v from CoolProp at (P, Q=0|1)      # saturation curve
 
     Lever rule on specific volume v = 1/ρ (Moran & Shapiro §3.6 Eq. 3.7;
-    algebraically equivalent to the standard form on quality):
+    LibreTexts Engineering Thermodynamics §2.4; algebraically equivalent
+    to the standard form on quality):
         v_avg = (1 − x) · v_l + x · v_v
         x = (v_avg − v_l) / (v_v − v_l)
 
@@ -232,7 +249,8 @@ def saturation_state(M: float, U: float, V: float) -> SaturationState:
 
     # Lever rule on specific volume v = 1/ρ. Algebraically identical to the
     # standard quality decomposition; this form falls out cleanly because
-    # we already have densities. Moran & Shapiro §3.6 Eq. 3.7.
+    # we already have densities. Moran & Shapiro §3.6 Eq. 3.7; public
+    # cross-check: LibreTexts Engineering Thermodynamics §2.4.
     x = (1.0 / rho_avg - 1.0 / rho_l) / (1.0 / rho_v - 1.0 / rho_l)
 
     M_l = (1.0 - x) * M
@@ -356,7 +374,8 @@ class Pressurizer:
         states.
 
         Equations (open-system first law on a rigid control volume,
-        Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13):
+        Todreas & Kazimi Vol. 1 §6.2 Eq. 6-13; public cross-check:
+        Yan §5.2 control-volume mass/energy balances):
 
             dM/dt = ṁ_surge + ṁ_spray
             dU/dt = Q_heater + ṁ_surge · h_surge + ṁ_spray · h_coldleg
