@@ -1,18 +1,18 @@
-"""Pressurizer pressure controller (proportional + deadband, L1 fidelity).
+"""Pressurizer pressure controller (proportional + deadband, simplest model).
 
 Reads the measured pressurizer pressure and a setpoint; outputs heater
 electrical power and spray mass flow demands. Manual overrides per
 actuator allow the operator (or a fault scenario) to bypass the
 controller and drive an actuator directly.
 
-At L1 we model:
+This model includes:
 - Pure proportional control (no integral, no derivative).
 - Symmetric deadband around the setpoint to suppress chatter.
 - Hard saturation at Q_heater_max and m_dot_spray_max.
 - Manual override per actuator (``None`` → automatic).
 
-Physics specification: see
-``docs/superpowers/specs/2026-05-08-pressurizer-design.md`` §3.2.
+The README's "Educational Component Guide" section explains this controller
+for learners.
 
 References
 ----------
@@ -26,7 +26,7 @@ Public reference:
 - U.S. NRC Technical Training Center, *Reactor Concepts Manual:
   Pressurized Water Reactor Systems*, describes pressurizer pressure
   control by electrical heaters and spray. The proportional-with-deadband
-  equations below are this simulator's L1 controller approximation:
+  equations below are this simulator's simplified controller approximation:
   https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
 """
 
@@ -39,7 +39,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PressurizerControllerParams:
-    """Parameters for the L1 pressurizer pressure controller.
+    """Parameters for the pressurizer pressure controller.
 
     Defaults sized for a Westinghouse 4-loop centroid (1.8 MW total
     heater capacity, 25 kg/s spray, ±150 kPa deadband matching the real
@@ -91,7 +91,7 @@ class PressurizerControllerParams:
 
 
 class PressurizerController:
-    """Proportional-with-deadband pressure controller (L1).
+    """Proportional-with-deadband pressure controller.
 
     Stateless. ``derivatives()`` returns an empty array; all logic
     lives in ``outputs()``.
@@ -126,6 +126,10 @@ class PressurizerController:
         "spray_manual",
     )
     output_ports: tuple[str, ...] = ("Q_heater", "m_dot_spray")
+    # Declares to the engine that outputs() needs inputs (P, P_setpoint), so
+    # it is evaluated after the pressurizer supplies P instead of being
+    # probed.
+    outputs_require_inputs: bool = True
 
     def __init__(self, params: PressurizerControllerParams) -> None:
         self.params = params

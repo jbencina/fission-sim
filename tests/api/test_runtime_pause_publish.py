@@ -1,18 +1,16 @@
-"""Tests for SimRuntime pause/resume transition telemetry publishing.
+"""Tests for what SimRuntime publishes while the simulation is not advancing.
 
-Validates that when the runtime transitions between running and paused states,
-it publishes exactly one telemetry frame reflecting the new state so subscribers
-(and the web UI) immediately see the correct ``running`` flag.
+When the step loop is not stepping (paused, or halted at a model limit) it
+publishes nothing on its own, so the runtime must publish explicitly
+whenever something a client can see changes:
 
-DEF-01 root cause: ``_step_loop`` only published frames inside the
-``if is_running:`` branch, so no frame with ``running=False`` was ever pushed
-when the simulation was paused.
-
-These tests verify the fix:
-  - Pause causes one frame with ``running == False`` to be pushed within 0.5 s.
-  - After the pause frame, no additional frames arrive (the loop is quiet).
-  - Resume causes one frame with ``running == True`` within 0.5 s, followed by
-    a steady stream of frames (the loop is active again).
+  - A new subscriber is seeded with the current frame at once.
+  - Pause publishes one frame with ``running == False``; after that the
+    loop is quiet (no frames while nothing changes).
+  - Accepted commands given while paused (SCRAM, speed, ...) publish a
+    frame carrying the new command state, with simulation time unchanged,
+    and ``snapshot()`` agrees.
+  - Resume brings back a steady stream of frames with ``running == True``.
 """
 
 from __future__ import annotations
@@ -24,16 +22,12 @@ import pytest
 from fission_sim.api.runtime import SimRuntime
 
 
-@pytest.fixture
-async def runtime():
-    """Construct a SimRuntime, start it, yield it, then stop it."""
-    rt = SimRuntime()
-    await rt.start()
-    yield rt
-    await rt.stop()
+def _pause(runtime: SimRuntime) -> float:
+    """Pause ``runtime`` and return the simulation time it stopped at."""
+    runtime.pause()
+    return runtime.snapshot()["t"]
 
 
-@pytest.mark.asyncio
 async def test_pause_publishes_running_false(runtime: SimRuntime):
     """After pause(), a frame with running=False must arrive within 0.5 s.
 
@@ -42,7 +36,8 @@ async def test_pause_publishes_running_false(runtime: SimRuntime):
     """
     q = runtime.subscribe()
     try:
-        # Drain any already-queued running frames so the queue is empty.
+        # Take the seeded frame, then let the loop publish a stepped one.
+        q.get_nowait()
         await asyncio.wait_for(q.get(), timeout=0.5)
         # Flush any extra frames that arrived before we paused.
         while not q.empty():
@@ -71,7 +66,6 @@ async def test_pause_publishes_running_false(runtime: SimRuntime):
         runtime.unsubscribe(q)
 
 
-@pytest.mark.asyncio
 async def test_resume_publishes_running_true(runtime: SimRuntime):
     """After resume(), a frame with running=True must arrive within 0.5 s.
 
@@ -80,6 +74,10 @@ async def test_resume_publishes_running_true(runtime: SimRuntime):
     """
     q = runtime.subscribe()
     try:
+        # The seeded frame comes first and shows the runtime running.
+        seed = q.get_nowait()
+        assert seed["running"] is True
+
         # Pause the runtime and wait for the pause transition frame.
         runtime.pause()
         try:
@@ -92,7 +90,8 @@ async def test_resume_publishes_running_true(runtime: SimRuntime):
         while not q.empty():
             q.get_nowait()
 
-        # Now resume; this should trigger a single transition frame with running=True.
+        # Now resume. The live loop publishes the next stepped frame (within
+        # one cadence period), which carries running=True.
         runtime.resume()
 
         try:
@@ -101,7 +100,7 @@ async def test_resume_publishes_running_true(runtime: SimRuntime):
             pytest.fail("No telemetry frame with running=True received within 0.5 s after resume()")
 
         assert resume_frame.get("running") is True, (
-            f"Expected running=True in resume transition frame, got running={resume_frame.get('running')!r}"
+            f"Expected running=True in the first frame after resume, got running={resume_frame.get('running')!r}"
         )
 
         # Verify that the loop is active again by confirming additional frames
@@ -112,5 +111,49 @@ async def test_resume_publishes_running_true(runtime: SimRuntime):
             pytest.fail("No further frames received 0.5 s after resume — loop may not be running")
 
         assert isinstance(next_frame, dict), "Subsequent frame must be a dict"
+    finally:
+        runtime.unsubscribe(q)
+
+
+async def test_subscriber_joining_paused_runtime_gets_current_frame(runtime: SimRuntime):
+    """A client that connects while paused sees the paused state at once."""
+    await asyncio.sleep(0.3)
+    t_paused = _pause(runtime)
+
+    q = runtime.subscribe()
+    try:
+        frame = q.get_nowait()
+        assert frame["running"] is False
+        assert frame["t"] == t_paused
+        await asyncio.sleep(0.3)
+        assert q.empty(), "a paused runtime published without any change"
+    finally:
+        runtime.unsubscribe(q)
+
+
+async def test_commands_while_paused_are_published_without_advancing_time(runtime: SimRuntime):
+    """SCRAM and a speed change given while paused reach existing subscribers
+    and snapshot(), with simulation time standing still."""
+    await asyncio.sleep(0.3)
+    t_paused = _pause(runtime)
+    q = runtime.subscribe()
+    try:
+        q.get_nowait()  # the seeded paused frame
+
+        assert (await runtime.handle_command({"type": "set_speed", "value": 5}))["type"] == "ack"
+        assert (await runtime.handle_command({"type": "scram"}))["type"] == "ack"
+
+        speed_frame = q.get_nowait()
+        scram_frame = q.get_nowait()
+        assert speed_frame["speed"] == 5.0
+        assert (scram_frame["speed"], scram_frame["scrammed"]) == (5.0, True)
+        assert scram_frame["t"] == t_paused
+        assert scram_frame["running"] is False
+        assert runtime.snapshot() == scram_frame
+
+        # Repeating a command that changes nothing stays quiet.
+        runtime.scram()
+        await asyncio.sleep(0.3)
+        assert q.empty()
     finally:
         runtime.unsubscribe(q)

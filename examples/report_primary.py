@@ -12,18 +12,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from fission_sim.control.pressurizer_controller import (
-    PressurizerController,
-    PressurizerControllerParams,
-)
 from fission_sim.disclaimer import print_disclaimer
-from fission_sim.engine import SimEngine
-from fission_sim.physics.core import CoreParams, PointKineticsCore
-from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
-from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
-from fission_sim.physics.rod_controller import RodController, RodParams
-from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
-from fission_sim.physics.steam_generator import SGParams, SteamGenerator
+from fission_sim.physics.core import CoreParams
+from fission_sim.physics.domain import check_snapshot
+from fission_sim.plant import build_standard_plant
 
 
 def ascii_log_chart(times, values, width=50, vmin=None, vmax=None, label="value"):
@@ -81,53 +73,12 @@ def ascii_linear_chart(times, values, width=50, label="value", unit=""):
 def main() -> None:
     print_disclaimer()
     core_params = CoreParams()
-    loop_params = LoopParams()
-    sg_params = SGParams()
-    sink_params = SinkParams()
-    rod_params = RodParams()
-    pzr_params = PressurizerParams(loop_params=loop_params)
-    ctrl_params = PressurizerControllerParams()
-
-    engine = SimEngine()
-    rod = engine.module(RodController(rod_params), name="rod")
-    core = engine.module(PointKineticsCore(core_params), name="core")
-    loop = engine.module(PrimaryLoop(loop_params), name="loop")
-    sg = engine.module(SteamGenerator(sg_params), name="sg")
-    sink = engine.module(SecondarySink(sink_params), name="sink")
-    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
-    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
-
-    rod_cmd = engine.input("rod_command", default=0.5)
-    scram = engine.input("scram", default=False)
-    P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
-    heater_manual = engine.input("heater_manual", default=None)
-    spray_manual = engine.input("spray_manual", default=None)
-
-    rho_rod = rod(rod_command=rod_cmd, scram=scram)
-    T_sec = sink()
-    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-    core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    pzr(
-        power_thermal=core.power_thermal,
-        Q_sg=Q_sg_sig,
-        T_hotleg=loop.T_hot,
-        T_coldleg=loop.T_cold,
-        Q_heater=pzr_ctrl.Q_heater,
-        m_dot_spray=pzr_ctrl.m_dot_spray,
-    )
-    pzr_ctrl(
-        P=pzr.P, P_setpoint=P_setpoint,
-        heater_manual=heater_manual, spray_manual=spray_manual,
-    )
-    loop(
-        power_thermal=core.power_thermal, Q_sg=Q_sg_sig,
-        m_dot_spray=pzr_ctrl.m_dot_spray, P_primary=pzr.P,
-    )
-    engine.finalize()
+    engine = build_standard_plant(core_params=core_params)
 
     def scenario(t: float) -> dict:
         return {
-            "rod_command": 0.5 if t < 10.0 else 0.515,
+            # +210 pcm: 0.175 of travel × 1,200 pcm control-bank worth.
+            "rod_command": 0.5 if t < 10.0 else 0.675,
             "scram": t >= 60.0,
         }
 
@@ -140,14 +91,19 @@ def main() -> None:
     print()
     print("  Scenario:")
     print("    t = 0..10 s   steady state at design (rod_command = 0.5)")
-    print("    t = 10 s      rod_command raised by +0.015 (gradual withdraw ~1.5 s)")
+    print("    t = 10 s      rod_command raised 0.5 → 0.675 (+210 pcm, ~17.5 s of rod motion)")
     print("    t = 10..60 s  Doppler AND moderator feedback level power off")
-    print("    t = 60 s      scram (rod_command_effective → 0)")
+    print("    t = 60 s      scram (control + shutdown banks drop, −7,000 pcm total)")
     print("    t = 60..300 s delayed-neutron tail; loop water cools")
     print()
 
     sample_t = np.array([0, 5, 10, 11, 12, 30, 60, 60.5, 62, 80, 150, 300])
     snaps = [dense.at(float(ti)) for ti in sample_t]
+    # Stop with an explanation, as the web runtime does, rather than report
+    # a state outside the model's liquid-loop / saturated-pressurizer domain
+    # (checks the tabulated samples only).
+    for snap in snaps:
+        check_snapshot(snap)
 
     print("  Time-series at key points:")
     # Column widths matched to the data row below (6, 9, 7, 6, 7, 7, 6, 6) with
@@ -168,7 +124,7 @@ def main() -> None:
         Tavi = (snap["loop"]["T_hot"] + snap["loop"]["T_cold"]) / 2.0
         posi = snap["rod"]["rod_position"]
         rho_rod_v = snap["signals"]["rho_rod"] * PCM
-        Q_core_v = snap["signals"]["power_thermal"]
+        Q_core_v = snap["core"]["power_thermal"]
         Q_sg_v = snap["signals"]["Q_sg"]
         print(
             f"    {ti:6.1f}  {ni:9.3e}  {Tfi:7.2f}  {Tavi:6.2f}  {posi:7.4f}"
@@ -205,7 +161,7 @@ def main() -> None:
     print(f"{'':>17}{'Q_core':>6}     {'Q_sg':>6}     {'ΔQ':>7}   {'rel':>8}")
     for ti in [0.0, 30.0, 100.0, 300.0]:
         snap_t = dense.at(float(ti))
-        Qc = snap_t["signals"]["power_thermal"]
+        Qc = snap_t["core"]["power_thermal"]
         Qs = snap_t["signals"]["Q_sg"]
         rel = abs(Qc - Qs) / max(abs(Qc), 1.0)
         print(f"    t = {ti:5.1f} s  {Qc / 1e9:6.3f}     {Qs / 1e9:6.3f}     {(Qc - Qs) / 1e9:7.4f}   {rel:8.2%}")
@@ -229,24 +185,27 @@ def main() -> None:
 
     print("  What this shows:")
     print("    * Steady state holds at n=1 with rod at design (0.5).")
-    print("    * After +0.015 rod_command step: rod moves at v_normal=0.01/s for ~1.5 s")
-    print("      (rate clip binds), then exponential settling over ~3 s. Total +210 pcm")
-    print("      reactivity ramps in over ~3 s (not instantaneously). Doppler+moderator")
-    print("      level it off.")
-    print("    * After scram: rod_command_effective → 0. Rod drops at v_scram=0.5/s for")
-    print("      ~1 s (delivers ~80% of scram worth), then exponential settling over a")
-    print("      few more seconds for the last bit. Power drops two orders of magnitude")
-    print("      within ~2 s, then delayed-neutron tail (group-1 precursor, ~55 s τ).")
-    print("    * Late-tail T_avg → T_secondary (558 K) is an M1 artifact: with no decay")
-    print("      heat (M6) and no auto-controllers (M5), the only heat source after the")
-    print("      neutron tail dies is gone, so the loop equilibrates to the sink. A real")
-    print("      plant would hold ~30-50 MW of decay heat at t=300 s, keeping T_avg a")
-    print("      fraction of a K above T_secondary indefinitely.")
-    print("    * Energy-balance 'rel' column grows during cooldown (4% at t=100 s) because")
-    print("      both Q_core and Q_sg are tiny compared to the loop's stored-energy")
-    print("      release rate (M·c_p·dT/dt). The absolute ΔQ is ~1 MW — well within the")
-    print("      loop's thermal-storage rate. Closure tightens to <0.1% at any settled")
-    print("      plateau (see steady state and post-rod-step).")
+    print("    * After the 0.5 → 0.675 rod_command step: the control bank (1,200 pcm over")
+    print("      full travel) moves at v_normal=0.01/s = 12 pcm/s for ~17.5 s, so the")
+    print("      +210 pcm ramps in rather than stepping. Doppler+moderator level it off.")
+    print("    * After scram: both banks drop at v_scram=0.5/s. The control bank is in")
+    print("      within ~1.3 s and the fully withdrawn shutdown bank within ~2 s,")
+    print("      −7,000 pcm in total. Power falls below 10% of design within ~2 s,")
+    print("      then follows the delayed-neutron tail set by the longest-lived precursor")
+    print("      group (C1: ~55 s half-life, ~80 s mean life).")
+    print("    * Late-tail T_avg → T_secondary (558 K) is a model simplification:")
+    print("      fission-product decay heat is not modeled and the secondary side is held")
+    print("      at a fixed 558 K, so once the neutron tail dies nothing heats the loop and")
+    print("      it equilibrates to the sink. In a real plant decay heat would still be")
+    print("      roughly 1-3% of full power a few minutes after shutdown (order of")
+    print("      magnitude from the ANS-5.1 decay-heat standard), keeping the primary")
+    print("      warmer than the sink.")
+    print("    * Q_core (fission power) and Q_sg differ whenever the fuel and loop are")
+    print("      storing or releasing heat (M·c_p·dT/dt). After the scram the SG keeps")
+    print("      removing heat that was stored in the fuel and water, so Q_sg exceeds")
+    print("      fission power by a large factor during the cooldown. P ≈ Q_sg holds")
+    print("      only at settled plateaus; the full balance including storage is checked")
+    print("      in tests/test_primary_plant.py.")
     print()
 
 

@@ -16,7 +16,7 @@ from fission_sim.physics.primary_loop import LoopParams
 
 
 def default_params() -> PressurizerParams:
-    """Return the project-wide default L1 pressurizer parameter set."""
+    """Return the project-wide default pressurizer parameter set."""
     return PressurizerParams()
 
 
@@ -66,7 +66,7 @@ def test_state_layout_indices():
 def test_input_ports():
     pzr = Pressurizer(default_params())
     assert pzr.input_ports == (
-        "power_thermal",
+        "Q_fuel_to_coolant",
         "Q_sg",
         "T_hotleg",
         "T_coldleg",
@@ -141,7 +141,7 @@ def _design_inputs(p: PressurizerParams) -> dict:
     T_hot/T_cold at loop refs, no heater, no spray, no surge."""
     lp = p.loop_params
     return {
-        "power_thermal": lp.Q_design,
+        "Q_fuel_to_coolant": lp.Q_design,
         "Q_sg": lp.Q_design,
         "T_hotleg": lp.T_hot_ref,
         "T_coldleg": lp.T_cold_ref,
@@ -183,12 +183,12 @@ def test_spray_raises_mass_and_lowers_internal_energy_relative_to_pure_insurge()
 
 
 def test_insurge_uses_hotleg_density():
-    """Force a positive surge_volume_rate via raising power_thermal above
+    """Force a positive surge_volume_rate via raising Q_fuel_to_coolant above
     Q_sg. The resulting m_dot_surge should equal ρ_hotleg · surge_vol_rate."""
     p = default_params()
     pzr = Pressurizer(p)
     lp = p.loop_params
-    inputs = _design_inputs(p) | {"power_thermal": 1.01 * lp.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 1.01 * lp.Q_design}
     state0 = pzr.initial_state()
     dstate = pzr.derivatives(state0, inputs)
     dT_avg_dt = (1.01 * lp.Q_design - lp.Q_design) / ((lp.M_hot + lp.M_cold) * lp.c_p)
@@ -199,12 +199,12 @@ def test_insurge_uses_hotleg_density():
 
 
 def test_outsurge_uses_saturated_liquid_density():
-    """Force negative surge_volume_rate via lowering power_thermal below
+    """Force negative surge_volume_rate via lowering Q_fuel_to_coolant below
     Q_sg. The resulting m_dot_surge should equal ρ_l_sat · surge_vol_rate."""
     p = default_params()
     pzr = Pressurizer(p)
     lp = p.loop_params
-    inputs = _design_inputs(p) | {"power_thermal": 0.99 * lp.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 0.99 * lp.Q_design}
     state0 = pzr.initial_state()
     dstate = pzr.derivatives(state0, inputs)
     dT_avg_dt = (0.99 * lp.Q_design - lp.Q_design) / ((lp.M_hot + lp.M_cold) * lp.c_p)
@@ -227,7 +227,7 @@ def test_outsurge_removes_saturated_liquid_enthalpy():
     pzr = Pressurizer(p)
     lp = p.loop_params
     state0 = pzr.initial_state()
-    inputs = _design_inputs(p) | {"power_thermal": 0.99 * lp.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 0.99 * lp.Q_design}
 
     dstate = pzr.derivatives(state0, inputs)
     sat = saturation_state(M=state0[0], U=state0[1], V=p.V_pzr)
@@ -354,7 +354,7 @@ def test_steady_insurge_ramp_raises_pressure():
     pzr = Pressurizer(p)
     lp = p.loop_params
     inputs_const = {
-        "power_thermal": 1.01 * lp.Q_design,
+        "Q_fuel_to_coolant": 1.01 * lp.Q_design,
         "Q_sg": lp.Q_design,
         "T_hotleg": lp.T_hot_ref,
         "T_coldleg": lp.T_cold_ref,
@@ -375,7 +375,7 @@ def test_steady_outsurge_ramp_lowers_pressure():
     pzr = Pressurizer(p)
     lp = p.loop_params
     inputs_const = {
-        "power_thermal": 0.99 * lp.Q_design,
+        "Q_fuel_to_coolant": 0.99 * lp.Q_design,
         "Q_sg": lp.Q_design,
         "T_hotleg": lp.T_hot_ref,
         "T_coldleg": lp.T_cold_ref,
@@ -396,7 +396,7 @@ def test_heater_step_raises_pressure():
     pzr = Pressurizer(p)
     lp = p.loop_params
     inputs_const = {
-        "power_thermal": lp.Q_design,
+        "Q_fuel_to_coolant": lp.Q_design,
         "Q_sg": lp.Q_design,
         "T_hotleg": lp.T_hot_ref,
         "T_coldleg": lp.T_cold_ref,
@@ -419,7 +419,7 @@ def test_spray_step_lowers_pressure():
     pzr = Pressurizer(p)
     lp = p.loop_params
     inputs_const = {
-        "power_thermal": lp.Q_design,
+        "Q_fuel_to_coolant": lp.Q_design,
         "Q_sg": lp.Q_design,
         "T_hotleg": lp.T_hot_ref,
         "T_coldleg": lp.T_cold_ref,

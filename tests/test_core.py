@@ -1,6 +1,6 @@
 """Tests for src/fission_sim/physics/core.py.
 
-Three layers (per spec §5):
+Three layers:
   Layer 1 — pure derivative tests (no integration)
   Layer 2 — short-integration behavior tests
   Layer 3 — inhour-equation analytical test
@@ -17,11 +17,11 @@ from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
 # ---------------------------------------------------------------------------
-# Shared fixture: canonical L1 parameter set used by every test.
+# Shared fixture: canonical default parameter set used by every test.
 # Tests that need altered parameters use dataclasses.replace() to override.
 # ---------------------------------------------------------------------------
 def default_params() -> CoreParams:
-    """Return the project-wide default L1 parameter set."""
+    """Return the project-wide default parameter set."""
     return CoreParams()
 
 
@@ -146,24 +146,62 @@ def test_doppler_is_negative_feedback():
     assert dstate[0] < 0
 
 
-def test_outputs_returns_power_and_T_fuel():
+def test_outputs_returns_power_T_fuel_and_heat_to_coolant():
     p = default_params()
     core = PointKineticsCore(p)
     s = core.initial_state()
-    out = core.outputs(s)
+    out = core.outputs(s, _design_inputs(p))
     assert out["power_thermal"] == pytest.approx(p.P_design)  # n=1 at design
     assert out["T_fuel"] == pytest.approx(p.T_fuel_ref)
+    # At design the heat leaving the fuel equals fission power.
+    assert out["Q_fuel_to_coolant"] == pytest.approx(p.P_design)
 
 
-def test_outputs_scales_power_with_n():
+def test_outputs_separate_fission_power_from_heat_leaving_fuel():
+    """Off design, fission power and fuel-to-coolant heat are different
+    quantities: power follows n, heat leaving the fuel follows T_fuel − T_cool.
+
+    This is the state just after a power drop (e.g. SCRAM): fission has
+    fallen to half but the fuel is still hot, so more heat leaves the fuel
+    than is being generated in it.
+    """
     p = default_params()
     core = PointKineticsCore(p)
     s = core.initial_state()
-    s[0] = 0.5  # half power
-    s[7] = p.T_fuel_ref + 100.0  # also vary T_fuel away from reference
-    out = core.outputs(s)
+    s[0] = 0.5  # half fission power
+    s[7] = p.T_fuel_ref + 100.0  # fuel still hotter than reference
+    out = core.outputs(s, _design_inputs(p))
     assert out["power_thermal"] == pytest.approx(0.5 * p.P_design)
     assert out["T_fuel"] == pytest.approx(p.T_fuel_ref + 100.0)
+    expected_Q = p.hA_fc * (p.T_fuel_ref + 100.0 - p.T_cool_ref)
+    assert out["Q_fuel_to_coolant"] == pytest.approx(expected_Q)
+    assert out["Q_fuel_to_coolant"] > 2.0 * out["power_thermal"]
+
+
+def test_heat_to_coolant_output_matches_fuel_energy_balance():
+    """The published heat leaving the fuel must be exactly the sink term in
+    the fuel's own energy balance: M_fuel·c_p·dT_fuel/dt = P_fission − Q_fc.
+    If the two ever diverged, heat would be created or destroyed at the
+    fuel-coolant boundary (review finding A1)."""
+    p = default_params()
+    core = PointKineticsCore(p)
+    s = core.initial_state()
+    s[0] = 0.1
+    s[7] = p.T_fuel_ref - 40.0
+    inputs = {"rho_rod": -0.07, "T_cool": p.T_cool_ref - 3.0}
+    out = core.outputs(s, inputs)
+    d = core.derivatives(s, inputs)
+    stored = p.M_fuel * p.c_p_fuel * d[7]
+    assert stored == pytest.approx(out["power_thermal"] - out["Q_fuel_to_coolant"])
+
+
+def test_outputs_require_inputs():
+    """Heat to the coolant depends on T_cool, so outputs(state) alone must
+    raise TypeError — the engine's signal that the core is a computed
+    (input-dependent) module."""
+    core = PointKineticsCore(default_params())
+    with pytest.raises(TypeError):
+        core.outputs(core.initial_state())
 
 
 def test_telemetry_with_inputs_decomposes_reactivity():
@@ -177,6 +215,7 @@ def test_telemetry_with_inputs_decomposes_reactivity():
     expected_keys = {
         "power_thermal",
         "T_fuel",
+        "Q_fuel_to_coolant",
         "n",
         "C1",
         "C2",
@@ -196,6 +235,7 @@ def test_telemetry_with_inputs_decomposes_reactivity():
     assert tele["rho_doppler"] == pytest.approx(p.alpha_f * 100.0)
     assert tele["rho_moderator"] == pytest.approx(p.alpha_m * 5.0)
     assert tele["rho_total"] == pytest.approx(tele["rho_rod"] + tele["rho_doppler"] + tele["rho_moderator"])
+    assert tele["Q_fuel_to_coolant"] == pytest.approx(p.hA_fc * (100.0 - 5.0 + p.T_fuel_ref - p.T_cool_ref))
 
 
 def test_telemetry_without_inputs_reports_none_for_input_dependent_keys():
@@ -212,6 +252,7 @@ def test_telemetry_without_inputs_reports_none_for_input_dependent_keys():
     assert tele["rho_rod"] is None
     assert tele["rho_moderator"] is None
     assert tele["rho_total"] is None
+    assert tele["Q_fuel_to_coolant"] is None
     # startup_rate also requires inputs (via dn/dt)
     assert tele["startup_rate_dpm"] is None
 

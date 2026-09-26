@@ -1,11 +1,17 @@
 """Tests for the development launcher helper.
 
-These tests do not start real servers. They monkeypatch subprocess spawning so
-launcher lifecycle behavior can be checked quickly and deterministically.
+These tests do not start real servers. They monkeypatch subprocess spawning,
+or spawn tiny Python processes, so launcher lifecycle behavior can be checked
+quickly and deterministically.
 """
 
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+import sys
+import time
 from typing import Any
 
 import pytest
@@ -47,3 +53,51 @@ def test_start_children_cleans_up_backend_when_frontend_spawn_fails(monkeypatch:
 
     assert cleanup_seen == [[backend]]
     assert dev._children == []
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="launcher relies on Unix process groups")
+def test_terminate_children_stops_descendants_of_an_exited_leader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A wrapper that dies while its child survives must not leave the child running.
+
+    The leader starts a sleeping child in its own process group, prints the
+    child's PID, and exits. Cleanup then has no live leader to ask for a group
+    ID; it must use the group ID recorded at spawn.
+    """
+    leader_code = (
+        "import subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        "                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "print(child.pid, flush=True)\n"
+    )
+    monkeypatch.setattr(dev, "_children", [])
+    monkeypatch.setattr(dev, "_process_groups", [])
+    leader = dev._spawn(
+        [sys.executable, "-c", leader_code],
+        {"stdout": subprocess.PIPE, "text": True, "start_new_session": True},
+    )
+    pgid = leader.pid
+    try:
+        descendant = int(leader.stdout.readline())
+        leader.wait(timeout=10)
+        leader.stdout.close()
+        assert _alive(descendant), "precondition: the child outlives its leader"
+
+        dev._terminate_children(timeout=2.0)
+
+        deadline = time.monotonic() + 5.0  # allow init/launchd to reap it
+        while _alive(descendant) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _alive(descendant)
+    finally:
+        try:
+            os.killpg(pgid, signal.SIGKILL)  # never leak the sleeper, even on failure
+        except ProcessLookupError:
+            pass

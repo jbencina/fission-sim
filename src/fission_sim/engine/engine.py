@@ -5,16 +5,17 @@ wires outputs to inputs, and steps time. It has zero domain knowledge:
 no physics imports, no awareness of what its components do. It only knows
 components, ports, and ODEs.
 
-See docs/superpowers/specs/2026-05-07-simulation-engine-design.md for the
-design spec, including wiring semantics, snapshot structure, and validation
-rules.
+DEVELOPMENT.md documents the engine for users: "Component Contract" (the
+methods and class attributes a component provides) and "Simulation Engine"
+(the API, the snapshot dict shape, wiring rules, and finalize-time
+validation).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -62,6 +63,48 @@ class Signal:
     # name and the port on it; both None for externals.
     producer_module: str | None = None
     producer_port: str | None = None
+    # The engine that created this handle. finalize() uses it to reject a
+    # signal borrowed from a different engine, whose name could otherwise
+    # silently alias a local signal. Excluded from equality and hashing so
+    # a Signal still compares by what it names, not by the engine object.
+    owner: SimEngine | None = field(default=None, repr=False, compare=False)
+
+
+# Snapshot keys the engine itself writes. A module with one of these names
+# would overwrite them (its telemetry dict would replace the time or the
+# signals dict), so module() rejects them.
+_RESERVED_MODULE_NAMES = frozenset({"t", "signals"})
+
+
+class _InputsRequested(BaseException):
+    """Raised by ``_ProbeInputs`` when a component tries to read an input.
+
+    Derives from ``BaseException`` (like ``KeyboardInterrupt``) so that a
+    component's own broad ``except Exception`` cannot swallow or re-wrap it
+    and hide the fact that an input was read.
+    """
+
+
+class _ProbeInputs(Mapping):
+    """Stand-in ``inputs`` mapping used once per module at finalize time.
+
+    Any attempt to read it (``inputs["x"]``, ``inputs.get("x")``, iteration,
+    ``len``) raises ``_InputsRequested``. If a component whose
+    ``outputs(state)`` raised ``TypeError`` then reaches for an input here,
+    the ``TypeError`` really meant "I need inputs". If it raises
+    ``TypeError`` again without touching the mapping, the error came from
+    somewhere else inside ``outputs()`` — a bug the engine should report,
+    not a reason to reclassify the module.
+    """
+
+    def __getitem__(self, key: str) -> Any:
+        raise _InputsRequested(key)
+
+    def __iter__(self) -> Iterator[str]:
+        raise _InputsRequested("<iteration>")
+
+    def __len__(self) -> int:
+        raise _InputsRequested("<len>")
 
 
 def _find_cycle(remaining: dict[str, set[str]]) -> list[str]:
@@ -215,6 +258,7 @@ class SimModule:
             is_external=False,
             producer_module=self.name,
             producer_port=port,
+            owner=self._engine,
         )
 
 
@@ -237,7 +281,9 @@ class SimEngine:
         self._t: float = 0.0
         self._finalized: bool = False
         # Frozen at finalize: list of (kind, name) tuples describing the
-        # eval order each f(t, y) replays. Set by finalize().
+        # eval order each f(t, y) replays. kind is one of "external",
+        # "state_derived" (call outputs(state)) or "computed" (call
+        # outputs(state, inputs=...)). Set by finalize().
         self._eval_order: list[tuple[str, str]] = []
         # Frozen at finalize: which signals are actually consumed by the
         # graph. Used by snapshot/step/run to filter the signals dict to
@@ -259,7 +305,8 @@ class SimEngine:
         name : str, optional
             Module name used as the snapshot dict key. If None, derived from
             the component's class name via snake_case (e.g.
-            ``RodController`` → ``"rod_controller"``).
+            ``RodController`` → ``"rod_controller"``). ``"t"`` and
+            ``"signals"`` are reserved for the snapshot's own keys.
 
         Returns
         -------
@@ -270,6 +317,12 @@ class SimEngine:
             raise EngineWiringError("cannot register modules after finalize(); construct a new engine")
         if name is None:
             name = _snake_case(type(component).__name__)
+        if name in _RESERVED_MODULE_NAMES:
+            raise EngineWiringError(
+                f"module name '{name}' is reserved: snapshots use the keys "
+                f"{sorted(_RESERVED_MODULE_NAMES)!r} for time and resolved signals; "
+                f"pass a different name=... to engine.module()"
+            )
         if name in self._modules_by_name:
             raise EngineWiringError(f"duplicate module name '{name}'")
         m = SimModule(self, component, name)
@@ -290,23 +343,50 @@ class SimEngine:
         if name in self._externals:
             raise EngineWiringError(f"external '{name}' declared more than once")
         self._externals[name] = default
-        return Signal(name=name, is_external=True)
+        return Signal(name=name, is_external=True, owner=self)
 
     def finalize(self) -> None:
         """Validate the wiring graph and allocate the state vector.
 
         Validations performed:
+        - Every wired Signal was created by this engine (not borrowed from
+          another engine, where its name could alias a different value).
         - Every consumer port (kwarg in a module's __call__) has either a
           producer module's output Signal feeding it, or it's an external.
         - Every external declared via input() is consumed at least once.
         - No two modules name the same canonical output signal (i.e., no
           two modules produce a port with the same name AND that signal is
-          consumed somewhere).
+          consumed somewhere), and no consumed module output shares its
+          name with a consumed external.
         - Every module's required input_ports are wired (call dict covers
           all entries in component.input_ports).
+        - Each module is classified as state-derived or computed (see step
+          6); a ``TypeError`` inside a state-derived ``outputs()`` is
+          reported here rather than mistaken for "needs inputs".
+        - Computed outputs have no algebraic cycle, including a module
+          whose computed output feeds its own input.
         """
         if self._finalized:
             return  # idempotent
+
+        # 0. Reject signals created by another engine. A foreign handle's name
+        # may not exist here at all (a KeyError at the first snapshot) or,
+        # worse, may coincide with an unrelated local signal.
+        for m in self._modules:
+            for port_name, sig in m._inputs.items():
+                if sig.owner is self:
+                    continue
+                if sig.owner is None:
+                    origin = "which was not created by any SimEngine"
+                elif sig.is_external:
+                    origin = f"from engine.input('{sig.name}', ...) of a different SimEngine"
+                else:
+                    origin = f"from module '{sig.producer_module}' of a different SimEngine"
+                raise EngineWiringError(
+                    f"module '{m.name}' input '{port_name}' is wired to signal "
+                    f"'{sig.name}' {origin}; obtain signals from this engine's "
+                    f"engine.input(...) or one of its modules before wiring them"
+                )
 
         # 1. Build set of all consumed signals across all modules.
         consumed_signals: set[Signal] = set()
@@ -340,6 +420,17 @@ class SimEngine:
                     f"modules {sorted(producers)!r} all expose an output "
                     f"port named '{sig_name}'. Rename one in its component's "
                     f"output_ports declaration."
+                )
+            # snapshot["signals"] is keyed by bare name, so a consumed external
+            # and a consumed module output with the same name would overwrite
+            # each other there even though consumers see different values.
+            if sig_name in self._consumed_externals:
+                (producer,) = producers
+                raise EngineWiringError(
+                    f"signal name '{sig_name}' is used by both external "
+                    f"engine.input('{sig_name}', ...) and module '{producer}' "
+                    f"output port '{sig_name}'; snapshot['signals'] is keyed by "
+                    f"name, so one would hide the other. Rename the external."
                 )
 
         # 3. Check each module's input_ports are all wired.
@@ -381,38 +472,40 @@ class SimEngine:
         else:
             self._state = np.empty(0, dtype=float)
 
-        # 6. Classify modules by their outputs() *signature* (not by the math
-        # they compute). A module is "state-derived" if outputs(state) — i.e.
-        # the call without an inputs kwarg — succeeds; "computed" if it
-        # raises TypeError. The eval order treats state-derived modules as
-        # having no input dependencies (they're evaluated in registration
-        # order before any computed modules).
-        #
-        # Note: this calls component.outputs() once per module at finalize
-        # time. Components must keep outputs(state) side-effect-free and
-        # cheap (no I/O, no logging) — the call may also be repeated in the
-        # snapshot/step paths.
+        # 6. Classify each module's outputs() as "state-derived" (depends only
+        # on state and parameters, evaluated with outputs(state) before any
+        # computed module) or "computed" (reads inputs, evaluated with
+        # outputs(state, inputs=...) in dependency order). The kind is frozen
+        # into _eval_order, so evaluation never re-probes. See _output_kind().
         state_derived: list[SimModule] = []
         computed: list[SimModule] = []
         for m in self._modules:
-            try:
-                state_slice = m._component.initial_state()
-                m._component.outputs(state_slice)
-                state_derived.append(m)
-            except TypeError:
+            if self._output_kind(m) == "computed":
                 computed.append(m)
+            else:
+                state_derived.append(m)
 
         # 7. Topological sort over the computed modules: each computed module
         # depends on its inputs' producer modules (state-derived dependencies
         # are trivially satisfied because they precede all computed evals).
+        # A computed module wired to its own output is the smallest possible
+        # algebraic loop: its outputs would need themselves as input.
         computed_names = {m.name for m in computed}
         deps: dict[str, set[str]] = {m.name: set() for m in computed}
         for m in computed:
-            for sig in m._inputs.values():
+            for port_name, sig in m._inputs.items():
                 if sig.is_external:
                     continue
                 producer = sig.producer_module
-                if producer in computed_names and producer != m.name:
+                if producer == m.name:
+                    raise EngineWiringError(
+                        f"module '{m.name}' input '{port_name}' is wired to its own "
+                        f"output '{sig.name}', but '{m.name}' computes its outputs "
+                        f"from its inputs, so the value would depend on itself. "
+                        f"Feed '{port_name}' from another module, or route the loop "
+                        f"through a module with state."
+                    )
+                if producer in computed_names:
                     deps[m.name].add(producer)
 
         # Kahn's algorithm — sorted ready set for deterministic ordering.
@@ -437,18 +530,81 @@ class SimEngine:
 
         # 8. Build the frozen eval_order:
         #    - ('external', name) for each external (declaration order)
-        #    - ('output', module_name) for each state-derived module (registration order)
-        #    - ('output', module_name) for each computed module (topological order)
+        #    - ('state_derived', module_name) for each state-derived module (registration order)
+        #    - ('computed', module_name) for each computed module (topological order)
         eval_order: list[tuple[str, str]] = []
         for ext_name in self._externals:
             eval_order.append(("external", ext_name))
         for m in state_derived:
-            eval_order.append(("output", m.name))
+            eval_order.append(("state_derived", m.name))
         for name in ordered_computed:
-            eval_order.append(("output", name))
+            eval_order.append(("computed", name))
         self._eval_order = eval_order
 
         self._finalized = True
+
+    @staticmethod
+    def _output_kind(m: SimModule) -> str:
+        """Return ``"state_derived"`` or ``"computed"`` for one module.
+
+        A component class may declare its kind with the class attribute
+        ``outputs_require_inputs = True`` (computed) or ``False``
+        (state-derived); the engine then trusts the declaration and makes
+        no probe calls. Without one, the engine infers the kind once, here:
+
+        1. Call ``outputs(state)`` on the initial state. Success means
+           state-derived.
+        2. On ``TypeError`` (for example an ``outputs()`` that raises it
+           when ``inputs`` is None, or one whose ``inputs`` is a required
+           keyword), call ``outputs(state, inputs=probe)``
+           where ``probe`` raises as soon as it is read. Reading it confirms
+           the module is computed. A second ``TypeError`` without reading any
+           input means the first error was a bug inside ``outputs()``, which
+           is reported rather than silently reclassified.
+
+        Components must keep ``outputs()`` side-effect-free and cheap (no
+        I/O, no logging): the probe calls happen once per module here.
+        """
+        component = m._component
+        # Read from the class, as documented: an instance attribute (or a
+        # test double such as MagicMock that invents attributes) is ignored.
+        declared = getattr(type(component), "outputs_require_inputs", None)
+        if declared is not None:
+            if not isinstance(declared, bool):
+                raise EngineWiringError(
+                    f"module '{m.name}': outputs_require_inputs must be True or "
+                    f"False, got {declared!r}"
+                )
+            return "computed" if declared else "state_derived"
+
+        state = component.initial_state()
+        try:
+            component.outputs(state)
+            return "state_derived"
+        except TypeError as error:
+            first_error = error
+
+        # outputs(state) refused to run. Check that the refusal was about
+        # missing inputs by offering a probe mapping that raises when read.
+        try:
+            component.outputs(state, inputs=_ProbeInputs())
+        except TypeError as second_error:
+            raise EngineWiringError(
+                f"module '{m.name}': outputs(state) raised TypeError "
+                f"({first_error}), and so did outputs(state, inputs=...) "
+                f"before reading any input ({second_error}). The engine "
+                f"treats a TypeError from outputs(state) as 'this module "
+                f"needs inputs', so this looks like a bug inside outputs(). "
+                f"If the outputs depend only on state, fix the error; if "
+                f"they need inputs, set outputs_require_inputs = True on "
+                f"{type(component).__name__}."
+            ) from first_error
+        except (_InputsRequested, Exception):
+            # It read an input, or failed some other way after getting past
+            # the inputs=None rejection; a genuine bug of that kind surfaces
+            # at the first evaluation with real inputs.
+            pass
+        return "computed"
 
     # ----- Properties -----
 
@@ -464,19 +620,45 @@ class SimEngine:
             raise EngineWiringError("engine.state is unavailable until finalize()")
         return self._state
 
+    def restore(self, t: float, state: np.ndarray) -> None:
+        """Put the engine back at time ``t`` with global state vector ``state``.
+
+        A checkpoint pair is ``(engine.t, engine.state.copy())`` taken
+        before a ``step()``. Restoring it undoes that step, for example when
+        the caller finds the step's end state unacceptable. Only time and
+        the state vector are restored; external inputs are per-call and have
+        nothing to restore.
+
+        Parameters
+        ----------
+        t : float
+            Simulation time to return to [s].
+        state : np.ndarray
+            Global state vector, same shape as ``engine.state``. It is
+            copied, so the caller may keep reusing its array.
+        """
+        if not self._finalized:
+            raise EngineWiringError("engine.restore() requires finalize()")
+        y = np.array(state, dtype=float)
+        if y.shape != self._state.shape:
+            raise ValueError(f"restore() needs a state of shape {self._state.shape}, got {y.shape}")
+        self._state = y
+        self._t = float(t)
+
     def snapshot(self) -> Snapshot:
         """Return a snapshot dict reflecting the current state and signals.
 
         Does not advance time. Replays the wiring graph using the current
         external values (defaults if no overrides are active) and the current
-        state vector. The returned dict has the schema described in §3.4 of
-        the engine spec: ``{"t": float, "signals": {...}, "<module>": {...}}``.
+        state vector. The returned dict has the shape described under
+        "Snapshot Dict Shape" in DEVELOPMENT.md:
+        ``{"t": float, "signals": {...}, "<module>": {...}}``.
         """
         if not self._finalized:
             raise EngineWiringError("engine.snapshot() requires finalize()")
         externals = self._current_external_values()
         signal_values = self._resolve_signal_values(self._state, externals)
-        return self._build_snapshot(self._state, signal_values)
+        return self._build_snapshot(self._t, self._state, signal_values)
 
     # ----- Private helpers used by snapshot/step/run -----
 
@@ -495,6 +677,10 @@ class SimEngine:
         Returns a dict ``{signal_name: value}`` containing only signals that
         appear in the wiring graph (consumed externals + consumed module
         outputs). Unwired outputs aren't tracked.
+
+        This is the single graph-evaluation path: snapshots and the
+        ``f(t, y)`` closure handed to ``solve_ivp`` both call it, so what the
+        integrator sees and what a snapshot reports cannot diverge.
         """
         signal_values: dict[str, Any] = {}
 
@@ -502,20 +688,22 @@ class SimEngine:
             if kind == "external":
                 if self._is_external_consumed(name):
                     signal_values[name] = externals.get(name, self._externals[name])
-            elif kind == "output":
-                m = self._modules_by_name[name]
-                state_slice = y[m._state_offset : m._state_offset + m._state_size]
-                out = self._call_outputs(
-                    m,
-                    state_slice,
-                    lambda m=m, sv=signal_values, ex=externals: self._inputs_for_module(m, sv, ex),
-                )
-                # Publish each consumed output port as a signal.
-                for port_name, value in out.items():
-                    if self._is_module_output_consumed(m.name, port_name):
-                        signal_values[port_name] = value
+                continue
+            m = self._modules_by_name[name]
+            state_slice = y[m._state_offset : m._state_offset + m._state_size]
+            if kind == "state_derived":
+                out = m._component.outputs(state_slice)
+            elif kind == "computed":
+                # Every producer this module reads precedes it in eval_order,
+                # so its inputs are already in signal_values.
+                inputs = self._inputs_for_module(m, signal_values, externals)
+                out = m._component.outputs(state_slice, inputs=inputs)
             else:
                 raise AssertionError(f"unknown eval_order kind: {kind!r}")
+            # Publish each consumed output port as a signal.
+            for port_name, value in out.items():
+                if self._is_module_output_consumed(m.name, port_name):
+                    signal_values[port_name] = value
 
         return signal_values
 
@@ -540,41 +728,27 @@ class SimEngine:
     def _is_module_output_consumed(self, module_name: str, port_name: str) -> bool:
         return (module_name, port_name) in self._consumed_module_outputs
 
-    def _call_outputs(
-        self,
-        m: SimModule,
-        state_slice: np.ndarray,
-        inputs_factory: Callable[[], dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Call ``component.outputs()`` with or without inputs as needed.
-
-        State-derived components accept ``outputs(state)``; computed
-        components raise TypeError when called without ``inputs=``. We try
-        the cheap form first and fall back to the full form on TypeError.
-        ``inputs_factory`` is a zero-arg callable that builds the inputs
-        dict on demand — avoids the build cost for state-derived modules.
-        """
-        try:
-            return m._component.outputs(state_slice)
-        except TypeError:
-            return m._component.outputs(state_slice, inputs=inputs_factory())
-
     def _build_snapshot(
         self,
+        t: float,
         y: np.ndarray,
         signal_values: dict[str, Any],
         externals: dict[str, Any] | None = None,
     ) -> Snapshot:
         """Assemble the full snapshot dict from the resolved signal values.
 
-        Uses the engine's current ``self._t`` for the ``"t"`` field. Each
-        module's telemetry is computed by calling ``component.telemetry(
+        ``t`` becomes the ``"t"`` field; it is passed in rather than read
+        from ``self._t`` so ``DenseSolution`` can build snapshots at
+        intermediate times without touching the engine. Each module's
+        telemetry is computed by calling ``component.telemetry(
         state_slice, inputs=...)`` with the same input dict that derivatives
         would see — passing the kwargs-merged externals (if provided),
         otherwise the declared defaults.
 
         Parameters
         ----------
+        t : float
+            Simulation time the snapshot describes [s].
         y : np.ndarray
             Global state vector to read state slices from.
         signal_values : dict[str, Any]
@@ -588,7 +762,7 @@ class SimEngine:
         """
         if externals is None:
             externals = self._current_external_values()
-        snap: Snapshot = {"t": self._t, "signals": dict(signal_values)}
+        snap: Snapshot = {"t": float(t), "signals": dict(signal_values)}
         for m in self._modules:
             state_slice = y[m._state_offset : m._state_offset + m._state_size]
             inputs = self._inputs_for_module(m, signal_values, externals)
@@ -648,43 +822,25 @@ class SimEngine:
         self._t = float(sol.t[-1])
 
         signal_values = self._resolve_signal_values(self._state, current_externals)
-        return self._build_snapshot(self._state, signal_values, current_externals)
+        return self._build_snapshot(self._t, self._state, signal_values, current_externals)
 
     def _build_f(
         self, current_externals_provider: Callable[[float], dict[str, Any]]
     ) -> Callable[[float, np.ndarray], np.ndarray]:
         """Build the ``f(t, y)`` closure passed to ``solve_ivp``.
 
-        The closure replays the frozen ``_eval_order`` to compute outputs and
-        derivatives. ``current_externals_provider(t)`` returns the active
-        external dict at simulation time t — for ``step()`` it ignores t
-        (constant per call); for ``run()`` it merges ``scenario_fn(t)`` onto
-        defaults.
+        The closure resolves every wired signal with
+        ``_resolve_signal_values`` (the same path snapshots use), then asks
+        each stateful module for its derivatives.
+        ``current_externals_provider(t)`` returns the active external dict at
+        simulation time t — for ``step()`` it ignores t (constant per call);
+        for ``run()`` it merges ``scenario_fn(t)`` onto defaults.
         """
-        eval_order = self._eval_order
-        modules_by_name = self._modules_by_name
         modules = self._modules
 
         def f(t: float, y: np.ndarray) -> np.ndarray:
             externals = current_externals_provider(t)
-            signal_values: dict[str, Any] = {}
-
-            # Replay outputs in eval_order.
-            for kind, name in eval_order:
-                if kind == "external":
-                    if self._is_external_consumed(name):
-                        signal_values[name] = externals.get(name, self._externals[name])
-                elif kind == "output":
-                    m = modules_by_name[name]
-                    state_slice = y[m._state_offset : m._state_offset + m._state_size]
-                    out = self._call_outputs(
-                        m,
-                        state_slice,
-                        lambda m=m, sv=signal_values, ex=externals: self._inputs_for_module(m, sv, ex),
-                    )
-                    for port_name, value in out.items():
-                        if self._is_module_output_consumed(m.name, port_name):
-                            signal_values[port_name] = value
+            signal_values = self._resolve_signal_values(y, externals)
 
             # Compute derivatives for each module.
             dy = np.empty_like(y)
@@ -766,7 +922,7 @@ class SimEngine:
 
         externals = make_externals(self._t)
         signal_values = self._resolve_signal_values(self._state, externals)
-        snap = self._build_snapshot(self._state, signal_values, externals)
+        snap = self._build_snapshot(self._t, self._state, signal_values, externals)
 
         if dense:
             return snap, DenseSolution(
@@ -816,17 +972,7 @@ class DenseSolution:
             y = self._sol(float(ti))
             externals = self._make_externals(float(ti))
             signal_values = self._engine._resolve_signal_values(y, externals)
-            # Temporarily set engine.t for snapshot's t field; restore after.
-            saved_t = self._engine._t
-            saved_state = self._engine._state
-            self._engine._t = float(ti)
-            self._engine._state = y
-            try:
-                snap = self._engine._build_snapshot(y, signal_values, externals)
-            finally:
-                self._engine._t = saved_t
-                self._engine._state = saved_state
-            snaps.append(snap)
+            snaps.append(self._engine._build_snapshot(float(ti), y, signal_values, externals))
         return snaps[0] if scalar else snaps
 
     def signal(self, name: str, t: np.ndarray) -> np.ndarray:
@@ -879,32 +1025,11 @@ class DenseSolution:
 
             # Fallback: per-module telemetry. Detect ambiguity (same key in
             # multiple modules) and raise rather than silently picking one.
-            saved_t = self._engine._t
-            saved_state = self._engine._state
-            self._engine._t = float(ti)
-            self._engine._state = y
-            try:
-                snap = self._engine._build_snapshot(y, signal_values, externals)
-            finally:
-                self._engine._t = saved_t
-                self._engine._state = saved_state
-
-            candidates = [
-                module_name
-                for module_name in self._engine._modules_by_name
-                if isinstance(snap.get(module_name), dict) and name in snap[module_name]
-            ]
+            snap = self._engine._build_snapshot(float(ti), y, signal_values, externals)
+            module_names = self._engine._modules_by_name
+            candidates = [module_name for module_name in module_names if name in snap[module_name]]
             if not candidates:
-                all_tele_keys = sorted(
-                    {
-                        k
-                        for m in self._engine._modules
-                        for k in m._component.telemetry(
-                            y[m._state_offset : m._state_offset + m._state_size],
-                            inputs=self._engine._inputs_for_module(m, signal_values, externals),
-                        )
-                    }
-                )
+                all_tele_keys = sorted({k for module_name in module_names for k in snap[module_name]})
                 raise KeyError(
                     f"signal '{name}' not found at t={float(ti)}; "
                     f"available signals: {sorted(signal_values)!r}; "

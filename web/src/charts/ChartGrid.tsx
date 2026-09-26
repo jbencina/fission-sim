@@ -7,8 +7,7 @@
  *   - PressureChart    — primary system pressure in MPa
  *   - ReactivityChart  — reactivity components in pcm
  *
- * Drop this component into AppShell's charts column to replace the
- * feat-009 placeholder.
+ * Rendered in AppShell's charts column.
  */
 
 import type { FC } from 'react'

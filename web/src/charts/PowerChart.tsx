@@ -1,7 +1,9 @@
 /**
- * PowerChart — real-time line chart of reactor thermal power.
+ * PowerChart — real-time line chart of reactor thermal power: the modeled
+ * fission power (decay heat is not modeled).
  *
- * Reads the rolling history from the telemetry store and plots the last 60 s.
+ * Reads the rolling history from the telemetry store and plots the last 60 s
+ * of simulated time (CHART_WINDOW_S in chartData.ts), whatever the speed.
  * Power is converted from raw Watts to MW for a human-readable scale.
  */
 

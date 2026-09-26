@@ -1,6 +1,6 @@
 """Tests for src/fission_sim/physics/steam_generator.py.
 
-The L1 SG is purely algebraic: Q_sg = UA * (T_avg - T_secondary). Layers 2
+The SG model is purely algebraic: Q_sg = UA * (T_avg - T_secondary). Layers 2
 (short-integration) and 3 (textbook formula comparison) do not apply — the
 implementation IS the formula, and there is no time evolution to integrate.
 """

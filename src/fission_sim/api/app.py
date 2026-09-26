@@ -11,8 +11,9 @@ It wires the browser to the simulation engine; it contains no physics logic.
 CORS policy
 -----------
 Permissive CORS is enabled only for the Vite dev server origins
-(``http://127.0.0.1:5173`` and ``http://localhost:5173``).  Production builds
-will serve the bundled React app from the same origin and need no CORS at all.
+(``http://127.0.0.1:5173`` and ``http://localhost:5173``).  This app does not
+serve the built React bundle; a deployment that served it from the same origin
+would need no CORS at all.
 
 Routes
 ------
@@ -22,18 +23,22 @@ GET /api/health
 WebSocket /ws/telemetry
     Telemetry stream.  On connect the client is subscribed to the shared
     ``SimRuntime`` and receives telemetry frames as JSON at the runtime's
-    configured cadence (default 10 Hz).  The client may also send JSON
-    command messages; successful commands are answered with an ack frame and
-    invalid command messages are answered with an error frame.
+    configured cadence (default 10 Hz), starting with the current state as
+    soon as it connects.  The client may also send JSON command messages;
+    successful commands are answered with an ack frame, and invalid commands
+    (including text that is not JSON, and binary frames) are answered with an
+    error frame.  The session stays open either way.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
+import anyio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -145,8 +150,7 @@ async def ws_telemetry(websocket: WebSocket) -> None:
     - **send task**: waits for frames from the queue and forwards them to the
       client as JSON.
     - **recv task**: reads JSON messages from the client and routes them to
-      ``runtime.handle_command(msg)``.  If that method does not exist yet
-      (it is added in feat-004), an error frame is sent back instead.
+      ``runtime.handle_command(msg)``, sending back its ack or error frame.
 
     On disconnect (clean or abrupt), the subscription is removed from the
     runtime so no frames accumulate in the abandoned queue.
@@ -177,15 +181,33 @@ async def ws_telemetry(websocket: WebSocket) -> None:
         """Read JSON commands from the client and dispatch them to the runtime.
 
         Calls ``runtime.handle_command(msg)`` for every received message.
-        The response dict is forwarded to the client as a JSON frame.  If
-        ``handle_command`` raises unexpectedly, a generic error frame is sent
-        and the exception is logged.
+        The response dict is forwarded to the client as a JSON frame.  A
+        message that cannot be decoded (a binary frame, or text that is not
+        JSON) gets an error frame, as does an unexpected exception from
+        ``handle_command`` (which is also logged); the session continues.
 
         Loops until the client disconnects, at which point
         ``WebSocketDisconnect`` propagates up to the parent scope.
         """
         while True:
-            msg: Any = await websocket.receive_json()
+            # Read the raw ASGI message rather than using receive_json(), which
+            # raises (and would end the session) on a frame it cannot decode.
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000), message.get("reason"))
+            text = message.get("text")
+            if text is None:
+                await websocket.send_json(
+                    {"type": "error", "detail": "commands must be JSON text frames, not binary"}
+                )
+                continue
+            try:
+                msg: Any = json.loads(text)
+            except json.JSONDecodeError as err:
+                await websocket.send_json(
+                    {"type": "error", "detail": f"command message is not valid JSON ({err.msg})"}
+                )
+                continue
 
             try:
                 result = await runtime.handle_command(msg)
@@ -202,11 +224,15 @@ async def ws_telemetry(websocket: WebSocket) -> None:
                 await websocket.send_json(result)
 
     try:
-        # Run send and recv concurrently. Either task completing (or raising)
-        # cancels the other and causes the with-block to exit.
-        async with asyncio.TaskGroup() as tg:
-            tg.create_task(_send_task())
-            tg.create_task(_recv_task())
+        # Run send and recv concurrently. Either task raising cancels the
+        # other and causes the with-block to exit. An AnyIO task group rather
+        # than asyncio.TaskGroup: Starlette cancels the endpoint through AnyIO,
+        # and on Python 3.13+ an asyncio.TaskGroup re-raises that
+        # cancellation as a CancelledError when the test client closes a
+        # session.
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(_send_task)
+            tg.start_soon(_recv_task)
     except* WebSocketDisconnect:
         # Client disconnected cleanly — normal end of session.
         logger.debug("WebSocket client disconnected cleanly")

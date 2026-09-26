@@ -11,7 +11,8 @@ Run:
     uv run python examples/console.py --speed 60   # 60x faster than real
 
 Commands:
-    <number>        set rod_command to value in [0, 1]  (e.g. "0.515")
+    <number>        set rod_command to value in [0, 1]  (e.g. "0.6";
+                    12 pcm per 0.01, ±600 pcm about the 0.5 design point)
     s               engage scram
     r               release scram
     h <0-1>         set heater override to fraction in [0, 1]  (e.g. "h 0.3")
@@ -46,18 +47,10 @@ import time
 import tty
 from collections import deque
 
-from fission_sim.control.pressurizer_controller import (
-    PressurizerController,
-    PressurizerControllerParams,
-)
+from fission_sim.control.pressurizer_controller import PressurizerControllerParams
 from fission_sim.disclaimer import print_disclaimer
-from fission_sim.engine import SimEngine
-from fission_sim.physics.core import CoreParams, PointKineticsCore
-from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
-from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
-from fission_sim.physics.rod_controller import RodController, RodParams
-from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
-from fission_sim.physics.steam_generator import SGParams, SteamGenerator
+from fission_sim.physics.domain import ModelDomainError, check_snapshot
+from fission_sim.plant import build_standard_plant
 
 # Rolling window of last N steps shown in the table.
 BUFFER_LEN = 10
@@ -65,57 +58,8 @@ BUFFER_LEN = 10
 PCM = 1e5
 # Wall-clock interval between display ticks. Constant regardless of speed.
 WALL_TICK_S = 1.0
-# Default pressure setpoint [Pa] — matches PressurizerControllerParams default.
-P_SETPOINT_DEFAULT = 1.55e7
-
-
-def build_plant() -> SimEngine:
-    """Wire the M2 plant: core, primary loop, SG, pressurizer, and controllers."""
-    engine = SimEngine()
-    loop_params = LoopParams()
-    pzr_params = PressurizerParams(loop_params=loop_params)
-    ctrl_params = PressurizerControllerParams()
-
-    rod = engine.module(RodController(RodParams()), name="rod")
-    core = engine.module(PointKineticsCore(CoreParams()), name="core")
-    loop = engine.module(PrimaryLoop(loop_params), name="loop")
-    sg = engine.module(SteamGenerator(SGParams()), name="sg")
-    sink = engine.module(SecondarySink(SinkParams()), name="sink")
-    pzr = engine.module(Pressurizer(pzr_params), name="pzr")
-    pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
-
-    rod_cmd_sig = engine.input("rod_command", default=0.5)
-    scram_sig = engine.input("scram", default=False)
-    P_setpoint_sig = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
-    heater_manual_sig = engine.input("heater_manual", default=None)
-    spray_manual_sig = engine.input("spray_manual", default=None)
-
-    rho_rod = rod(rod_command=rod_cmd_sig, scram=scram_sig)
-    T_sec = sink()
-    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-    core(rho_rod=rho_rod, T_cool=loop.T_cool)
-    pzr_ctrl(
-        P=pzr.P,
-        P_setpoint=P_setpoint_sig,
-        heater_manual=heater_manual_sig,
-        spray_manual=spray_manual_sig,
-    )
-    pzr(
-        power_thermal=core.power_thermal,
-        Q_sg=Q_sg_sig,
-        T_hotleg=loop.T_hot,
-        T_coldleg=loop.T_cold,
-        Q_heater=pzr_ctrl.Q_heater,
-        m_dot_spray=pzr_ctrl.m_dot_spray,
-    )
-    loop(
-        power_thermal=core.power_thermal,
-        Q_sg=Q_sg_sig,
-        m_dot_spray=pzr_ctrl.m_dot_spray,
-        P_primary=pzr.P,
-    )
-    engine.finalize()
-    return engine
+# Default pressure setpoint [Pa], the controller's design setpoint (15.5 MPa).
+P_SETPOINT_DEFAULT = PressurizerControllerParams().P_setpoint_default
 
 
 def format_row(snap: dict) -> str:
@@ -133,14 +77,13 @@ def format_row(snap: dict) -> str:
     T_avg = (T_hot + T_cold) / 2.0
     rod_pos = snap["rod"]["rod_position"]
     rho_rod_v = snap["signals"]["rho_rod"] * PCM
-    Q_core = snap["signals"]["power_thermal"] / 1e9
+    Q_core = snap["core"]["power_thermal"] / 1e9
     Q_sg = snap["signals"]["Q_sg"] / 1e9
 
-    # Pressurizer telemetry — present only in M2 plant.
-    pzr = snap.get("pzr", {})
-    P_MPa = pzr.get("P", 0.0) / 1e6
-    level = pzr.get("level", 0.0) * 100.0  # fraction → percent
-    Q_htr = pzr.get("Q_heater", 0.0) / 1e6  # W → MW
+    pzr = snap["pzr"]
+    P_MPa = pzr["P"] / 1e6
+    level = pzr["level"] * 100.0  # fraction → percent
+    Q_htr = pzr["Q_heater"] / 1e6  # W → MW
 
     return (
         f"   {t:6.1f}  {n:9.3e}  {T_fuel:7.2f}  {T_avg:6.2f}"
@@ -156,7 +99,7 @@ def header_lines(speed: float) -> list[str]:
         speed_str = "1 sim-s = 1 wall-s"
     else:
         speed_str = f"{speed:g} sim-s/wall-s ({speed:g}x real-time)"
-    title = f"  PWR Reactor Console — Interactive M2 Plant   ({speed_str}, last {window_s:g} s)"
+    title = f"  PWR Reactor Console — Interactive Primary Plant   ({speed_str}, last {window_s:g} s)"
     return [
         "=" * 92,
         title,
@@ -332,7 +275,7 @@ def main() -> None:
     if not sys.stdin.isatty():
         sys.stderr.write("examples/console.py is interactive — run it from a terminal, not a pipe.\n")
         sys.exit(1)
-    engine = build_plant()
+    engine = build_standard_plant()
     state = {
         "sim_t": 0.0,
         "rod_command": 0.5,
@@ -350,6 +293,7 @@ def main() -> None:
 
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
+    halt_reason: ModelDomainError | None = None
     try:
         tty.setcbreak(fd)
         sys.stdout.write("\033[?25l")  # hide cursor
@@ -390,17 +334,24 @@ def main() -> None:
                     heater_manual=state["heater_manual"],
                     spray_manual=state["spray_manual"],
                 )
+                # Stop, as the web runtime does, once the state leaves the
+                # model's liquid-loop / saturated-pressurizer domain.
+                check_snapshot(snap)
                 state["buffer"].append(snap)
                 state["sim_t"] = engine.t
                 next_step_time += WALL_TICK_S
                 # Don't drift forward forever if integration runs slow.
                 if next_step_time < time.monotonic():
                     next_step_time = time.monotonic() + WALL_TICK_S
+    except ModelDomainError as err:
+        halt_reason = err
     finally:
         sys.stdout.write("\033[?25h")  # show cursor
         sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
         print("\nExiting interactive console.")
+    if halt_reason is not None:
+        print(f"Model limit reached: {halt_reason} The simulation stopped at t = {state['sim_t']:.1f} s.")
 
 
 if __name__ == "__main__":

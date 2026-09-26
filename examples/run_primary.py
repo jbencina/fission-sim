@@ -1,10 +1,18 @@
-"""Matplotlib driver for the coupled primary plant — wired through SimEngine.
+"""Matplotlib driver for the coupled primary plant — the expanded wiring example.
+
+This is the one example that assembles the plant by hand: every component,
+every operator input, and every wire between them is spelled out in
+``build_plant()`` below, so you can read how the engine graph is put
+together. The other operational examples and the web runtime get the same
+plant from ``fission_sim.plant.build_standard_plant()``;
+``tests/test_examples.py`` checks the two wirings stay identical.
 
 Default scenario:
     t = 0..10   : steady state at design power (rod_command = 0.5)
-    t = 10      : rod_command raised by +0.015 (gradual withdraw, ~1.5 s)
+    t = 10      : rod_command raised 0.5 → 0.675 (+210 pcm; ~17.5 s of rod
+                  motion at 1 %/s)
     t = 10..60  : Doppler AND moderator feedback level power off
-    t = 60      : scram (rod_command_effective forced to 0)
+    t = 60      : scram (control and shutdown banks drop in ~2 s, −7,000 pcm)
     t = 60..300 : delayed-neutron tail; loop water cools
 
 Run:
@@ -25,6 +33,7 @@ from fission_sim.control.pressurizer_controller import (
 from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.domain import check_snapshot
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -35,43 +44,50 @@ from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 def scenario(t: float) -> dict:
     """Operator inputs over time."""
     return {
-        "rod_command": 0.5 if t < 10.0 else 0.515,
+        # +210 pcm: 0.175 of travel × 1,200 pcm control-bank worth.
+        "rod_command": 0.5 if t < 10.0 else 0.675,
         "scram": t >= 60.0,
     }
 
 
-def main() -> None:
-    print_disclaimer()
-    # --- engine setup ---
-    core_params = CoreParams()
+def build_plant(core_params: CoreParams) -> SimEngine:
+    """Wire the standard primary plant by hand and finalize it.
+
+    Same topology as ``fission_sim.plant.build_standard_plant()``.
+    """
     loop_params = LoopParams()
-    sg_params = SGParams()
-    sink_params = SinkParams()
-    rod_params = RodParams()
+    # The pressurizer computes surge flow from the loop's thermal expansion,
+    # so it shares the loop's parameter object.
     pzr_params = PressurizerParams(loop_params=loop_params)
     ctrl_params = PressurizerControllerParams()
 
+    # 1. Register the components. The names become the snapshot keys.
     engine = SimEngine()
-    rod = engine.module(RodController(rod_params), name="rod")
+    rod = engine.module(RodController(RodParams()), name="rod")
     core = engine.module(PointKineticsCore(core_params), name="core")
     loop = engine.module(PrimaryLoop(loop_params), name="loop")
-    sg = engine.module(SteamGenerator(sg_params), name="sg")
-    sink = engine.module(SecondarySink(sink_params), name="sink")
+    sg = engine.module(SteamGenerator(SGParams()), name="sg")
+    sink = engine.module(SecondarySink(SinkParams()), name="sink")
     pzr = engine.module(Pressurizer(pzr_params), name="pzr")
     pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
+    # 2. Declare the operator's inputs (engine externals) with defaults.
+    #    None for the manual overrides means "automatic control".
     rod_cmd = engine.input("rod_command", default=0.5)
     scram = engine.input("scram", default=False)
     P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
     heater_manual = engine.input("heater_manual", default=None)
     spray_manual = engine.input("spray_manual", default=None)
 
+    # 3. Wire outputs to inputs. Calling a module connects its input ports;
+    #    ``module.<port>`` is a handle to one of its outputs. The order of
+    #    these calls does not matter: finalize() sorts the evaluation order.
     rho_rod = rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
     pzr(
-        power_thermal=core.power_thermal,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg_sig,
         T_hotleg=loop.T_hot,
         T_coldleg=loop.T_cold,
@@ -85,12 +101,22 @@ def main() -> None:
         spray_manual=spray_manual,
     )
     loop(
-        power_thermal=core.power_thermal,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg_sig,
         m_dot_spray=pzr_ctrl.m_dot_spray,
         P_primary=pzr.P,
     )
+
+    # 4. Validate the graph (every input connected, no cycles) and allocate
+    #    the state vector.
     engine.finalize()
+    return engine
+
+
+def main() -> None:
+    print_disclaimer()
+    core_params = CoreParams()
+    engine = build_plant(core_params)
 
     # --- integrate ---
     _final_snap, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
@@ -107,6 +133,10 @@ def main() -> None:
     # rod_position): pull them from per-time snapshots. dense.at() with
     # an array argument returns a list of snapshots.
     snaps = dense.at(t)
+    # Stop with an explanation, as the web runtime does, rather than plot
+    # a state outside the model's liquid-loop / saturated-pressurizer domain.
+    for snap in snaps:
+        check_snapshot(snap)
     T_hot = np.array([s["loop"]["T_hot"] for s in snaps])
     T_cold = np.array([s["loop"]["T_cold"] for s in snaps])
     T_avg_arr = (T_hot + T_cold) / 2

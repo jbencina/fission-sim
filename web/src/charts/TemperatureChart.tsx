@@ -4,8 +4,8 @@
  * Shows four series:
  *   - T_hot   (red-400)  — hot-leg coolant, core outlet
  *   - T_cold  (sky-400)  — cold-leg coolant, core inlet
- *   - T_avg   (slate-300) — average primary temperature (control reference)
- *   - T_fuel  (orange-400) — bulk fuel temperature
+ *   - T_avg   (slate-300) — average primary temperature (moderator feedback input)
+ *   - T_fuel  (orange-400) — lumped average fuel temperature
  *
  * All values are in Kelvin (K) as received from the backend.
  */

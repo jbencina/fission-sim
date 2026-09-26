@@ -296,8 +296,8 @@ def test_topological_order_state_derived_before_computed() -> None:
     c(upstream=a.x)
     engine.finalize()
 
-    a_pos = next(i for i, e in enumerate(engine._eval_order) if e == ("output", "a"))
-    c_pos = next(i for i, e in enumerate(engine._eval_order) if e == ("output", "c"))
+    a_pos = engine._eval_order.index(("state_derived", "a"))
+    c_pos = engine._eval_order.index(("computed", "c"))
     assert a_pos < c_pos
 
 
@@ -410,6 +410,162 @@ def test_cycle_error_message_shows_path() -> None:
     msg = str(exc_info.value)
     # The message should mention both modules and use the → arrow:
     assert "m1" in msg and "m2" in msg and "→" in msg
+
+
+class _Sink:
+    """Toy: stateless module that only consumes one input (makes a signal 'wired')."""
+
+    state_size = 0
+    state_labels: tuple = ()
+    input_ports = ("inp",)
+    output_ports = ()
+
+    def initial_state(self):
+        return np.empty(0)
+
+    def derivatives(self, state, inputs=None):
+        return np.empty(0)
+
+    def outputs(self, state, inputs=None):
+        return {}
+
+    def telemetry(self, state, inputs=None):
+        return {}
+
+
+class _Doubler:
+    """Toy computed module: output 'value' = 2 * input 'upstream'.
+
+    Declares no ``outputs_require_inputs``, so the engine infers the kind from
+    its probe: outputs(state) without inputs raises TypeError. Counts those
+    input-less calls so tests can check the engine probes only once, at
+    finalize.
+    """
+
+    state_size = 0
+    state_labels: tuple = ()
+    input_ports = ("upstream",)
+    output_ports = ("value",)
+
+    def __init__(self) -> None:
+        self.calls_without_inputs = 0
+
+    def initial_state(self):
+        return np.empty(0)
+
+    def derivatives(self, state, inputs=None):
+        return np.empty(0)
+
+    def outputs(self, state, inputs=None):
+        if inputs is None:
+            self.calls_without_inputs += 1
+            raise TypeError("_Doubler.outputs requires inputs")
+        return {"value": 2.0 * float(inputs["upstream"])}
+
+    def telemetry(self, state, inputs=None):
+        return {}
+
+
+def test_computed_outputs_not_reprobed_after_finalize() -> None:
+    """The computed/state-derived split is decided once at finalize, not per evaluation."""
+    engine = SimEngine()
+    src = engine.module(_ScalarIntegrator(x0=4.0), name="src")
+    doubler = _Doubler()
+    d = engine.module(doubler, name="d")
+    engine.module(_Sink(), name="snk")(inp=d(upstream=src.x))
+    src(rate=engine.input("rate", default=1.0))
+    engine.finalize()
+    assert doubler.calls_without_inputs == 1
+
+    engine.step(dt=1.0)
+    snap = engine.snapshot()
+    assert snap["signals"]["value"] == pytest.approx(10.0)
+    assert doubler.calls_without_inputs == 1
+
+
+def test_state_derived_typeerror_is_reported_at_finalize() -> None:
+    """An unrelated TypeError inside a state-derived outputs() is a bug, not 'needs inputs'."""
+
+    class _Buggy(_ScalarIntegrator):
+        def outputs(self, state, inputs=None):
+            return {"x": state[0] + None}
+
+    engine = SimEngine()
+    b = engine.module(_Buggy(), name="b")
+    b(rate=engine.input("rate", default=0.0))
+    with pytest.raises(EngineWiringError, match=r"module 'b': outputs\(state\) raised TypeError"):
+        engine.finalize()
+
+
+def test_outputs_require_inputs_declaration_is_honored() -> None:
+    """A declared-computed module gets its inputs even if outputs(state) would succeed.
+
+    Without the declaration, the default-returning branch would make the
+    module look state-derived and 'value' would silently stay 0.0.
+    """
+
+    class _DeclaredDoubler(_Doubler):
+        outputs_require_inputs = True
+
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                return {"value": 0.0}
+            return {"value": 2.0 * float(inputs["upstream"])}
+
+    engine = SimEngine()
+    src = engine.module(_ScalarIntegrator(x0=3.0), name="src")
+    d = engine.module(_DeclaredDoubler(), name="d")
+    engine.module(_Sink(), name="snk")(inp=d(upstream=src.x))
+    src(rate=engine.input("rate", default=0.0))
+    engine.finalize()
+    assert engine.snapshot()["signals"]["value"] == pytest.approx(6.0)
+
+
+def test_signal_from_another_engine_raises() -> None:
+    """A Signal created by a different engine cannot be wired in."""
+    foreign = SimEngine().input("rate", default=9.0)
+    engine = SimEngine()
+    engine.module(_ScalarIntegrator(), name="m")(rate=foreign)
+    with pytest.raises(EngineWiringError, match="input 'rate' .* different SimEngine"):
+        engine.finalize()
+
+
+def test_computed_self_dependency_raises() -> None:
+    """A computed module whose output feeds its own input is an algebraic loop."""
+    engine = SimEngine()
+    d = engine.module(_Doubler(), name="d")
+    d(upstream=d.value)
+    with pytest.raises(EngineWiringError, match="module 'd' input 'upstream' is wired to its own output"):
+        engine.finalize()
+
+
+def test_external_and_module_output_with_same_name_raises() -> None:
+    """snapshot['signals'] is keyed by name, so an external and a wired output cannot share one."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(), name="m")  # output port 'x'
+    m(rate=engine.input("x", default=5.0))
+    engine.module(_Sink(), name="snk")(inp=m.x)
+    with pytest.raises(EngineWiringError, match="'x' is used by both external .* module 'm'"):
+        engine.finalize()
+
+
+class T(_ScalarIntegrator):
+    """Toy whose snake_case class name is the reserved module name 't'."""
+
+
+@pytest.mark.parametrize(
+    ("component", "name", "reserved"),
+    [
+        (_ScalarIntegrator(), "t", "t"),
+        (_ScalarIntegrator(), "signals", "signals"),
+        (T(), None, "t"),  # name derived from the class name
+    ],
+)
+def test_reserved_module_name_raises(component: object, name: str | None, reserved: str) -> None:
+    """'t' and 'signals' are snapshot keys; a module with that name would overwrite them."""
+    engine = SimEngine()
+    with pytest.raises(EngineWiringError, match=f"module name '{reserved}' is reserved"):
+        engine.module(component, name=name)
 
 
 def test_snapshot_initial_state_after_finalize() -> None:
@@ -614,6 +770,27 @@ def test_step_external_default_used_when_missing() -> None:
     engine.finalize()
     snap = engine.step(dt=1.0)
     assert snap["m"]["x"] == pytest.approx(4.0, rel=1e-5)
+
+
+def test_restore_undoes_a_step() -> None:
+    """restore() with a pre-step checkpoint returns t and state to it, so the
+    next step reproduces the undone one (the runtime's model-limit rollback)."""
+    engine = SimEngine()
+    m = engine.module(_ScalarIntegrator(x0=1.0), name="m")
+    rate = engine.input("rate", default=2.0)
+    m(rate=rate)
+    engine.finalize()
+    engine.step(dt=0.5)
+    t0, y0 = engine.t, engine.state.copy()
+    first = engine.step(dt=0.5)
+
+    engine.restore(t0, y0)
+    assert engine.t == t0
+    assert engine.snapshot()["m"]["x"] == pytest.approx(2.0, rel=1e-5)
+    assert engine.step(dt=0.5)["m"]["x"] == pytest.approx(first["m"]["x"], rel=1e-9)
+
+    with pytest.raises(ValueError, match="shape"):
+        engine.restore(t0, np.zeros(2))
 
 
 def test_step_kwarg_overrides_default() -> None:
@@ -855,7 +1032,7 @@ def test_dense_signal_unknown_name_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2 — integration with real physics components (the full M1 plant)
+# Layer 2 — integration with real physics components (the full plant)
 # ---------------------------------------------------------------------------
 
 from fission_sim.control.pressurizer_controller import (  # noqa: E402
@@ -871,7 +1048,7 @@ from fission_sim.physics.steam_generator import SGParams, SteamGenerator  # noqa
 
 
 def _assemble_full_plant() -> tuple[SimEngine, dict]:
-    """Build the M2 plant via the engine: rod, core, loop, sg, sink, pzr, pzr_ctrl."""
+    """Build the full plant via the engine: rod, core, loop, sg, sink, pzr, pzr_ctrl."""
     engine = SimEngine()
     loop_params = LoopParams()
     pzr_params = PressurizerParams(loop_params=loop_params)
@@ -896,7 +1073,7 @@ def _assemble_full_plant() -> tuple[SimEngine, dict]:
     Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
     pzr(
-        power_thermal=core.power_thermal,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg,
         T_hotleg=loop.T_hot,
         T_coldleg=loop.T_cold,
@@ -910,7 +1087,7 @@ def _assemble_full_plant() -> tuple[SimEngine, dict]:
         spray_manual=spray_manual,
     )
     loop(
-        power_thermal=core.power_thermal,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg,
         m_dot_spray=pzr_ctrl.m_dot_spray,
         P_primary=pzr.P,
@@ -928,10 +1105,18 @@ def _assemble_full_plant() -> tuple[SimEngine, dict]:
 
 
 def test_engine_assembles_full_plant() -> None:
-    """The full M2 plant assembles via the engine; state size is 14."""
+    """The full plant assembles via the engine; every module's state is laid out."""
     engine, _modules = _assemble_full_plant()
-    # state_size: rod 1 + core 8 + loop 3 + pzr 2 + pzr_ctrl 0 + sg 0 + sink 0 = 14.
-    assert engine.state.shape == (14,)
+    plant_classes = (
+        RodController,
+        PointKineticsCore,
+        PrimaryLoop,
+        SteamGenerator,
+        SecondarySink,
+        Pressurizer,
+        PressurizerController,
+    )
+    assert engine.state.shape == (sum(cls.state_size for cls in plant_classes),)
 
 
 def test_engine_steady_state_holds() -> None:
@@ -963,128 +1148,83 @@ def test_engine_step_then_run_match_for_full_plant() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Layer 3 — regression: engine output matches legacy hand-coded f(t, y)
+# Layer 3 — independent oracle: engine trajectory vs. a closed-form solution
 # ---------------------------------------------------------------------------
 
 
-def _legacy_f_assemble():
-    """Build the same plant components used elsewhere, then return a
-    callable f(t, y) that does the wiring by hand (the pre-engine approach)
-    plus the solve_ivp solution and helpers to inspect outputs at sampled
-    times.
+def test_engine_run_matches_analytic_closed_loop() -> None:
+    """A mass under a PD controller, wired through the engine, matches expm(A t).
 
-    State layout matches the engine's registration order exactly:
-      y[0:1]  — rod (RodController, state_size=1)
-      y[1:9]  — core (PointKineticsCore, state_size=8)
-      y[9:11] — loop (PrimaryLoop, state_size=2)
-    This is the same order that _assemble_full_plant() uses when it calls
-    engine.module(rod), engine.module(core), engine.module(loop) in that
-    sequence, so the state vectors fed to BDF are identical and the solver
-    takes bit-identical steps.
+    The graph has the same shape as the plant: a stateful module with
+    state-derived outputs (position x, velocity v) and a stateless computed
+    module (the controller) whose output feeds the stateful module's
+    derivatives. The closed loop is linear,
+
+        x'' = -(k/m) (x - x_ref) - (c/m) x',
+
+    so with z = [x - x_ref, v] the exact solution is z(t) = expm(A t) z(0),
+    A = [[0, 1], [-k/m, -c/m]]. That oracle shares no code with the engine.
     """
-    from scipy.integrate import solve_ivp as _legacy_solve_ivp
+    from scipy.linalg import expm
 
-    rod = RodController(RodParams())
-    core = PointKineticsCore(CoreParams())
-    loop = PrimaryLoop(LoopParams())
-    sg = SteamGenerator(SGParams())
-    sink = SecondarySink(SinkParams())
-    # State ordering: rod first, then core, then loop — mirrors engine layout.
-    y0 = np.concatenate([rod.initial_state(), core.initial_state(), loop.initial_state()])
+    mass, k, c, x_ref = 2.0, 8.0, 1.6, 1.0  # ω0 = 2 rad/s, ζ = 0.2 (underdamped)
 
-    def rod_command_fn(t):
-        return 0.5 if t < 10.0 else 0.515
+    class _Mass:
+        state_size = 2
+        state_labels = ("x", "v")
+        input_ports = ("force",)
+        output_ports = ("x", "v")
 
-    def scram_fn(t):
-        return t >= 60.0
+        def initial_state(self):
+            return np.array([0.0, 0.0])
 
-    def f(t, y):
-        # Slice state vector using the same offsets the engine assigns:
-        # rod at 0:1, core at 1:9, loop at 9:11.
-        s_rod = y[0:1]
-        s_core = y[1:9]
-        s_loop = y[9:11]
-        out_sink = sink.outputs(np.empty(0))
-        out_loop = loop.outputs(s_loop)
-        out_sg = sg.outputs(
-            np.empty(0),
-            inputs={"T_avg": out_loop["T_avg"], "T_secondary": out_sink["T_secondary"]},
-        )
-        out_core = core.outputs(s_core)
-        out_rod = rod.outputs(s_rod)
-        dy = np.empty_like(y)
-        dy[0:1] = rod.derivatives(s_rod, inputs={"rod_command": rod_command_fn(t), "scram": scram_fn(t)})
-        dy[1:9] = core.derivatives(
-            s_core,
-            inputs={"rho_rod": out_rod["rho_rod"], "T_cool": out_loop["T_cool"]},
-        )
-        dy[9:11] = loop.derivatives(
-            s_loop,
-            inputs={
-                "power_thermal": out_core["power_thermal"],
-                "Q_sg": out_sg["Q_sg"],
-            },
-        )
-        return dy
+        def derivatives(self, state, inputs):
+            return np.array([state[1], inputs["force"] / mass])
 
-    sol = _legacy_solve_ivp(
-        f,
-        (0.0, 300.0),
-        y0,
-        method="BDF",
-        dense_output=True,
-        rtol=1e-6,
-        atol=1e-9,
-        max_step=0.5,
-    )
-    return sol
+        def outputs(self, state, inputs=None):
+            return {"x": float(state[0]), "v": float(state[1])}
 
+        def telemetry(self, state, inputs=None):
+            return {"x": float(state[0]), "v": float(state[1])}
 
-@pytest.mark.skip(
-    reason="M1 invariant — legacy hand-rolled plant lacks pzr/ctrl wired in M2; "
-    "the engine extraction validation it provided is no longer load-bearing. "
-    "Updating _legacy_f_assemble to mirror M2 plant is out of scope for the M2 slice."
-)
-def test_engine_run_matches_legacy_solve_ivp() -> None:
-    """The engine's trajectories are bit-identical (within tol) to the legacy
-    hand-coded f(t, y).
+    class _PDController:
+        state_size = 0
+        state_labels: tuple = ()
+        input_ports = ("x", "v", "x_ref")
+        output_ports = ("force",)
 
-    This locks in the spec's load-bearing claim: the engine is purely
-    structural — same physics, same tolerances, identical trajectories.
-    """
-    sample_t = np.array([5.0, 30.0, 60.0, 100.0, 300.0])
+        def initial_state(self):
+            return np.empty(0)
 
-    # Legacy.
-    legacy_sol = _legacy_f_assemble()
+        def derivatives(self, state, inputs):
+            return np.empty(0)
 
-    # Engine.
-    engine, _ = _assemble_full_plant()
+        def outputs(self, state, inputs=None):
+            if inputs is None:
+                raise TypeError("_PDController.outputs requires inputs")
+            return {"force": -k * (inputs["x"] - inputs["x_ref"]) - c * inputs["v"]}
 
-    def scenario(t):
-        return {"rod_command": 0.5 if t < 10.0 else 0.515, "scram": t >= 60.0}
+        def telemetry(self, state, inputs=None):
+            return {}
 
-    _, dense = engine.run(t_end=300.0, scenario_fn=scenario, dense=True)
+    engine = SimEngine()
+    plant = engine.module(_Mass(), name="plant")
+    ctrl = engine.module(_PDController(), name="ctrl")
+    force = ctrl(x=plant.x, v=plant.v, x_ref=engine.input("x_ref", default=x_ref))
+    plant(force=force)
+    _, dense = engine.run(t_end=10.0, dense=True)
 
-    # Compare core neutron population n and key thermal/rod state at each sample.
-    for ti in sample_t:
-        legacy_y = legacy_sol.sol(ti)
-        # Indices match _legacy_f_assemble state layout: rod=0, core=1:9, loop=9:11.
-        legacy_rod_pos = legacy_y[0]
-        legacy_n = legacy_y[1]
-        legacy_T_hot = legacy_y[9]
-        legacy_T_cold = legacy_y[10]
+    A = np.array([[0.0, 1.0], [-k / mass, -c / mass]])
+    z0 = np.array([0.0 - x_ref, 0.0])
+    ts = np.array([0.5, 1.7, 3.0, 6.0, 10.0])
+    exact = np.array([expm(A * t) @ z0 for t in ts])
+    exact_x, exact_v = exact[:, 0] + x_ref, exact[:, 1]
 
-        engine_snap = dense.at(float(ti))
-        engine_n = engine_snap["core"]["n"]
-        engine_T_hot = engine_snap["loop"]["T_hot"]
-        engine_T_cold = engine_snap["loop"]["T_cold"]
-        engine_rod_pos = engine_snap["rod"]["rod_position"]
-
-        # Tight tolerance: 1e-9 relative (well below solver tolerance).
-        # Identical f(t, y) should produce identical sol.y up to FP precision;
-        # any ordering differences in dict iteration could introduce tiny
-        # ULP-level diffs, hence not 0.0 exactly.
-        assert engine_n == pytest.approx(legacy_n, rel=1e-9, abs=1e-12)
-        assert engine_T_hot == pytest.approx(legacy_T_hot, rel=1e-9, abs=1e-12)
-        assert engine_T_cold == pytest.approx(legacy_T_cold, rel=1e-9, abs=1e-12)
-        assert engine_rod_pos == pytest.approx(legacy_rod_pos, rel=1e-9, abs=1e-12)
+    # Solver tolerances are rtol=1e-6, atol=1e-9 per step; 1e-4 absolute on
+    # O(1) quantities leaves room for accumulated global error.
+    for t, x, v in zip(ts, exact_x, exact_v):
+        snap = dense.at(float(t))
+        assert snap["plant"]["x"] == pytest.approx(x, abs=1e-4)
+        assert snap["plant"]["v"] == pytest.approx(v, abs=1e-4)
+    # The computed signal seen by the integrator is also what dense output reports.
+    np.testing.assert_allclose(dense.signal("force", ts), -k * (exact_x - x_ref) - c * exact_v, atol=1e-3)

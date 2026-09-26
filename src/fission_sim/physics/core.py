@@ -1,10 +1,11 @@
-"""Point kinetics reactor core — fidelity level L1.
+"""Point kinetics reactor core — the simplest (lumped, zero-dimensional) model.
 
 Models a PWR core as a single point (no spatial detail). Tracks neutron
 population, six delayed neutron precursor groups, and a single lumped fuel
 temperature. Provides Doppler and moderator temperature feedback.
 
-Physics specification: see ``.docs/design.md`` §5.1.
+The README's "Educational Component Guide" and "Equations" sections explain
+this model for learners.
 
 References
 ----------
@@ -43,7 +44,7 @@ import numpy as np
 class CoreParams:
     """Physical and design parameters for a point-kinetics PWR core.
 
-    All fields have L1 placeholder defaults representative of a generic large
+    All fields have illustrative defaults representative of a generic large
     U-235 PWR (~3000 MWth). Values are illustrative and chosen so that the
     design steady state is self-consistent (see ``__post_init__``).
 
@@ -148,15 +149,23 @@ class CoreParams:
     alpha_f: float = -2.5e-5  # [1/K]
 
     # Moderator temperature coefficient — change in reactivity per unit
-    # coolant temperature change. Negative for a properly-designed PWR at
-    # hot full power because hotter water is less dense and moderates
-    # neutrons less effectively, reducing reactivity.
-    # SIMPLIFICATION: real PWRs can have α_m positive at low boron
-    # concentrations or beginning-of-cycle low-power conditions; operators
-    # confirm α_m is negative before low-power testing (a Tech Spec
-    # requirement). At L1 we model only the hot-full-power negative regime.
-    # Source: Duderstadt & Hamilton §6.5; published PWR range -1 to
-    # -5×10⁻⁵ /K at hot full power.
+    # coolant temperature change. Negative for a PWR at hot full power
+    # because hotter water is less dense and moderates neutrons less
+    # effectively, reducing reactivity.
+    # SIMPLIFICATION: one constant, negative coefficient. The real value
+    # depends strongly on soluble-boron concentration and burnup. A HIGH
+    # boron concentration (typical of beginning of cycle) makes the
+    # coefficient less negative and can make it positive at low
+    # temperature, because hotter, less dense water also carries less
+    # dissolved boron absorber (IAEA NS-G-1.12, Appendix I.4–I.5). This
+    # model represents only one hot-full-power operating point.
+    # Magnitude: hot-full-power values are commonly quoted on the order of
+    # −5 to −30 pcm/°F, i.e. about −1×10⁻⁴ to −5×10⁻⁴ /K, becoming more
+    # negative as boron is diluted over the cycle (Duderstadt & Hamilton
+    # §6.5 for the physics; plant-specific values are in each FSAR
+    # Chapter 4). −5×10⁻⁵ /K (−2.8 pcm/°F) is weaker than that range: it
+    # represents a weak, high-boron beginning-of-cycle core and keeps the
+    # moderator feedback modest relative to Doppler.
     alpha_m: float = -5.0e-5  # [1/K]
 
     # Reference temperatures: Doppler and moderator feedback contribute
@@ -167,8 +176,9 @@ class CoreParams:
     # ~1100 K (Fink 2000, J. Nucl. Mater. 279; Todreas & Kazimi §8.5).
     # SIMPLIFICATION: the *Doppler-effective* fuel temperature (flux-
     # weighted, typically 0.7·T_centerline + 0.3·T_surface ≈ 1200-1400 K)
-    # is what physically drives Doppler. At L1 we use the volume-average;
-    # L2 multi-region fuel models would split centerline / surface.
+    # is what physically drives Doppler. This lumped model uses the
+    # volume-average; a higher-fidelity multi-region fuel model would split
+    # centerline / surface.
     T_fuel_ref: float = 1100.0  # [K] (~827 °C volume-averaged fuel temp)
     T_cool_ref: float = 583.0  # [K] (~310 °C; matches loop's T_avg_ref)
 
@@ -212,7 +222,7 @@ class CoreParams:
 
 
 class PointKineticsCore:
-    """Point-kinetics PWR core (L1 fidelity).
+    """Point-kinetics PWR core (lumped, zero-dimensional).
 
     Implements the standard point kinetics equations with six delayed
     neutron groups, a single lumped fuel temperature, and Doppler +
@@ -220,23 +230,43 @@ class PointKineticsCore:
 
     The class owns its parameters and equations. It does NOT own
     time-evolving state. State lives in a numpy array passed in by the
-    caller (a driver script for now, the simulation engine eventually).
+    caller (the simulation engine, or a driver script that integrates the
+    core on its own).
     Every method that needs current-state numbers takes them as an
     argument.
 
     Ports in (passed to ``derivatives()`` via the ``inputs`` dict):
         rho_rod : float [dimensionless]
-            Reactivity contribution from control rods. In a real plant,
-            this comes from the rod controller component.
+            Reactivity contribution from control rods. In the coupled
+            plant, this comes from the rod controller component.
         T_cool : float [K]
-            Coolant temperature seen by the core. In a real plant, this
-            comes from the primary loop.
+            Coolant temperature seen by the core. In the coupled plant,
+            this comes from the primary loop.
 
-    Ports out (returned by ``outputs()``):
+    Ports out (returned by ``outputs(state, inputs)``):
         power_thermal : float [W]
-            Core thermal power, ``n * P_design``.
+            Fission power, ``n * P_design``. This is the heat *generated*
+            in the fuel. It is not the heat delivered to the coolant.
         T_fuel : float [K]
             Average fuel temperature.
+        Q_fuel_to_coolant : float [W]
+            Heat actually *leaving* the fuel into the coolant,
+            ``hA_fc * (T_fuel - T_cool)``. This, not ``power_thermal``, is
+            the heat source for the primary loop and the pressurizer surge
+            calculation. The two are equal only at steady state; during a
+            transient the difference is the rate of change of heat stored
+            in the fuel (after a SCRAM, fission power falls to about a
+            tenth of design within ~1 s while stored fuel heat keeps
+            flowing to the coolant for several ~5 s fuel time constants).
+
+    Because ``Q_fuel_to_coolant`` depends on the coolant temperature,
+    ``outputs()`` needs ``inputs`` (like ``SteamGenerator``): the class
+    declares ``outputs_require_inputs = True`` and calling ``outputs()``
+    without inputs raises ``TypeError``, so the engine evaluates the core
+    after the state-derived modules (the loop, which supplies ``T_cool``,
+    and the rod controller, which supplies ``rho_rod``). The loop and the
+    pressurizer consume ``Q_fuel_to_coolant`` only in ``derivatives()``, so
+    no algebraic loop is formed.
 
     State vector (length ``state_size`` = 8, names in ``state_labels``):
         index 0     : n        — neutron population [dimensionless,
@@ -272,7 +302,10 @@ class PointKineticsCore:
     )
 
     input_ports: tuple[str, ...] = ("rho_rod", "T_cool")
-    output_ports: tuple[str, ...] = ("power_thermal", "T_fuel")
+    output_ports: tuple[str, ...] = ("power_thermal", "T_fuel", "Q_fuel_to_coolant")
+    # Declares to the engine that outputs() needs inputs (T_cool), so it is
+    # evaluated after the modules that supply them instead of being probed.
+    outputs_require_inputs: bool = True
 
     def __init__(self, params: CoreParams) -> None:
         """Construct a core with the given parameters.
@@ -344,7 +377,7 @@ class PointKineticsCore:
 
         Notes
         -----
-        Equations (see ``.docs/design.md`` §5.1 and Lamarsh §7):
+        Equations (README "Equations" section; Lamarsh §7):
 
             dn/dt    = ((rho - beta) / Lambda) * n  +  sum_i lambda_i * C_i
             dC_i/dt  = (beta_i / Lambda) * n  -  lambda_i * C_i
@@ -397,11 +430,12 @@ class PointKineticsCore:
 
         # --- fuel thermal energy balance (single lumped node) ---
         # SIMPLIFICATION: lumped fuel temperature. Real fuel pellets have a
-        # large radial gradient (centerline can be ~1500 K hotter than the
-        # surface). One average T_fuel loses that detail; sufficient for
+        # large radial gradient (centerline ~1500-2000 K vs surface ~700 K
+        # at full power; see CoreParams.T_fuel_ref). One average T_fuel
+        # loses that detail; sufficient for
         # bulk dynamics but not for predicting fuel failure.
         P_thermal = n * p.P_design
-        Q_to_coolant = p.hA_fc * (T_fuel - T_cool)
+        Q_to_coolant = self._fuel_to_coolant_heat(T_fuel, T_cool)
         dT_fuel_dt = (P_thermal - Q_to_coolant) / (p.M_fuel * p.c_p_fuel)
 
         # --- assemble derivative vector matching state layout ---
@@ -410,6 +444,18 @@ class PointKineticsCore:
         dstate[1:7] = dC_dt
         dstate[7] = dT_fuel_dt
         return dstate
+
+    def _fuel_to_coolant_heat(self, T_fuel: float, T_cool: float) -> float:
+        """Heat flow from the lumped fuel node to the coolant [W].
+
+        ``Q_fc = hA_fc * (T_fuel - T_cool)`` (Newton's law of cooling on
+        the lumped fuel-to-coolant conductance; Todreas & Kazimi Vol. 1
+        Ch. 8 for the fuel-rod thermal resistances it lumps). One helper
+        so ``derivatives()`` (fuel energy balance) and ``outputs()`` (heat
+        delivered to the loop) can never disagree: whatever leaves the
+        fuel is exactly what the coolant receives.
+        """
+        return self.params.hA_fc * (T_fuel - T_cool)
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
         """Return the values consumed by downstream components.
@@ -421,19 +467,31 @@ class PointKineticsCore:
         Parameters
         ----------
         state : np.ndarray, shape (8,)
-        inputs : dict, optional
-            Unused for this component (the core's outputs depend only on
-            state). Accepted for API uniformity with components whose
-            outputs depend on inputs (e.g. ``SteamGenerator``).
+        inputs : dict
+            Required key ``T_cool`` [K] (``rho_rod`` may also be present;
+            it is ignored here). Needed because the heat leaving the fuel
+            depends on the coolant temperature.
 
         Returns
         -------
         dict
-            ``{"power_thermal": float [W], "T_fuel": float [K]}``
+            ``{"power_thermal": float [W], "T_fuel": float [K],
+            "Q_fuel_to_coolant": float [W]}``
+
+        Raises
+        ------
+        TypeError
+            If ``inputs`` is None. This is how the engine learns that the
+            core's outputs are computed from inputs (see the class
+            docstring).
         """
+        if inputs is None:
+            raise TypeError("PointKineticsCore.outputs requires `inputs` with T_cool")
+        T_fuel = state[7]
         return {
             "power_thermal": state[0] * self.params.P_design,
-            "T_fuel": state[7],
+            "T_fuel": T_fuel,
+            "Q_fuel_to_coolant": self._fuel_to_coolant_heat(T_fuel, inputs["T_cool"]),
         }
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
@@ -449,16 +507,17 @@ class PointKineticsCore:
         inputs : dict, optional
             If provided (with the same keys as ``derivatives``), the
             input-dependent reactivity components are computed. If
-            omitted, ``rho_rod``, ``rho_moderator``, and ``rho_total`` are
-            reported as ``None``; ``rho_doppler`` is always computed
-            because it depends only on state.
+            omitted, ``rho_rod``, ``rho_moderator``, ``rho_total`` and
+            ``Q_fuel_to_coolant`` are reported as ``None``;
+            ``rho_doppler`` is always computed because it depends only on
+            state.
 
         Returns
         -------
         dict
-            Keys: ``power_thermal``, ``T_fuel``, ``n``, ``C1``..``C6``,
-            ``rho_total``, ``rho_rod``, ``rho_doppler``, ``rho_moderator``,
-            ``startup_rate_dpm``. The startup rate is ``None`` when
+            Keys: ``power_thermal``, ``T_fuel``, ``Q_fuel_to_coolant``,
+            ``n``, ``C1``..``C6``, ``rho_total``, ``rho_rod``,
+            ``rho_doppler``, ``rho_moderator``, ``startup_rate_dpm``. The startup rate is ``None`` when
             ``inputs`` is omitted (it depends on dn/dt which needs
             ``rho_rod`` and ``T_cool``).
         """
@@ -474,6 +533,7 @@ class PointKineticsCore:
             rho_rod = inputs["rho_rod"]
             rho_moderator = p.alpha_m * (inputs["T_cool"] - p.T_cool_ref)
             rho_total = rho_rod + rho_doppler + rho_moderator
+            Q_fuel_to_coolant = self._fuel_to_coolant_heat(T_fuel, inputs["T_cool"])
             # Startup rate in decades-per-minute (DPM) — what an operator
             # watches on the intermediate-range startup-rate meter during
             # cold-startup approach to criticality. SUR = (1/n)·dn/dt
@@ -492,10 +552,12 @@ class PointKineticsCore:
             rho_moderator = None
             rho_total = None
             startup_rate_dpm = None
+            Q_fuel_to_coolant = None
 
         return {
             "power_thermal": n * p.P_design,
             "T_fuel": T_fuel,
+            "Q_fuel_to_coolant": Q_fuel_to_coolant,
             "n": n,
             "C1": state[1],
             "C2": state[2],

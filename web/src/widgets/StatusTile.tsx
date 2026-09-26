@@ -2,10 +2,16 @@
  * StatusTile — a single telemetry readout card with an educational tooltip.
  *
  * Renders a dark, rounded card showing:
- *   - A small label row (top-left: field name, top-right: info icon)
+ *   - A small label row (top-left: field name, top-right: info button)
  *   - A large primary value with unit suffix
  *   - An optional secondary value line (e.g., Celsius alongside Kelvin)
- *   - A CSS-only tooltip (no runtime dep) triggered on group-hover
+ *   - An educational tooltip (no runtime dep)
+ *
+ * The explanation is the point of the tile for a learner, so it is reachable
+ * three ways: hovering the tile, focusing the info button with the keyboard,
+ * or clicking/tapping the info button (which pins it open until tapped
+ * again, Escape, a tap elsewhere, or focus moving off the button). The button is linked to the tooltip
+ * with aria-describedby so screen readers read the explanation on focus.
  *
  * The tooltip is positioned below the tile and uses z-50 so it overlays
  * charts and neighbouring tiles.
@@ -13,7 +19,7 @@
  * @module StatusTile
  */
 
-import type { FC } from 'react'
+import { type FC, useEffect, useId, useRef, useState } from 'react'
 import type { TooltipEntry } from './tooltips'
 
 // ---------------------------------------------------------------------------
@@ -33,7 +39,8 @@ const BAND_CLASSES: Record<'green' | 'amber' | 'red', { border: string; value: s
 
 /**
  * Small inline "ⓘ" SVG icon. Rendered at 14×14 px.
- * Aria-hidden because the tooltip text is the accessible description.
+ * Aria-hidden because it is decorative: the surrounding button carries the
+ * accessible name, and the tooltip is linked to it as the description.
  */
 const InfoIcon: FC = () => (
   <svg
@@ -90,7 +97,7 @@ export interface StatusTileProps {
 /**
  * StatusTile
  *
- * A single readout card with CSS-only hover tooltip.
+ * A single readout card with a hover / focus / tap tooltip.
  *
  * Props:
  *   tooltip     — `{ title, body, units }` from tooltips.ts
@@ -102,25 +109,60 @@ export interface StatusTileProps {
 const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'green', tooltipSide = 'left', 'data-testid': testId }) => {
   const { border, value: valueClass } = BAND_CLASSES[band]
 
+  // Unique id linking the info button to its tooltip (aria-describedby).
+  const tooltipId = useId()
+  // True while the explanation is pinned open by a click or tap.
+  const [pinned, setPinned] = useState(false)
+  const tileRef = useRef<HTMLDivElement>(null)
+
+  // A pinned tooltip closes when focus leaves the info button (onBlur below),
+  // so Tab-ing onward never leaves a trail of open tooltips. Touch browsers
+  // (notably Safari) do not always focus a tapped button, so blur alone is
+  // not enough: a tap or click anywhere outside the tile also closes it.
+  useEffect(() => {
+    if (!pinned) return
+    const closeIfOutside = (e: PointerEvent) => {
+      if (!tileRef.current?.contains(e.target as Node)) setPinned(false)
+    }
+    document.addEventListener('pointerdown', closeIfOutside)
+    return () => document.removeEventListener('pointerdown', closeIfOutside)
+  }, [pinned])
+
   return (
     /*
-     * `group` enables CSS sibling/child selectors driven by hover state.
-     * The tooltip child uses `group-hover:opacity-100` to appear on tile hover.
-     * `relative` establishes the positioning context for the tooltip.
+     * `group` lets the tooltip react to state on the whole tile: hovering the
+     * tile (`group-hover`) or keyboard focus on the info button
+     * (`group-has-[:focus-visible]`). `relative` establishes the positioning
+     * context for the tooltip.
      */
     <div
+      ref={tileRef}
       className={`group relative rounded-2xl bg-slate-900 border ${border} p-4 flex flex-col gap-1 cursor-default transition-colors`}
       data-testid={testId}
     >
-      {/* ── Top row: label + info icon ─────────────────────────────────────── */}
+      {/* ── Top row: label + info button ───────────────────────────────────── */}
       <div className="flex items-center justify-between gap-1">
         <span className="text-xs text-slate-400 uppercase tracking-wide font-medium leading-none">
           {tooltip.title}
         </span>
-        {/* Info icon — colour transitions to indicate interactivity */}
-        <span className="text-slate-500 group-hover:text-slate-300 transition-colors shrink-0">
+        {/*
+         * Info button — a real focusable control so keyboard and touch users
+         * can reach the explanation. The negative margin enlarges the tap
+         * target without moving the icon.
+         */}
+        <button
+          type="button"
+          aria-label={`About ${tooltip.title}`}
+          aria-describedby={tooltipId}
+          onClick={() => setPinned((p) => !p)}
+          onBlur={() => setPinned(false)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setPinned(false)
+          }}
+          className="-m-1 p-1 rounded-full text-slate-500 group-hover:text-slate-300 focus-visible:text-slate-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 transition-colors shrink-0"
+        >
           <InfoIcon />
-        </span>
+        </button>
       </div>
 
       {/* ── Primary value + unit ───────────────────────────────────────────── */}
@@ -141,10 +183,12 @@ const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'gr
         <span className="text-xs text-slate-500 font-mono leading-none">{secondary}</span>
       )}
 
-      {/* ── CSS-only tooltip ───────────────────────────────────────────────── */}
+      {/* ── Tooltip ────────────────────────────────────────────────────────── */}
       {/*
        * Positioned absolutely below the tile.
-       * opacity-0 by default; transitions to opacity-100 on `group-hover`.
+       * opacity-0 by default; opacity-100 on tile hover, on keyboard focus of
+       * the info button, or while pinned by a click/tap. It stays in the
+       * accessibility tree when transparent, so aria-describedby always works.
        * pointer-events-none so it never intercepts clicks.
        * z-50 ensures it floats above charts and neighbouring tiles.
        * min-w-[16rem] / max-w-xs keeps copy readable without overflow.
@@ -154,20 +198,23 @@ const StatusTile: FC<StatusTileProps> = ({ tooltip, value, secondary, band = 'gr
        *             For left-column tiles; plenty of space to the right.
        *   'right' → right-0 — tooltip extends leftward from the tile's right edge.
        *             For right-column tiles near the viewport edge; extends inward
-       *             so the tooltip never pushes document.body.scrollWidth past
-       *             window.innerWidth (fixes DEF-02 on 1280 px viewports).
+       *             so the tooltip never makes the page wider than the window
+       *             (which would add a horizontal scrollbar at 1280 px).
        *
        * NOTE: Tailwind purges class names that are only constructed dynamically.
-       * These two strings must appear verbatim (not concatenated at runtime) so
-       * the Tailwind scanner includes them in the output CSS bundle.
+       * These class strings must appear verbatim (not concatenated at runtime)
+       * so the Tailwind scanner includes them in the output CSS bundle.
        */}
       <div
+        id={tooltipId}
         className={[
           `absolute ${tooltipSide === 'right' ? 'right-0' : 'left-0'} top-[calc(100%+6px)]`,
           'z-50 min-w-[16rem] max-w-xs',
           'bg-slate-950 border border-slate-700 rounded-lg p-3',
           'text-xs text-slate-200 shadow-lg',
-          'opacity-0 group-hover:opacity-100',
+          pinned
+            ? 'opacity-100'
+            : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100',
           'transition-opacity duration-150',
           'pointer-events-none',
         ].join(' ')}

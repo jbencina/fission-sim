@@ -11,10 +11,18 @@
  * Uses exponential backoff starting at 500 ms and doubling up to 5000 ms.
  * The backoff resets to 500 ms on each successful connection open. Calling
  * the returned `close()` function disables reconnection and closes cleanly.
+ *
+ * Errors
+ * ------
+ * Server error envelopes are reported with source 'server'; socket failures
+ * with source 'connection'. Error events from a socket this client has
+ * already abandoned are ignored: closing a socket that is still connecting
+ * makes the browser fire `error`, and React StrictMode (main.tsx) mounts,
+ * unmounts, and remounts App in development, which does exactly that.
  */
 
 import { isFrame } from '../types/telemetry';
-import type { Command, ConnectionStatus, Frame } from '../types/telemetry';
+import type { AppErrorSource, Command, ConnectionStatus, Frame } from '../types/telemetry';
 
 /** Minimum reconnect delay [ms]. */
 const BACKOFF_MIN_MS = 500;
@@ -49,14 +57,15 @@ export interface TelemetryClient {
  *
  * @param onFrame   - Called with each valid Frame received from the server.
  * @param onStatus  - Called whenever the connection state changes.
- * @param onError   - Called with an error description string on error events
- *                    or when the server sends `{"type": "error", ...}`.
+ * @param onError   - Called with a source and message when the server sends
+ *                    `{"type": "error", "detail": ...}` ('server') or the live
+ *                    socket reports an error ('connection').
  * @returns         TelemetryClient with `send` and `close` methods.
  */
 export function connectTelemetry(
   onFrame: (f: Frame) => void,
   onStatus: (s: ConnectionStatus) => void,
-  onError: (e: string) => void,
+  onError: (source: AppErrorSource, message: string) => void,
 ): TelemetryClient {
   // Whether the caller has requested a permanent close (no more reconnects).
   let destroyed = false;
@@ -117,7 +126,7 @@ export function connectTelemetry(
         (parsed as Record<string, unknown>)['type'] === 'error'
       ) {
         const detail = (parsed as Record<string, unknown>)['detail'];
-        onError(typeof detail === 'string' ? detail : 'Unknown server error');
+        onError('server', typeof detail === 'string' ? detail : 'Unknown server error');
         return;
       }
 
@@ -140,8 +149,12 @@ export function connectTelemetry(
     };
 
     ws.onerror = () => {
+      // Ignore sockets we closed or replaced ourselves (see "Errors" above).
+      if (destroyed || socket !== ws) return;
       // onerror fires before onclose; actual reconnect is scheduled in onclose.
-      onError('WebSocket error — will reconnect');
+      // Worded to be true both for a dropped connection and for a backend
+      // that was never reachable (e.g. not started yet).
+      onError('connection', 'Cannot reach the simulator backend. Retrying…');
     };
 
     ws.onclose = () => {

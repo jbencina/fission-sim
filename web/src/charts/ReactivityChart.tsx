@@ -2,13 +2,14 @@
  * ReactivityChart — real-time line chart of reactivity components.
  *
  * Shows four series converted from dimensionless to pcm (× 1e5):
- *   - rho_rod       (amber-400) — control rod worth
+ *   - rho_rod       (amber-400) — rod reactivity, control + shutdown banks
  *   - rho_doppler   (red-400)   — Doppler (fuel temperature) feedback
  *   - rho_moderator (sky-400)   — moderator temperature feedback
  *   - rho_total     (slate-100, stroke-2) — net reactivity
  *
  * A reactor is exactly critical when rho_total = 0 pcm.
- * Negative values mean net shutdown reactivity is being added (power falling).
+ * Negative values mean the core is subcritical (power falling); positive
+ * values mean it is supercritical (power rising).
  */
 
 import { useMemo, type FC } from 'react'

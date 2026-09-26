@@ -1,11 +1,13 @@
 """Standalone driver for the PointKineticsCore.
 
-Throwaway script. Drives the core's real public API while faking the
-two upstream input sources (rod controller and primary loop) with plain
-Python functions of time.
+Drives the core on its own, through its public API, with the two upstream
+inputs (rod reactivity and coolant temperature) supplied by plain Python
+functions of time instead of the rod controller and primary loop. The
+coolant stays at the core's reference temperature, so only Doppler
+feedback acts; ``run_primary.py`` shows the core coupled to the full plant.
 
 Default scenario:
-    t = 0..10   : steady state at design power
+    t = 0..10   : steady state at design power (every derivative is zero)
     t = 10      : +200 pcm rod step
     t = 10..60  : Doppler feedback levels power off
     t = 60      : scram (-7000 pcm)
@@ -28,8 +30,8 @@ from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
 # ---------------------------------------------------------------------------
-# Faked upstream input sources. In the real plant these come from the rod
-# controller and primary loop components. Here they are hand-coded.
+# Hand-coded input sources. In the coupled plant these come from the rod
+# controller and the primary loop.
 # ---------------------------------------------------------------------------
 def rod_reactivity_fn(t: float) -> float:
     """Piecewise rod reactivity schedule [dimensionless]."""
@@ -40,14 +42,16 @@ def rod_reactivity_fn(t: float) -> float:
     return -7000e-5  # scram
 
 
-def T_cool_fn(t: float, T_ref: float = 580.0) -> float:
-    """Constant coolant temperature [K].
+def T_cool_fn(t: float, params: CoreParams) -> float:
+    """Constant coolant temperature [K], held at ``params.T_cool_ref``.
 
-    Swap this for a toy first-order lag if you want to see coupled
-    moderator feedback (when the primary loop component arrives, this
-    function disappears entirely).
+    ``T_cool_ref`` is the coolant temperature at which moderator reactivity
+    is zero and the design heat balance closes, so holding the coolant there
+    keeps the design initial state in equilibrium until the rod moves. Any
+    other constant would add moderator reactivity at t = 0. Swap this for a
+    first-order lag toward a new temperature to see moderator feedback.
     """
-    return T_ref
+    return params.T_cool_ref
 
 
 def main() -> None:
@@ -61,7 +65,7 @@ def main() -> None:
             y,
             {
                 "rho_rod": rod_reactivity_fn(t),
-                "T_cool": T_cool_fn(t),
+                "T_cool": T_cool_fn(t, params),
             },
         )
 
@@ -90,7 +94,7 @@ def main() -> None:
     # Reactivity components (vectorized over t)
     rho_rod = np.array([rod_reactivity_fn(ti) for ti in t])
     rho_doppler = params.alpha_f * (T_fuel - params.T_fuel_ref)
-    T_cool = np.array([T_cool_fn(ti) for ti in t])
+    T_cool = np.array([T_cool_fn(ti, params) for ti in t])
     rho_mod = params.alpha_m * (T_cool - params.T_cool_ref)
     rho_total = rho_rod + rho_doppler + rho_mod
 

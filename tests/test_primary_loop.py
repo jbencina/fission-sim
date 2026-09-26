@@ -15,7 +15,7 @@ from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 
 
 def default_params() -> LoopParams:
-    """Return the project-wide default L1 loop parameter set."""
+    """Return the project-wide default loop parameter set."""
     return LoopParams()
 
 
@@ -33,9 +33,48 @@ def test_loop_params_has_V_loop_and_beta_T_defaults():
     p = default_params()
     assert p.V_loop == 175.0
     assert 3.0e-3 < p.beta_T_primary < 3.5e-3
-    # M_loop_initial is physical liquid inventory, not thermal inertia.
+    # M_loop_initial is the physical liquid inventory of V_loop.
     rho_avg = coolprop.density_PT(P=p.P_ref, T=p.T_avg_ref)
     assert p.M_loop_initial == pytest.approx(p.V_loop * rho_avg)
+
+
+def test_thermal_masses_default_to_the_represented_inventory():
+    """T_hot/T_cold represent the whole inventory whose volume V_loop drives
+    surge, so by default the two thermal masses are its two halves
+    (review findings A3/A9). A 30 t "effective" mass would make the loop
+    respond ~4x faster than the water it represents."""
+    p = default_params()
+    assert p.M_hot == pytest.approx(p.M_cold)
+    assert p.M_hot + p.M_cold == pytest.approx(p.M_loop_initial)
+    assert p.M_hot + p.M_cold > 1.0e5  # ~123 t of water at 175 m³
+
+
+def test_surge_follows_stored_energy_not_arithmetic_mean():
+    """Surge is driven by the mass-weighted mean temperature (net stored
+    energy), not by the published arithmetic T_avg (review finding A7).
+
+    With unequal leg masses, a hot leg 1 K above reference and balanced
+    heat flows only redistributes energy between the legs: the arithmetic
+    T_avg moves, but total stored energy — and so net thermal expansion —
+    does not. The correct surge is zero.
+    """
+    p = LoopParams(M_hot=10000.0, M_cold=20000.0)
+    loop = PrimaryLoop(p)
+    s = loop.initial_state()
+    s[0] += 1.0
+    d = loop.derivatives(
+        s, {"Q_fuel_to_coolant": p.Q_design, "Q_sg": p.Q_design, "m_dot_spray": 0.0, "P_primary": 1.55e7}
+    )
+    assert (d[0] + d[1]) / 2 < -0.1  # arithmetic T_avg is falling
+    assert p.M_hot * d[0] + p.M_cold * d[1] == pytest.approx(0.0, abs=1e-9)  # stored energy is not
+    assert d[2] == 0.0  # so no surge
+
+
+def test_explicit_thermal_masses_override_derived():
+    p = LoopParams(M_hot=10000.0, M_cold=20000.0)
+    assert (p.M_hot, p.M_cold) == (10000.0, 20000.0)
+    # The inventory itself is still derived from V_loop.
+    assert p.M_loop_initial > 1.0e5
 
 
 def test_loop_params_explicit_M_loop_initial_overrides_derived():
@@ -51,7 +90,7 @@ def test_state_layout_indices():
 
 def test_input_ports_include_m_dot_spray_and_P_primary():
     loop = PrimaryLoop(default_params())
-    assert loop.input_ports == ("power_thermal", "Q_sg", "m_dot_spray", "P_primary")
+    assert loop.input_ports == ("Q_fuel_to_coolant", "Q_sg", "m_dot_spray", "P_primary")
 
 
 def test_initial_state_is_design_steady_state():
@@ -76,7 +115,7 @@ def _design_inputs(p: LoopParams) -> dict:
     affect the zero result since surge_volume_rate is 0 at balance.
     """
     return {
-        "power_thermal": p.Q_design,
+        "Q_fuel_to_coolant": p.Q_design,
         "Q_sg": p.Q_design,
         "m_dot_spray": 0.0,
         "P_primary": 1.55e7,  # design pressure [Pa] — for surge ρ branching
@@ -95,7 +134,7 @@ def test_more_q_core_heats_hot_leg():
     """Q_core > Q_flow at design state should produce dT_hot/dt > 0."""
     p = default_params()
     loop = PrimaryLoop(p)
-    inputs = _design_inputs(p) | {"power_thermal": 1.1 * p.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 1.1 * p.Q_design}
     dstate = loop.derivatives(loop.initial_state(), inputs)
     assert dstate[0] > 0  # dT_hot/dt > 0
 
@@ -118,7 +157,7 @@ def test_power_excess_drains_loop_mass():
     """
     p = default_params()
     loop = PrimaryLoop(p)
-    inputs = _design_inputs(p) | {"power_thermal": 1.05 * p.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 1.05 * p.Q_design}
     dstate = loop.derivatives(loop.initial_state(), inputs)
     assert dstate[2] < 0
 
@@ -131,7 +170,7 @@ def test_power_deficit_grows_loop_mass():
     """
     p = default_params()
     loop = PrimaryLoop(p)
-    inputs = _design_inputs(p) | {"power_thermal": 0.95 * p.Q_design}
+    inputs = _design_inputs(p) | {"Q_fuel_to_coolant": 0.95 * p.Q_design}
     dstate = loop.derivatives(loop.initial_state(), inputs)
     assert dstate[2] > 0
 
@@ -159,7 +198,7 @@ def test_outputs_at_design_state():
     assert out["T_hot"] == pytest.approx(p.T_hot_ref)
     assert out["T_cold"] == pytest.approx(p.T_cold_ref)
     assert out["T_avg"] == pytest.approx(p.T_avg_ref)
-    assert out["T_cool"] == pytest.approx(p.T_avg_ref)  # T_cool == T_avg at L1
+    assert out["T_cool"] == pytest.approx(p.T_avg_ref)  # T_cool == T_avg in the lumped model
 
 
 def test_outputs_t_avg_and_t_cool_track_state():
@@ -180,7 +219,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
     loop = PrimaryLoop(p)
     # State is now shape (3,): [T_hot, T_cold, M_loop]
     s = np.array([600.0, 570.0, p.M_loop_initial])
-    inputs = {"power_thermal": 2.5e9, "Q_sg": 2.5e9}
+    inputs = {"Q_fuel_to_coolant": 2.5e9, "Q_sg": 2.5e9}
     tele = loop.telemetry(s, inputs)
     expected_keys = {
         "T_hot",
@@ -189,7 +228,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
         "T_cool",
         "delta_T",
         "Tref",
-        "power_thermal",
+        "Q_fuel_to_coolant",
         "Q_sg",
         "Q_flow",
         "M_loop",
@@ -198,7 +237,7 @@ def test_telemetry_includes_delta_t_and_q_flow():
     assert tele["Tref"] == pytest.approx(p.T_avg_ref)
     assert tele["delta_T"] == pytest.approx(30.0)
     assert tele["Q_flow"] == pytest.approx(p.m_dot * p.c_p * 30.0)
-    assert tele["power_thermal"] == pytest.approx(2.5e9)
+    assert tele["Q_fuel_to_coolant"] == pytest.approx(2.5e9)
     assert tele["Q_sg"] == pytest.approx(2.5e9)
     assert tele["M_loop"] == pytest.approx(p.M_loop_initial)
 
@@ -213,7 +252,7 @@ def test_telemetry_without_inputs_reports_none_for_input_keys():
     # Q_flow is computable from state alone
     assert tele["Q_flow"] is not None
     # Input-dependent keys are None
-    assert tele["power_thermal"] is None
+    assert tele["Q_fuel_to_coolant"] is None
     assert tele["Q_sg"] is None
 
 
@@ -234,7 +273,7 @@ def _integrate(loop, q_core_fn, q_sg_fn, t_end, t_start=0.0, max_step=0.5):
         return loop.derivatives(
             y,
             {
-                "power_thermal": q_core_fn(t),
+                "Q_fuel_to_coolant": q_core_fn(t),
                 "Q_sg": q_sg_fn(t),
                 "m_dot_spray": 0.0,
                 "P_primary": 1.55e7,  # design pressure [Pa]
@@ -332,7 +371,7 @@ def test_loop_energy_balance_at_steady_70pct():
     assert sol.success
     # Verify steady state: derivatives near zero at the end
     final_state = sol.y[:, -1]
-    final_inputs = {"power_thermal": Q, "Q_sg": Q, "m_dot_spray": 0.0, "P_primary": 1.55e7}
+    final_inputs = {"Q_fuel_to_coolant": Q, "Q_sg": Q, "m_dot_spray": 0.0, "P_primary": 1.55e7}
     final_dstate = loop.derivatives(final_state, final_inputs)
     assert np.allclose(final_dstate, 0.0, atol=1e-3)
     # Now check the analytical prediction

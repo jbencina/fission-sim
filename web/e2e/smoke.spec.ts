@@ -4,7 +4,10 @@
  * Pre-condition: the dev stack must already be running (`make dev`).
  * The test does NOT start the stack itself.
  *
- * Assertion A-18:
+ * A second check confirms that a status explanation and an operator-control
+ * explanation can both be revealed with the keyboard alone.
+ *
+ * SCRAM check:
  *   Navigate to the app, wait for "Connected" chip, reset the sim to ensure
  *   a clean steady-state start, read the initial thermal power, click SCRAM +
  *   confirm the modal, wait 12 s, assert power dropped by ≥50%.
@@ -23,6 +26,46 @@ async function resumeIfPaused(page: Page): Promise<void> {
     await resume.click()
   }
 }
+
+/** Press Tab until `target` has focus, failing if it is never reached. */
+async function tabTo(page: Page, target: Locator, maxPresses = 80): Promise<void> {
+  for (let i = 0; i < maxPresses; i++) {
+    await page.keyboard.press('Tab')
+    if (await target.evaluate((el) => el === document.activeElement)) return
+  }
+  throw new Error(`Tab never reached ${target}`)
+}
+
+/** Assert the focused control's explanation is visible and is its accessible description. */
+async function expectHelpShownFor(page: Page, control: Locator): Promise<void> {
+  const tipId = await control.getAttribute('aria-describedby')
+  expect(tipId).toBeTruthy()
+  const tip = page.locator(`[id="${tipId}"]`)
+  await expect(tip).toHaveCSS('opacity', '1')
+  await expect(control).toHaveAccessibleDescription(/\w{3,}/)
+}
+
+test('educational help is reachable with the keyboard', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
+
+  // Status explanation: the thermal-power tile's info button.
+  const powerInfo = page.getByTestId('status-power_thermal').getByRole('button')
+  await tabTo(page, powerInfo)
+  await expectHelpShownFor(page, powerInfo)
+
+  // Pinning it with Enter must not leave it open once focus moves on.
+  const powerTip = page.locator(`[id="${await powerInfo.getAttribute('aria-describedby')}"]`)
+  await page.keyboard.press('Enter')
+  await page.keyboard.press('Tab')
+  await expect(powerTip).toHaveCSS('opacity', '0')
+
+  // Operator explanation: Reset Simulation is enabled whether or not the
+  // reactor is scrammed, so this check does not depend on test order.
+  const resetButton = page.getByRole('button', { name: /reset simulation/i })
+  await tabTo(page, resetButton)
+  await expectHelpShownFor(page, resetButton)
+})
 
 test('SCRAM drops thermal power', async ({ page }) => {
   await page.goto('/')

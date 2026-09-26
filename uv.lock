@@ -214,6 +214,7 @@ name = "fission-sim"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "coolprop" },
     { name = "fastapi" },
     { name = "matplotlib" },
@@ -233,6 +234,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4" },
     { name = "coolprop" },
     { name = "fastapi" },
     { name = "matplotlib" },

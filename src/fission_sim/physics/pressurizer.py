@@ -1,4 +1,4 @@
-"""Two-phase pressurizer with heaters and spray (L1 fidelity).
+"""Two-phase pressurizer with heaters and spray (lumped model).
 
 The pressurizer is a vertical vessel attached to the primary loop hot
 leg via a surge line. It contains a saturated mixture of liquid water
@@ -12,7 +12,7 @@ whole primary loop. As primary water expands and contracts (with
 temperature changes), volume surges into and out of the pressurizer
 through the surge line.
 
-At L1 we model:
+This model includes:
 - Two states (M_pzr, U_pzr) — total mass and internal energy of the
   saturated mixture in the vessel.
 - Saturation closure via CoolProp's (D, U) → P inversion.
@@ -20,9 +20,10 @@ At L1 we model:
   ρ on insurge, saturated-liquid ρ on outsurge).
 - Heater = continuous Q_heater [W] input, no actuator dynamics.
 - Spray = continuous m_dot_spray [kg/s] input, no valve dynamics.
-- Sealed primary system (no PORV venting, no CVCS at M2).
+- Sealed primary system (no PORV venting, no CVCS makeup or letdown).
 
-Physics specification: see ``docs/superpowers/specs/2026-05-08-pressurizer-design.md``.
+The README's "Educational Component Guide" and "Equations" sections explain
+this model for learners.
 
 References
 ----------
@@ -67,7 +68,7 @@ from fission_sim.physics.primary_loop import LoopParams
 
 @dataclass(frozen=True)
 class PressurizerParams:
-    """Parameters for the L1 two-phase pressurizer.
+    """Parameters for the two-phase pressurizer.
 
     Defaults represent a Westinghouse 4-loop centroid (~1800 ft³ vessel
     at 15.5 MPa primary pressure with half water level at design).
@@ -114,8 +115,8 @@ class PressurizerParams:
     level_design: float = 0.5  # [dimensionless, 0..1]
 
     # Composed loop params for surge computation. The pressurizer needs
-    # M_hot, M_cold, c_p, V_loop, beta_T_primary to compute dT_avg/dt and
-    # hence surge_volume_rate from (Q_core, Q_sg). The cleanest way to
+    # M_hot, M_cold, c_p, V_loop, beta_T_primary to compute the loop's
+    # mean-temperature rate and hence surge_volume_rate from (Q_core, Q_sg). The cleanest way to
     # share these between the two modules is composition.
     loop_params: LoopParams = field(default_factory=LoopParams)
 
@@ -272,7 +273,7 @@ def saturation_state(M: float, U: float, V: float) -> SaturationState:
 
 
 class Pressurizer:
-    """Two-phase pressurizer (L1 fidelity).
+    """Two-phase pressurizer (lumped saturated mixture).
 
     The class owns its parameters and equations. State (the total
     pressurizer mass and internal energy) lives in a numpy array passed
@@ -280,11 +281,12 @@ class Pressurizer:
     them as an argument.
 
     Ports in (passed to ``derivatives()`` / ``outputs(inputs=)``):
-        power_thermal : float [W]
-            Heat from the core (used to compute dT_avg/dt and hence
-            surge_volume_rate inside the pressurizer).
+        Q_fuel_to_coolant : float [W]
+            Heat entering the coolant from the fuel (the core's
+            ``Q_fuel_to_coolant`` output). Used with ``Q_sg`` to compute the
+            loop's mean-temperature rate and hence surge_volume_rate.
         Q_sg : float [W]
-            Heat removed by the steam generator (also for dT_avg/dt).
+            Heat removed by the steam generator (also for the surge rate).
         T_hotleg : float [K]
             Hot-leg temperature — sets ρ and h of insurge water.
         T_coldleg : float [K]
@@ -302,14 +304,12 @@ class Pressurizer:
         T_sat : float [K]
             Saturation temperature at current P.
 
-    Note: ``m_dot_surge`` and ``subcooling_margin`` were formerly
-    published as output ports. They are now telemetry-only because
-    ``outputs()`` is called without inputs in the state-derived engine
-    pass, making those values unavailable at output-resolution time.
-    Both values appear in ``telemetry()`` when inputs are provided.
-    The primary loop now computes ``m_dot_surge`` internally using the
-    shared ``surge.compute_m_dot_surge`` helper instead of reading it
-    as a wired port from the pressurizer.
+    Note: ``m_dot_surge`` and ``subcooling_margin`` are telemetry-only,
+    not output ports, because ``outputs()`` is called without inputs in
+    the state-derived engine pass and both need inputs. Both appear in
+    ``telemetry()`` when inputs are provided. The primary loop computes
+    ``m_dot_surge`` itself with the shared ``surge.compute_m_dot_surge``
+    helper instead of reading it from the pressurizer.
 
     State vector (length ``state_size`` = 2, names in ``state_labels``):
         index 0 : M_pzr — total mass in vessel [kg]
@@ -319,7 +319,7 @@ class Pressurizer:
     state_size: int = 2
     state_labels: tuple[str, ...] = ("M_pzr", "U_pzr")
     input_ports: tuple[str, ...] = (
-        "power_thermal",
+        "Q_fuel_to_coolant",
         "Q_sg",
         "T_hotleg",
         "T_coldleg",
@@ -358,7 +358,7 @@ class Pressurizer:
         from fission_sim.physics.surge import compute_m_dot_surge
 
         return compute_m_dot_surge(
-            power_thermal=inputs["power_thermal"],
+            Q_fuel_to_coolant=inputs["Q_fuel_to_coolant"],
             Q_sg=inputs["Q_sg"],
             T_hotleg=inputs["T_hotleg"],
             P_primary=sat.P,
@@ -461,12 +461,12 @@ class Pressurizer:
         the pressurizer's derivatives.
 
         ``m_dot_surge`` and ``subcooling_margin`` are NOT output ports.
-        They require inputs (T_hotleg, Q_sg, power_thermal) that are
+        They require inputs (T_hotleg, Q_sg, Q_fuel_to_coolant) that are
         unavailable in the state-derived evaluation pass. Both quantities
         are available in ``telemetry()`` when inputs are provided. The
-        primary loop now computes ``m_dot_surge`` independently using
-        the shared ``surge.compute_m_dot_surge`` helper — this is the
-        mechanism that restores mass conservation (M_loop + M_pzr = const).
+        primary loop computes ``m_dot_surge`` itself with the shared
+        ``surge.compute_m_dot_surge`` helper, so both modules apply the
+        same surge and M_loop + M_pzr stays constant.
 
         Parameters
         ----------

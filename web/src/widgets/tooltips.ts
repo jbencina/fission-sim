@@ -4,17 +4,19 @@
  * Each entry describes a telemetry field in plain language suitable for
  * a reader without a nuclear engineering background. The `body` field
  * must be >=40 characters and include: what the value means physically,
- * its units, and a typical operating range.
+ * its units, and its value at this model's design point.
  *
- * Fidelity note: values are for a generic 3000 MWth PWR (e.g. Westinghouse
- * AP1000 class). Exact numbers vary by plant design.
+ * Fidelity note: the model's parameters are calibrated to a generic
+ * ~3000 MWth Westinghouse-style 4-loop PWR. Design-point values quoted
+ * below are the ones this simulator computes (hot leg 597.7 K, cold leg
+ * 568.3 K, average 583.0 K); a particular real plant differs.
  */
 
 /** Shape of a single tooltip entry. */
 export interface TooltipEntry {
   /** Short title matching the tile label — displayed in bold at the top of the tooltip. */
   title: string;
-  /** Plain-language explanation ≥40 characters. Includes units and typical range. */
+  /** Plain-language explanation ≥40 characters. Includes units and the design-point value. */
   body: string;
   /** Primary unit string displayed on the tile, e.g. "MW" or "K". */
   units: string;
@@ -31,9 +33,13 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     title: 'Thermal Power',
     units: 'MW',
     body:
-      'Reactor core thermal output — total fission heat released per second. ' +
-      'At design conditions this is ~3000 MW. Zero power means the chain ' +
-      'reaction has stopped (subcritical or scrammed).',
+      'Modeled fission power: the energy released by fission in the core ' +
+      'each second (neutron population × 3000 MW design). Design: 3000 MW. ' +
+      'After a SCRAM it falls to a few percent within seconds, then fades ' +
+      'over minutes: delayed-neutron precursors made before the SCRAM keep ' +
+      'decaying and emitting neutrons, which cause a dwindling number of ' +
+      'fissions. Decay heat from fission products is not modeled, so a real ' +
+      'reactor would still produce more heat than this after shutdown.',
   },
 
   T_hot: {
@@ -42,7 +48,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     body:
       'Coolant temperature leaving the reactor core on its way to the steam ' +
       'generator. Called the "hot leg" because it carries heat away from the ' +
-      'core. Normal at full power: ~600 K (~327 °C / 620 °F).',
+      'core. Design full power in this model: 597.7 K (324.6 °C / 616.3 °F).',
   },
 
   T_cold: {
@@ -50,8 +56,8 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     units: 'K',
     body:
       'Coolant temperature returning from the steam generator back to the ' +
-      'reactor core. It has given up heat to make steam. Normal at full ' +
-      'power: ~565 K (~292 °C / 558 °F).',
+      'reactor core. It has given up heat to make steam. Design full power ' +
+      'in this model: 568.3 K (295.1 °C / 563.2 °F).',
   },
 
   T_avg: {
@@ -59,18 +65,21 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     units: 'K',
     body:
       'Arithmetic mean of hot-leg and cold-leg temperatures: (T_hot + T_cold)/2. ' +
-      'Used as the control reference for moderator-temperature reactivity ' +
-      'feedback. Normal: ~582 K (~309 °C) at full power.',
+      'The core uses it as the moderator (water) temperature for ' +
+      'moderator-temperature reactivity feedback. Design full power: ' +
+      '583.0 K (309.9 °C).',
   },
 
   T_fuel: {
     title: 'Fuel Temperature',
     units: 'K',
     body:
-      'Average temperature of the uranium fuel pellets inside the fuel rods. ' +
-      'Higher fuel temperature reduces reactivity through the Doppler effect ' +
-      '(neutrons slow more easily), a natural self-limiting safety feature. ' +
-      'Typical: ~900–1100 K at full power.',
+      'Lumped average temperature of all the uranium fuel: one number for ' +
+      'the whole core, not the hotter pellet centerline. Design full power ' +
+      'in this model: 1100 K. Hotter fuel broadens the absorption resonances ' +
+      'of U-238, so more neutrons are captured without causing fission ' +
+      '(the Doppler effect) and reactivity falls. The fuel heats as soon as ' +
+      'power rises, so this natural self-limiting feedback acts first.',
   },
 
   P_primary_MPa: {
@@ -78,29 +87,33 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     units: 'MPa',
     body:
       'Pressure of the primary coolant loop, maintained by the pressurizer ' +
-      'vessel using electric heaters and spray nozzles. High pressure ' +
-      '(~15.5 MPa / 2250 psi) prevents the water from boiling even at ' +
-      '~325 °C. Below ~14 MPa indicates an underpressure transient.',
+      'vessel using electric heaters and spray. Design: 15.5 MPa (about ' +
+      '2250 psi). At that pressure water boils at about 618 K (345 °C), so ' +
+      'the 598 K hot leg stays liquid. The tile turns amber below 14 MPa ' +
+      '(an illustrative alert band, not a plant limit).',
   },
 
   rod_position: {
     title: 'Rod Position',
     units: '%',
     body:
-      'Physical control-rod insertion: 0% = fully inserted (maximum shutdown ' +
-      'margin), 100% = fully withdrawn (maximum reactivity). Rods absorb ' +
-      'neutrons; withdrawing them allows the chain reaction to grow. ' +
-      'Normal operating range: ~40–60%.',
+      'Control-bank position, in % of travel withdrawn: 0 % = fully ' +
+      'inserted, 100 % = fully withdrawn. Rods absorb neutrons; withdrawing ' +
+      'them adds reactivity. Design full-power position: 50 %. Each 1 % of ' +
+      'travel is worth 12 pcm (1,200 pcm over the full stroke). A separate ' +
+      'shutdown bank, not shown here, stays fully withdrawn until a SCRAM ' +
+      'drops it.',
   },
 
   rod_command: {
     title: 'Rod Command',
     units: '%',
     body:
-      'Operator (or automatic controller) setpoint for rod position [0..1]. ' +
-      'The rod drive mechanism moves the physical rods toward this target at ' +
-      'a finite speed. A difference between command and actual position means ' +
-      'the rods are still moving.',
+      'Operator target for the control-bank position, in % of travel ' +
+      'withdrawn (sent to the simulator as a fraction, 0 to 1). The rod drive ' +
+      'moves the bank toward it at 1 % of travel per second, so a full ' +
+      'stroke takes 100 s. A difference between command and position means ' +
+      'the bank is still moving. During a SCRAM the command is overridden.',
   },
 
   Q_sg: {
@@ -109,8 +122,8 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     body:
       'Heat flowing from the primary coolant to the secondary (steam) side ' +
       'through the steam generator. At steady state this matches core thermal ' +
-      'power. A mismatch means thermal energy is accumulating or draining from ' +
-      'the primary coolant inventory.',
+      'power. During a transient the difference is heat being stored in, or ' +
+      'drawn from, the fuel and the primary coolant.',
   },
 
   sim_time: {
@@ -129,27 +142,30 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     body:
       'Real-time multiplier for simulation advancement. At 1×, one simulated ' +
       'second takes one real second. At 10×, one simulated minute passes in ' +
-      '6 real seconds. Higher speeds may reduce integration accuracy for very ' +
-      'fast transients (µs-scale neutron kinetics).',
+      '6 real seconds. The solver\'s accuracy settings are the same at every ' +
+      'speed; at high speed a step may take longer to compute than its ' +
+      'real-time slot, and the simulation then runs slower than requested.',
   },
 
   scrammed: {
     title: 'SCRAM Status',
     units: '',
     body:
-      'A SCRAM (Safety Control Rod Axe Man — a historic term) is an emergency ' +
-      'reactor shutdown: all control rods drop fully in, rapidly making the ' +
-      'chain reaction subcritical. The latch stays set until manually reset. ' +
-      'Power decays to ~1–7% from decay heat after a scram.',
+      'A SCRAM is an emergency reactor shutdown. It immediately commands ' +
+      'the control bank and the shutdown bank to drop in; both are fully ' +
+      'inserted within about 2 s, adding about −7,000 pcm and making the ' +
+      'core deeply subcritical. The latch stays set until Reset Scram, ' +
+      'which returns only the control bank; the shutdown bank stays in ' +
+      'until Reset Simulation.',
   },
 
   running: {
     title: 'Sim Running',
     units: '',
     body:
-      'Whether the simulation time-step loop is actively advancing. False ' +
-      'means the simulation is paused — telemetry values are frozen at the ' +
-      'last computed state. Resume to continue integration.',
+      'Whether simulation time is advancing. NO means paused, or halted at ' +
+      'a model limit: values are frozen at the last computed state. Resume ' +
+      'continues a pause; a model-limit halt needs Reset Simulation.',
   },
 
   rho_total: {

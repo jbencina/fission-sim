@@ -1,10 +1,10 @@
-"""Secondary-side stand-in for a Pressurized Water Reactor — fidelity level L1.
+"""Secondary-side stand-in for a Pressurized Water Reactor — simplest model.
 
 A constant-temperature reservoir representing the entire secondary side: turbine,
-condenser, and feedwater chain. M3 will replace this entire component with a real
-turbine + condenser + feedwater chain.
+condenser, and feedwater chain. A higher-fidelity model would replace it with a
+real turbine + condenser + feedwater chain; this simulator does not model those.
 
-Physics specification: see ``.docs/design.md`` §5.4.
+The README's "Educational Component Guide" section explains this model.
 
 References
 ----------
@@ -39,17 +39,17 @@ class SinkParams:
     """
 
     # SIMPLIFICATION: the entire secondary side (turbine, condenser, feedwater
-    # pumps, all of it) collapses to one fixed temperature. M3 will replace this
-    # component with an actual chain of components.
+    # pumps, all of it) collapses to one fixed temperature that never changes
+    # (no turbine load changes, no feedwater transients).
     T_secondary: float = 558.0  # [K] saturation temp at ~6.9 MPa (typical PWR steam)
 
 
 class SecondarySink:
-    """Constant-temperature secondary-side stand-in (L1 fidelity).
+    """Constant-temperature secondary-side stand-in.
 
-    At L1 this component has no state and no inputs — it just publishes a fixed
+    This component has no state and no inputs — it just publishes a fixed
     secondary-side temperature. Conceptually it represents "the steam side is at
-    saturation pressure and we're not modeling its dynamics yet."
+    saturation pressure and its dynamics are not modeled."
 
     The component still implements the full 5-method API even with empty state, so
     the engine wiring code does not need to special-case stateless components.

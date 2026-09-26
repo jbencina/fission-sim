@@ -10,7 +10,7 @@ Platform note
 This script relies on Unix process-group semantics (``os.killpg``,
 ``start_new_session=True``).  Windows would need a different approach
 (``CREATE_NEW_PROCESS_GROUP`` + ``CTRL_BREAK_EVENT``).  A cross-platform
-implementation is out of scope; feat-013 / README will document this.
+implementation is out of scope.
 
 Usage
 -----
@@ -24,6 +24,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 
 # ---------------------------------------------------------------------------
 # ANSI colour codes — raw escapes so we need no third-party library.
@@ -52,8 +53,17 @@ FRONTEND_CMD = ["npm", "run", "dev", "--prefix", "web"]
 # Shared state between threads / signal handler
 # ---------------------------------------------------------------------------
 _children: list[subprocess.Popen] = []   # populated after Popen succeeds
+# Process-group ID of each child, recorded at spawn. Each child is started
+# with ``start_new_session=True``, so it leads a new group whose ID equals its
+# PID. Recording it up front matters: once the leader has exited and been
+# reaped, ``os.getpgid(proc.pid)`` fails, yet its descendants (a reloader's
+# worker, npm's vite) can still be running in that group.
+_process_groups: list[int] = []
 _shutdown_lock = threading.Lock()
 _shutting_down = False
+# Set by the signal handlers, read by main()'s loop. Handlers only record
+# which signal arrived; the blocking cleanup runs once, in the main loop.
+_shutdown_signal: int | None = None
 
 
 def _prefix_reader(proc: subprocess.Popen, prefix: str, colour: str) -> None:
@@ -75,92 +85,102 @@ def _prefix_reader(proc: subprocess.Popen, prefix: str, colour: str) -> None:
         print(f"{label} {line}", flush=True)
 
 
-def _terminate_children(timeout: float = 5.0) -> None:
-    """Send SIGTERM to every child's process group, then wait *timeout* s.
+def _signal_group(pgid: int, sig: int) -> None:
+    """Send *sig* to process group *pgid*, ignoring a group that is already gone."""
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass  # every process in the group has exited
 
-    Any child that has not exited after the wait receives SIGKILL.
+
+def _group_alive(pgid: int) -> bool:
+    """Return True while any process remains in group *pgid* (signal 0 probes)."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, but owned by someone else
+    return True
+
+
+def _terminate_children(timeout: float = 5.0) -> None:
+    """Send SIGTERM to every child's process group, then wait up to *timeout* s.
+
+    Any group that still has members after the wait receives SIGKILL. The
+    group IDs recorded at spawn are signalled even if the leader has already
+    exited, so descendants that outlived it are still stopped.
 
     Parameters
     ----------
     timeout:
         Seconds to wait for a graceful exit before escalating to SIGKILL.
     """
-    for proc in _children:
-        try:
-            pgid = os.getpgid(proc.pid)
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass  # already gone
+    for pgid in _process_groups:
+        _signal_group(pgid, signal.SIGTERM)
 
+    deadline = time.monotonic() + timeout
+    # Reap the leaders first: an exited but unreaped leader is a zombie that
+    # still counts as a group member.
     for proc in _children:
         try:
-            proc.wait(timeout=timeout)
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            try:
-                pgid = os.getpgid(proc.pid)
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            proc.wait()
+            pass
+    # Descendants may take a moment longer than their leader.
+    while any(_group_alive(pgid) for pgid in _process_groups) and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+    for pgid in _process_groups:
+        if _group_alive(pgid):
+            _signal_group(pgid, signal.SIGKILL)
+    for proc in _children:
+        proc.wait()
+
+
+def _spawn(cmd: list[str], popen_kwargs: dict) -> subprocess.Popen:
+    """Start *cmd* in its own session and record it for cleanup."""
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    _children.append(proc)
+    # start_new_session=True makes the child a group leader: pgid == pid.
+    # The kernel could reuse this ID once the whole group is gone, but the
+    # recorded groups are only signalled during the short cleanup window.
+    _process_groups.append(proc.pid)
+    return proc
 
 
 def _start_children(common_popen_kwargs: dict) -> tuple[subprocess.Popen, subprocess.Popen]:
     """Start backend and frontend children, cleaning up on partial failure."""
     try:
-        backend = subprocess.Popen(BACKEND_CMD, **common_popen_kwargs)
-        _children.append(backend)
-
-        frontend = subprocess.Popen(FRONTEND_CMD, **common_popen_kwargs)
-        _children.append(frontend)
+        backend = _spawn(BACKEND_CMD, common_popen_kwargs)
+        frontend = _spawn(FRONTEND_CMD, common_popen_kwargs)
     except Exception:
         if _children:
             _terminate_children()
             _children.clear()
+            _process_groups.clear()
         raise
 
     return backend, frontend
 
 
-def _sigint_handler(signum, frame):  # noqa: ANN001
-    """Handle Ctrl-C (SIGINT): terminate children, restore default handler, re-raise.
+def _signal_handler(signum, frame):  # noqa: ANN001
+    """Record a shutdown request from SIGINT (Ctrl-C) or SIGTERM.
 
     When the user presses Ctrl-C in an interactive terminal, the OS delivers
-    SIGINT to the entire foreground process group, so this handler runs in the
-    Python process.  When ``make dev`` runs in the background and the make
-    process receives SIGINT, GNU Make forwards SIGTERM to its child jobs — that
-    case is covered by ``_sigterm_handler`` below.
+    SIGINT to the entire foreground process group. When ``make dev`` runs in
+    the background and the make process receives SIGINT, GNU Make forwards
+    SIGTERM to its child jobs instead.
+
+    The handler only records the signal. Cleanup blocks (``proc.wait()``) and
+    a signal can arrive while the main loop is inside ``proc.poll()``, which
+    holds the same non-reentrant lock inside ``Popen``; waiting from here
+    could deadlock. ``main()`` sees the flag within one poll interval and
+    cleans up once.
     """
-    global _shutting_down
-    with _shutdown_lock:
-        if _shutting_down:
-            return
-        _shutting_down = True
-
-    print(f"\n{BOLD}[dev] Ctrl-C received — shutting down …{RESET}", flush=True)
-    _terminate_children()
-
-    # Restore default SIGINT so the re-raise propagates to the shell as a
-    # normal keyboard interrupt (exit status 130 by convention).
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    os.kill(os.getpid(), signal.SIGINT)
-
-
-def _sigterm_handler(signum, frame):  # noqa: ANN001
-    """Handle SIGTERM: terminate children and exit.
-
-    GNU Make sends SIGTERM to its child jobs when Make itself receives SIGINT
-    (e.g. ``kill -INT $MAKE_PID`` from a test harness).  This handler ensures
-    the launcher shuts down both servers cleanly in that scenario too.
-    """
-    global _shutting_down
-    with _shutdown_lock:
-        if _shutting_down:
-            return
-        _shutting_down = True
-
-    print(f"\n{BOLD}[dev] SIGTERM received — shutting down …{RESET}", flush=True)
-    _terminate_children()
-    sys.exit(0)
+    global _shutdown_signal
+    if _shutdown_signal is None:
+        _shutdown_signal = signum
 
 
 def _watch_parent(initial_ppid: int) -> None:
@@ -169,8 +189,8 @@ def _watch_parent(initial_ppid: int) -> None:
     When ``make dev`` is run in the background and the make process is killed
     (e.g. ``kill -INT $MAKE_PID`` in a test harness), ``uv run`` — which is our
     direct parent — also dies.  This thread detects that event by polling
-    ``os.getppid()`` and self-signals so ``_sigterm_handler`` can run and clean
-    up the child servers.
+    ``os.getppid()`` and self-signals SIGTERM so ``main()`` cleans up the child
+    servers.
 
     Parameters
     ----------
@@ -230,8 +250,8 @@ def main() -> int:
     # SIGINT  — user presses Ctrl-C in an interactive terminal.
     # SIGTERM — GNU Make forwards this to child jobs when Make itself gets INT,
     #           e.g. when a test harness does ``kill -INT $MAKE_PID``.
-    signal.signal(signal.SIGINT, _sigint_handler)
-    signal.signal(signal.SIGTERM, _sigterm_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
 
     common_popen_kwargs = dict(
         stdout=subprocess.PIPE,
@@ -272,33 +292,42 @@ def main() -> int:
         t.start()
 
     # Poll until one child exits or we receive a signal.
-    exit_code = 0
+    global _shutting_down
     while True:
+        if _shutdown_signal is not None:
+            with _shutdown_lock:
+                _shutting_down = True
+            name = "Ctrl-C" if _shutdown_signal == signal.SIGINT else "SIGTERM"
+            print(f"\n{BOLD}[dev] {name} received — shutting down …{RESET}", flush=True)
+            _terminate_children()
+            if _shutdown_signal == signal.SIGINT:
+                # Restore default SIGINT and re-raise so the shell sees a
+                # normal keyboard interrupt (exit status 130 by convention).
+                signal.signal(signal.SIGINT, signal.SIG_DFL)
+                os.kill(os.getpid(), signal.SIGINT)
+                return 130  # only reached if the re-raised signal is blocked
+            return 0
+
         for proc in list(_children):
             rc = proc.poll()
             if rc is not None:
-                global _shutting_down
                 with _shutdown_lock:
-                    already = _shutting_down
                     _shutting_down = True
-
-                if not already and rc != 0:
+                if rc != 0:
                     label = "[api]" if proc is backend else "[web]"
                     print(
                         f"{BOLD}[dev]{RESET} {label} exited unexpectedly "
                         f"with code {rc} — stopping the other server.",
                         flush=True,
                     )
-                    exit_code = rc
-                    _terminate_children()
-                    return exit_code
-
-                # Clean exit of one child (e.g. after SIGTERM) — just return.
+                # Either way, one server is gone: stop the rest (including any
+                # descendants of the one that exited) and return.
                 _terminate_children()
-                return exit_code
+                # Popen reports death by signal N as -N; shells report 128 + N.
+                return rc if rc >= 0 else 128 - rc
 
         # Short sleep so we don't busy-wait at 100 % CPU.
-        threading.Event().wait(0.2)
+        time.sleep(0.2)
 
 
 if __name__ == "__main__":

@@ -18,12 +18,12 @@ import AppShell from './layout/AppShell'
 function App() {
   const pushFrame = useTelemetryStore((s) => s.pushFrame)
   const setStatus = useTelemetryStore((s) => s.setStatus)
-  const setError = useTelemetryStore((s) => s.setError)
+  const reportError = useTelemetryStore((s) => s.reportError)
   const setSend = useTelemetryStore((s) => s.setSend)
 
   useEffect(() => {
     // Open the WebSocket connection and wire callbacks to store actions.
-    const client = connectTelemetry(pushFrame, setStatus, setError)
+    const client = connectTelemetry(pushFrame, setStatus, reportError)
     // Register the send function so sendCommand() can delegate to it.
     setSend(client.send)
 
@@ -31,10 +31,10 @@ function App() {
     return () => {
       client.close()
     }
-  }, [pushFrame, setStatus, setError, setSend])
+  }, [pushFrame, setStatus, reportError, setSend])
 
-  // Render the full-page layout shell. All visual chrome and placeholder
-  // regions live inside AppShell; this component stays side-effect-only.
+  // Render the full-page layout shell. All visual chrome and layout regions
+  // live inside AppShell; this component only owns the connection side effect.
   return <AppShell />
 }
 

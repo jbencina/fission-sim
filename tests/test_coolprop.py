@@ -6,9 +6,11 @@ the wrapper is a thin pass-through and CoolProp itself is well-tested
 upstream. We verify the wrapper API and unit conventions.
 """
 
+import CoolProp.CoolProp as CP
 import pytest
 
 from fission_sim.physics import coolprop
+from fission_sim.physics.domain import ModelDomainError
 
 
 def test_subcooled_density_at_primary_conditions():
@@ -55,7 +57,7 @@ def test_saturated_vapor_internal_energy_at_design_pressure():
 
 
 def test_isobaric_expansion_coefficient_at_design():
-    """β_T at primary design conditions is ~3.3e-3 /K (verified A1)."""
+    """β_T at primary design conditions is ~3.3e-3 /K (3.26e-3 with CoolProp 7.2.0)."""
     beta = coolprop.beta_T(P=1.55e7, T=583.0)
     assert 3.0e-3 < beta < 3.5e-3
 
@@ -76,3 +78,25 @@ def test_saturation_state_from_DU_round_trip():
     U = M_l * u_l + M_v * u_v
     P_out = coolprop.P_from_DU(D=M / V, U=U / M)
     assert P_out == pytest.approx(P_in, rel=1e-3)
+
+
+def test_property_failure_is_reported_as_model_domain_error():
+    """A (P, T) pair exactly on the saturation line cannot be evaluated.
+
+    Inside the solver that failure ends the step, so the wrapper reports it
+    as a ModelDomainError (still a ValueError) that the runtime can explain,
+    keeping CoolProp's own error as the cause.
+    """
+    P = 1.55e7
+    T_on_line = CP.PropsSI("T", "P", P, "Q", 0.0, coolprop._FLUID_DOME)
+    with pytest.raises(ModelDomainError) as exc_info:
+        coolprop.density_PT(P=P, T=T_on_line)
+    assert exc_info.value.limit == "property_lookup"
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_malformed_property_call_stays_a_plain_value_error():
+    """A misspelled property name is a coding mistake, not a physics limit."""
+    with pytest.raises(ValueError, match="parsing failed") as exc_info:
+        coolprop._props("Dx", "P", 1.55e7, "T", 583.0, coolprop._FLUID_DOME)
+    assert not isinstance(exc_info.value, ModelDomainError)

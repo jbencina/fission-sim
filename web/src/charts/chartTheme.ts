@@ -5,6 +5,8 @@
  * consistent with the dark-themed AppShell.
  */
 
+import { CHART_WINDOW_S } from './chartData';
+
 /** Stroke for CartesianGrid lines — slate-800. */
 export const GRID_STROKE = 'rgb(30 41 59)';
 
@@ -26,12 +28,16 @@ export const TOOLTIP_WRAPPER_STYLE: React.CSSProperties = {
 
 /**
  * Common X-axis props for all charts.
- * Displays relative time in seconds; newest data is at 0, oldest at -60.
+ * Displays relative simulated time in seconds; newest data is at 0, oldest at
+ * -CHART_WINDOW_S. The chart transforms already drop older frames;
+ * `allowDataOverflow` additionally stops Recharts from widening the axis to
+ * fit the data (its default), so the window cannot silently grow with speed.
  */
 export const X_AXIS_PROPS = {
   type: 'number' as const,
   dataKey: 't_rel',
-  domain: [-60, 0] as [number, number],
+  domain: [-CHART_WINDOW_S, 0] as [number, number],
+  allowDataOverflow: true,
   tickCount: 7,
   tickFormatter: (v: number) => `${v}`,
   label: {

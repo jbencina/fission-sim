@@ -9,6 +9,7 @@ dependencies = [
     "matplotlib",
     "coolprop",
     "fastapi",
+    "anyio>=4",  # WebSocket task group (app.py), whose errors arrive as ExceptionGroups from 4.0; already required by fastapi/starlette
     "uvicorn[standard]",
     "websockets",
 ]

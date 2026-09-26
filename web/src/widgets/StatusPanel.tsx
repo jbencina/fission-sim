@@ -7,7 +7,7 @@
  *
  * When `latest` is null (no data yet received), every tile shows "—".
  *
- * Tiles rendered (13 total, all with tooltips ≥40 chars):
+ * Tiles rendered (14 total, all with tooltips ≥40 chars):
  *   power_thermal, T_hot, T_cold, T_avg, T_fuel, P_primary_MPa,
  *   rod_position, rod_command, Q_sg, rho_total, sim_time, speed,
  *   scrammed, running.
@@ -73,9 +73,11 @@ function formatSimTime(t: number | null): string {
 }
 
 /**
- * Format a rod position fraction (0–1) as a percentage with one decimal.
+ * Format a rod fraction (0–1, as sent over the wire) as percent of travel
+ * withdrawn with one decimal. The dashboard shows rod quantities in %
+ * everywhere; the Python ports and the telemetry frame keep the fraction.
  *
- * @param frac - Rod position [0..1], or null.
+ * @param frac - Rod position or command [0..1], or null.
  */
 function formatPercent(frac: number | null): string {
   if (frac === null) return '—'
@@ -140,7 +142,8 @@ const StatusPanel: FC = () => {
       {/*
        * 2-column grid of tiles.
        * gap-3 provides breathing room between tiles.
-       * Each tile manages its own hover-tooltip via CSS `group` + group-hover.
+       * Each tile manages its own explanation tooltip, shown on hover, on
+       * keyboard focus of its info button, or by tapping that button.
        */}
       <div className="grid grid-cols-2 gap-3">
 

@@ -9,6 +9,10 @@
  *   - Closes on Escape key press.
  *   - Closes on backdrop click.
  *   - Focuses the Confirm button when opened.
+ *   - Keeps Tab / Shift+Tab inside the dialog while it is open, so keyboard
+ *     users cannot wander into the page behind the scrim.
+ *   - Returns focus to whatever was focused before (usually the button that
+ *     opened it) when it closes.
  *   - No external library dependencies — pure React.
  *
  * @module ConfirmDialog
@@ -44,6 +48,11 @@ export interface ConfirmDialogProps {
 // ConfirmDialog component
 // ---------------------------------------------------------------------------
 
+/** Elements that can receive keyboard focus inside the dialog card. */
+const FOCUSABLE_SELECTOR =
+  'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
 /**
  * ConfirmDialog
  *
@@ -71,21 +80,56 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
 }) => {
   // Ref to the confirm button so we can focus it programmatically on open.
   const confirmRef = useRef<HTMLButtonElement>(null)
+  // Ref to the card, used to find the focusable elements Tab cycles through.
+  const cardRef = useRef<HTMLDivElement>(null)
 
-  // Focus the confirm button whenever the dialog opens.
+  // Focus the confirm button whenever the dialog opens, and put focus back
+  // where it was when the dialog closes (or unmounts while open).
   useEffect(() => {
-    if (open) {
-      // Small timeout ensures the element is rendered and visible before focus.
-      const id = window.setTimeout(() => confirmRef.current?.focus(), 0)
-      return () => window.clearTimeout(id)
+    if (!open) return
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null
+    // Small timeout ensures the element is rendered and visible before focus.
+    const id = window.setTimeout(() => confirmRef.current?.focus(), 0)
+    return () => {
+      window.clearTimeout(id)
+      // The restored control may become disabled moments later (SCRAM does
+      // once the reactor reports scrammed); the browser then drops focus.
+      previouslyFocused?.focus()
     }
   }, [open])
 
-  // Close on Escape key.
+  // Keyboard handling while open: Escape cancels; Tab wraps within the card.
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCancel()
+      if (e.key === 'Escape') {
+        onCancel()
+        return
+      }
+      if (e.key !== 'Tab' || cardRef.current === null) return
+
+      const focusable = Array.from(
+        cardRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      )
+      if (focusable.length === 0) {
+        // Nothing to cycle through: still keep Tab from leaving the dialog.
+        e.preventDefault()
+        return
+      }
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      const inside = active instanceof Node && cardRef.current.contains(active)
+
+      // Wrap at either end, and pull focus back in if it is somewhere else.
+      if (e.shiftKey && (active === first || !inside)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (active === last || !inside)) {
+        e.preventDefault()
+        first.focus()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -115,6 +159,7 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
     >
       {/* Centered card — stop propagation so clicks inside do NOT close the dialog */}
       <div
+        ref={cardRef}
         className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >

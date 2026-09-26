@@ -1,6 +1,6 @@
 """Text-only diagnostic for the PointKineticsCore.
 
-Throwaway sibling of `run_core.py` for use over SSH or in any terminal
+Text-only sibling of ``run_core.py`` for use over SSH or in any terminal
 without a display attached. Same default scenario; output is a printed
 table at key time points plus an ASCII log-scale chart of neutron
 population over time. No matplotlib.
@@ -19,7 +19,7 @@ from fission_sim.physics.core import CoreParams, PointKineticsCore
 
 
 # ---------------------------------------------------------------------------
-# Faked upstream input sources (same scenario as run_core.py).
+# Hand-coded input sources (same scenario as run_core.py).
 # ---------------------------------------------------------------------------
 def rod_reactivity_fn(t: float) -> float:
     if t < 10.0:
@@ -29,8 +29,10 @@ def rod_reactivity_fn(t: float) -> float:
     return -7000e-5  # scram
 
 
-def T_cool_fn(t: float) -> float:
-    return 580.0  # constant; primary loop component will replace this
+def T_cool_fn(t: float, params: CoreParams) -> float:
+    """Constant coolant temperature [K] at the reference, where moderator
+    reactivity is zero, so the design state starts in equilibrium."""
+    return params.T_cool_ref
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +101,7 @@ def main() -> None:
             y,
             {
                 "rho_rod": rod_reactivity_fn(t),
-                "T_cool": T_cool_fn(t),
+                "T_cool": T_cool_fn(t, params),
             },
         )
 
@@ -143,7 +145,7 @@ def main() -> None:
     for ti, ni, Ti in zip(sample_t, n, T_fuel):
         rho_rod = rod_reactivity_fn(float(ti))
         rho_dop = params.alpha_f * (Ti - params.T_fuel_ref)
-        rho_mod = params.alpha_m * (T_cool_fn(float(ti)) - params.T_cool_ref)
+        rho_mod = params.alpha_m * (T_cool_fn(float(ti), params) - params.T_cool_ref)
         rho_tot = rho_rod + rho_dop + rho_mod
         print(
             f"    {ti:6.1f}  {ni:9.3e}  {Ti:8.2f}    "
@@ -180,11 +182,15 @@ def main() -> None:
 
     # --- summary ---
     print("  What this shows:")
-    print("    * Steady state holds at n = 1.0 with derivatives = 0 by construction.")
-    print("    * After +200 pcm rod step: prompt jump (~0.5 s), then exponential rise,")
-    print("      then Doppler feedback (negative rho as fuel heats) levels power off.")
-    print("    * After scram (-7000 pcm): power drops by ~3 orders of magnitude in ~1 s,")
-    print("      then a slow tail dominated by long-lived precursors (C1, ~55 s half-life).")
+    print("    * t = 0..10 s: steady at n = 1.0. The initial state is the design")
+    print("      equilibrium and the coolant is held at T_cool_ref, so every")
+    print("      derivative is zero until the rod moves.")
+    print("    * After +200 pcm rod step: prompt jump to n ≈ 1.4 within ~0.5 s, then")
+    print("      Doppler feedback (negative rho as fuel heats) pulls power back to a")
+    print("      new plateau near n ≈ 1.15.")
+    print("    * After scram (-7000 pcm): a prompt drop below 10% of design in ~0.2 s,")
+    print("      then a slow tail set by the longest-lived precursor group")
+    print("      (C1: ~55 s half-life, ~80 s mean life).")
     print()
 
 

@@ -5,47 +5,21 @@
  * - pushFrame appends to history and updates latest
  * - history caps at HISTORY_CAP (600 frames)
  * - setStatus updates the status field
- * - setError updates the lastError field
- * - reset returns state to defaults
- * - reset/time rollback clears stale chart history
+ * - reportError/clearError manage the error notice without letting a stale
+ *   connection message hide or outlive a server explanation
+ * - time rollback (backend reset) clears stale chart history
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HISTORY_CAP, useTelemetryStore } from './telemetryStore';
-import type { Frame } from '../types/telemetry';
-
-// ---------------------------------------------------------------------------
-// Helper: build a minimal valid Frame for testing
-// ---------------------------------------------------------------------------
-function makeFrame(t: number): Frame {
-  return {
-    t,
-    power_thermal: 3_000_000_000,
-    T_hot: 600,
-    T_cold: 560,
-    T_avg: 580,
-    T_fuel: 900,
-    rod_position: 0.5,
-    P_primary_Pa: 15_500_000,
-    P_primary_MPa: 15.5,
-    Q_sg: 2_900_000_000,
-    rho_rod: 0.001,
-    rho_doppler: -0.0005,
-    rho_moderator: -0.0003,
-    rho_total: 0.0002,
-    running: true,
-    speed: 1,
-    scrammed: false,
-    rod_command: 0.5,
-  };
-}
+import { makeFrame } from '../test/makeFrame';
 
 // ---------------------------------------------------------------------------
 // Reset Zustand store state before each test so tests don't bleed into each
 // other — Zustand stores are module-level singletons.
 // ---------------------------------------------------------------------------
 beforeEach(() => {
-  useTelemetryStore.getState().reset();
+  useTelemetryStore.setState(useTelemetryStore.getInitialState(), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -114,45 +88,61 @@ describe('setStatus', () => {
   });
 
   it('initial status is connecting', () => {
-    // After reset(), status should be the initial value.
+    // beforeEach restored the store's initial state.
     expect(useTelemetryStore.getState().status).toBe('connecting');
   });
 });
 
-describe('setError', () => {
-  it('sets an error message', () => {
-    useTelemetryStore.getState().setError('connection refused');
-    expect(useTelemetryStore.getState().lastError).toBe('connection refused');
-  });
+describe('error notice', () => {
+  it('shows a server explanation until dismissed', () => {
+    const store = useTelemetryStore.getState();
+    store.reportError('server', 'rod command out of range');
+    store.setStatus('connected');
+    expect(useTelemetryStore.getState().lastError).toEqual({
+      source: 'server',
+      message: 'rod command out of range',
+    });
 
-  it('clears error with null', () => {
-    useTelemetryStore.getState().setError('some error');
-    useTelemetryStore.getState().setError(null);
+    store.clearError();
     expect(useTelemetryStore.getState().lastError).toBeNull();
   });
-});
 
-describe('reset', () => {
-  it('resets latest and history to defaults', () => {
-    useTelemetryStore.getState().pushFrame(makeFrame(5));
-    useTelemetryStore.getState().pushFrame(makeFrame(6));
-    useTelemetryStore.getState().reset();
+  it('clears a connection message once the socket reconnects', () => {
+    const store = useTelemetryStore.getState();
+    store.reportError('connection', 'lost connection');
+    store.setStatus('connecting');
+    expect(useTelemetryStore.getState().lastError?.source).toBe('connection');
 
-    const { latest, history } = useTelemetryStore.getState();
-    expect(latest).toBeNull();
-    expect(history).toHaveLength(0);
-  });
-
-  it('resets status to connecting', () => {
-    useTelemetryStore.getState().setStatus('connected');
-    useTelemetryStore.getState().reset();
-    expect(useTelemetryStore.getState().status).toBe('connecting');
-  });
-
-  it('resets lastError to null', () => {
-    useTelemetryStore.getState().setError('an error');
-    useTelemetryStore.getState().reset();
+    store.setStatus('connected');
     expect(useTelemetryStore.getState().lastError).toBeNull();
+  });
+
+  it('lets a server explanation replace a connection message', () => {
+    const store = useTelemetryStore.getState();
+    store.reportError('connection', 'cannot reach backend');
+    store.reportError('server', 'rod command out of range');
+    expect(useTelemetryStore.getState().lastError?.source).toBe('server');
+  });
+
+  it('keeps a dismissed connection message hidden until the next connect', () => {
+    const store = useTelemetryStore.getState();
+    store.reportError('connection', 'cannot reach backend');
+    store.clearError();
+    store.reportError('connection', 'cannot reach backend'); // next failed retry
+    expect(useTelemetryStore.getState().lastError).toBeNull();
+
+    store.setStatus('connected');
+    store.reportError('connection', 'cannot reach backend'); // a new outage
+    expect(useTelemetryStore.getState().lastError?.source).toBe('connection');
+  });
+
+  it('does not let a connection message replace a server explanation', () => {
+    const store = useTelemetryStore.getState();
+    store.reportError('server', 'speed must be one of 1, 2, 5, 10');
+    store.reportError('connection', 'lost connection');
+    expect(useTelemetryStore.getState().lastError?.message).toBe(
+      'speed must be one of 1, 2, 5, 10',
+    );
   });
 });
 
@@ -162,7 +152,7 @@ describe('clearHistory', () => {
     useTelemetryStore.getState().pushFrame(makeFrame(5));
     useTelemetryStore.getState().pushFrame(latest);
     useTelemetryStore.getState().setStatus('connected');
-    useTelemetryStore.getState().setError('old warning');
+    useTelemetryStore.getState().reportError('server', 'old warning');
 
     useTelemetryStore.getState().clearHistory();
 
@@ -170,6 +160,6 @@ describe('clearHistory', () => {
     expect(state.history).toHaveLength(0);
     expect(state.latest).toEqual(latest);
     expect(state.status).toBe('connected');
-    expect(state.lastError).toBe('old warning');
+    expect(state.lastError?.message).toBe('old warning');
   });
 });

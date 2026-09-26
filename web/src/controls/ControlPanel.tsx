@@ -2,7 +2,8 @@
  * ControlPanel — operator controls for the fission-sim web UI.
  *
  * Provides four control sections:
- *   1. Rod control  — range slider to set the rod-position command (0–1).
+ *   1. Rod control  — range slider for the control-bank command, shown in % of
+ *                     travel withdrawn (sent to the backend as a fraction 0–1).
  *   2. Safety       — SCRAM button with confirmation modal; Reset Scram when active.
  *   3. Run          — Pause/Resume toggle and Reset Simulation (with confirmation).
  *   4. Speed        — Segmented 1× / 2× / 5× / 10× real-time multiplier.
@@ -11,13 +12,16 @@
  * When the WebSocket status is not 'connected', every control is visually
  * disabled and a notice is shown at the top of the panel.
  *
- * CSS-only tooltips are used for all controls (no tooltip library dependency).
+ * Each control has a CSS tooltip (no tooltip library dependency) that appears
+ * on hover and on keyboard focus, and is linked to the control with
+ * aria-describedby so screen readers read it as the control's description.
  *
  * @module ControlPanel
  */
 
-import { type FC, useState, useCallback, useRef, useEffect } from 'react'
+import { type FC, useState, useCallback, useRef, useEffect, useId } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
+import { SPEEDS, type Speed } from '../types/telemetry'
 import ConfirmDialog from './ConfirmDialog'
 
 // ---------------------------------------------------------------------------
@@ -80,34 +84,43 @@ const SLIDER_STYLES = `
 // ---------------------------------------------------------------------------
 
 /**
- * CSS-only tooltip container.
+ * CSS tooltip container.
+ *
  * Children are wrapped in a `group` div; the tooltip is a hidden sibling that
- * appears on `group-hover`. Both the trigger and tooltip slot are controlled
- * by the caller via `children` and `tip`.
+ * appears on `group-hover`, and also when a control inside has keyboard focus
+ * (`group-has-[:focus-visible]`) so keyboard users get the same explanation.
+ *
+ * `children` is a function that receives the tooltip's id. Pass it as
+ * `aria-describedby` on each focusable control the tip explains, so assistive
+ * technology announces the tip when that control is focused.
  */
-const Tip: FC<{ tip: string; children: React.ReactNode; className?: string }> = ({
-  tip,
-  children,
-  className = '',
-}) => (
-  <div className={`group relative ${className}`}>
-    {children}
-    <div
-      className={[
-        'absolute bottom-[calc(100%+6px)] left-0',
-        'z-50 w-64',
-        'bg-slate-950 border border-slate-700 rounded-lg p-3',
-        'text-xs text-slate-200 shadow-lg leading-relaxed',
-        'opacity-0 group-hover:opacity-100',
-        'transition-opacity duration-150',
-        'pointer-events-none',
-      ].join(' ')}
-      role="tooltip"
-    >
-      {tip}
+const Tip: FC<{
+  tip: string
+  children: (tipId: string) => React.ReactNode
+  className?: string
+}> = ({ tip, children, className = '' }) => {
+  const tipId = useId()
+  return (
+    <div className={`group relative ${className}`}>
+      {children(tipId)}
+      <div
+        id={tipId}
+        className={[
+          'absolute bottom-[calc(100%+6px)] left-0',
+          'z-50 w-64',
+          'bg-slate-950 border border-slate-700 rounded-lg p-3',
+          'text-xs text-slate-200 shadow-lg leading-relaxed',
+          'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100',
+          'transition-opacity duration-150',
+          'pointer-events-none',
+        ].join(' ')}
+        role="tooltip"
+      >
+        {tip}
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Section heading helper
@@ -146,8 +159,11 @@ const ControlPanel: FC = () => {
   const connected = status === 'connected'
   const scrammed = latest?.scrammed === true
   const running = latest?.running === true
+  // Halted at a model limit: the backend refuses resume until a reset.
+  const halted = latest?.model_limit != null
   const speed = latest?.speed ?? 1
-  const rodPosition = latest?.rod_position ?? 0
+  // null until the first frame arrives; the readout then shows "—".
+  const rodPosition = latest?.rod_position ?? null
 
   // ── Local state: slider value ──────────────────────────────────────────────
   //
@@ -200,7 +216,7 @@ const ControlPanel: FC = () => {
   }, [clearHistory, sendCommand])
 
   const handleSetSpeed = useCallback(
-    (value: 1 | 2 | 5 | 10) => {
+    (value: Speed) => {
       sendCommand({ type: 'set_speed', value })
     },
     [sendCommand],
@@ -213,9 +229,6 @@ const ControlPanel: FC = () => {
   // this. Individual <button> elements also carry `disabled` for a11y.
   const disabledClass = connected ? '' : 'opacity-50 pointer-events-none'
 
-  // Speed options for the segmented control.
-  const SPEED_OPTIONS: Array<1 | 2 | 5 | 10> = [1, 2, 5, 10]
-
   return (
     <>
       {/* Inject slider custom CSS once */}
@@ -225,7 +238,7 @@ const ControlPanel: FC = () => {
       <ConfirmDialog
         open={scramDialogOpen}
         title="Initiate SCRAM?"
-        message="This will drive all control rods to full insertion immediately. Reactor power will drop within seconds. This action cannot be undone without a Reset Scram."
+        message="SCRAM immediately drops the control bank and the shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm) and fission power falls within seconds. Reset Scram returns only the control bank to your command. The shutdown bank stays in, so getting back to power takes Reset Simulation."
         confirmLabel="SCRAM"
         danger
         onConfirm={handleScramConfirm}
@@ -234,7 +247,7 @@ const ControlPanel: FC = () => {
       <ConfirmDialog
         open={resetDialogOpen}
         title="Reset simulation?"
-        message="This will return the simulator to its initial steady-state condition at t = 0. All current transient data will be lost."
+        message="This restarts the simulator at t = 0 from the full-power design state: both rod banks at their design positions, rod command 50 %, design temperatures and pressure. Speed and pressure setpoint are kept. All current chart data will be lost."
         confirmLabel="Reset"
         danger
         onConfirm={handleResetConfirm}
@@ -262,52 +275,58 @@ const ControlPanel: FC = () => {
           <section aria-label="Rod control">
             <SectionHeading>Rod control</SectionHeading>
 
-            {/* Numeric readout: command vs actual position */}
+            {/* Numeric readout: command vs actual control-bank position, in % withdrawn */}
             <div className="flex justify-between text-xs text-slate-400 font-mono mb-2">
               <span>
                 Command:{' '}
-                <span className="text-amber-300">{localRodCmd.toFixed(3)}</span>
+                <span className="text-amber-300">{(localRodCmd * 100).toFixed(1)} %</span>
               </span>
               <span>
                 Position:{' '}
-                <span className="text-sky-300">{rodPosition.toFixed(3)}</span>
+                <span className="text-sky-300">
+                  {rodPosition === null ? '—' : `${(rodPosition * 100).toFixed(1)} %`}
+                </span>
               </span>
             </div>
 
             {/* Rod command slider with tooltip */}
-            <Tip tip="Set the rod-position command. The simulator drives rod_position toward this value at a finite rate (typical full-stroke time: ~30 s).">
-              <input
-                type="range"
-                className="rod-slider"
-                min={0}
-                max={1}
-                step={0.01}
-                value={localRodCmd}
-                disabled={!connected}
-                aria-label="Rod command"
-                onChange={(e) => {
-                  draggingRef.current = true
-                  setLocalRodCmd(parseFloat(e.target.value))
-                }}
-                onMouseUp={(e) =>
-                  commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                }
-                onTouchEnd={(e) =>
-                  commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                }
-                onKeyUp={(e) =>
-                  commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                }
-              />
+            <Tip tip="Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second: 100 s for a full stroke, 50 s from design to either end. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.">
+              {(tipId) => (
+                <input
+                  aria-describedby={tipId}
+                  type="range"
+                  className="rod-slider"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={localRodCmd}
+                  disabled={!connected}
+                  aria-label="Rod command"
+                  aria-valuetext={`${(localRodCmd * 100).toFixed(0)} % withdrawn`}
+                  onChange={(e) => {
+                    draggingRef.current = true
+                    setLocalRodCmd(parseFloat(e.target.value))
+                  }}
+                  onMouseUp={(e) =>
+                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
+                  }
+                  onTouchEnd={(e) =>
+                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
+                  }
+                  onKeyUp={(e) =>
+                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
+                  }
+                />
+              )}
             </Tip>
 
-            {/* Actual rod position progress bar — shows lag between command and position */}
+            {/* Actual control-bank position bar — shows lag between command and position */}
             <div className="mt-2">
-              <div className="text-[10px] text-slate-500 mb-1">Actual rod position</div>
+              <div className="text-[10px] text-slate-500 mb-1">Actual control-bank position</div>
               <div className="h-1.5 w-full rounded bg-slate-700 overflow-hidden">
                 <div
                   className="h-full bg-sky-500 rounded transition-all duration-300"
-                  style={{ width: `${Math.min(1, Math.max(0, rodPosition)) * 100}%` }}
+                  style={{ width: `${Math.min(1, Math.max(0, rodPosition ?? 0)) * 100}%` }}
                 />
               </div>
             </div>
@@ -320,43 +339,49 @@ const ControlPanel: FC = () => {
             <SectionHeading>Safety</SectionHeading>
 
             {/* SCRAM button */}
-            <Tip tip="Emergency shutdown — drives all rods to full insertion immediately. Use only in an emergency or to practice. Reactor power drops within seconds.">
-              <button
-                type="button"
-                disabled={!connected || scrammed}
-                onClick={() => setScramDialogOpen(true)}
-                className={[
-                  'w-full py-4 px-6 rounded-lg text-lg font-bold uppercase tracking-wide',
-                  'bg-red-600 text-white',
-                  'hover:bg-red-500 hover:ring-2 hover:ring-red-400/50',
-                  'focus:outline-none focus:ring-2 focus:ring-red-400',
-                  'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:ring-0',
-                  'transition-all duration-150',
-                ].join(' ')}
-                title={scrammed ? 'Reactor is already scrammed' : undefined}
-              >
-                SCRAM
-              </button>
+            <Tip tip="Emergency shutdown. Immediately commands the control and shutdown banks to drop; both are fully inserted within about 2 s, adding about −7,000 pcm. Fission power falls to a few percent within seconds, then fades as delayed-neutron precursors decay.">
+              {(tipId) => (
+                <button
+                  aria-describedby={tipId}
+                  type="button"
+                  disabled={!connected || scrammed}
+                  onClick={() => setScramDialogOpen(true)}
+                  className={[
+                    'w-full py-4 px-6 rounded-lg text-lg font-bold uppercase tracking-wide',
+                    'bg-red-600 text-white',
+                    'hover:bg-red-500 hover:ring-2 hover:ring-red-400/50',
+                    'focus:outline-none focus:ring-2 focus:ring-red-400',
+                    'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:ring-0',
+                    'transition-all duration-150',
+                  ].join(' ')}
+                  title={scrammed ? 'Reactor is already scrammed' : undefined}
+                >
+                  SCRAM
+                </button>
+              )}
             </Tip>
 
             {/* Reset Scram — only shown when reactor is in scrammed state */}
             {scrammed && (
               <div className="mt-2">
-                <Tip tip="Clear the SCRAM latch and restore operator rod control. Only use once the cause of the SCRAM has been addressed.">
-                  <button
-                    type="button"
-                    disabled={!connected}
-                    onClick={handleResetScram}
-                    className={[
-                      'w-full py-2 px-4 rounded-lg text-sm font-medium',
-                      'bg-slate-700 hover:bg-slate-600 text-slate-200',
-                      'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                      'transition-colors duration-150',
-                    ].join(' ')}
-                  >
-                    Reset Scram
-                  </button>
+                <Tip tip="Clears the SCRAM latch and returns the control bank to your rod command. The shutdown bank stays fully inserted, so the reactor stays subcritical: total reactivity stays below about −4,300 pcm even with the control bank fully withdrawn and the plant cooled down. To return to power, use Reset Simulation.">
+                  {(tipId) => (
+                    <button
+                      aria-describedby={tipId}
+                      type="button"
+                      disabled={!connected}
+                      onClick={handleResetScram}
+                      className={[
+                        'w-full py-2 px-4 rounded-lg text-sm font-medium',
+                        'bg-slate-700 hover:bg-slate-600 text-slate-200',
+                        'focus:outline-none focus:ring-2 focus:ring-slate-500',
+                        'disabled:opacity-50 disabled:cursor-not-allowed',
+                        'transition-colors duration-150',
+                      ].join(' ')}
+                    >
+                      Reset Scram
+                    </button>
+                  )}
                 </Tip>
               </div>
             )}
@@ -370,41 +395,47 @@ const ControlPanel: FC = () => {
 
             <div className="flex flex-col gap-2">
               {/* Pause / Resume toggle */}
-              <Tip tip="Pauses simulator time advancement. Telemetry still streams; values are frozen.">
-                <button
-                  type="button"
-                  disabled={!connected}
-                  onClick={handlePauseResume}
-                  className={[
-                    'w-full py-2.5 px-4 rounded-lg text-sm font-semibold',
-                    running
-                      ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                      : 'bg-green-700 hover:bg-green-600 text-white',
-                    'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                    'disabled:opacity-50 disabled:cursor-not-allowed',
-                    'transition-colors duration-150',
-                  ].join(' ')}
-                >
-                  {running ? 'Pause' : 'Resume'}
-                </button>
+              <Tip tip="Pauses simulator time advancement. Values are frozen; the display still updates when you change a control (SCRAM, speed, rods).">
+                {(tipId) => (
+                  <button
+                    aria-describedby={tipId}
+                    type="button"
+                    disabled={!connected || halted}
+                    onClick={handlePauseResume}
+                    className={[
+                      'w-full py-2.5 px-4 rounded-lg text-sm font-semibold',
+                      running
+                        ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                        : 'bg-green-700 hover:bg-green-600 text-white',
+                      'focus:outline-none focus:ring-2 focus:ring-slate-500',
+                      'disabled:opacity-50 disabled:cursor-not-allowed',
+                      'transition-colors duration-150',
+                    ].join(' ')}
+                  >
+                    {running ? 'Pause' : 'Resume'}
+                  </button>
+                )}
               </Tip>
 
               {/* Reset Simulation */}
-              <Tip tip="Returns the simulator to its initial steady-state condition.">
-                <button
-                  type="button"
-                  disabled={!connected}
-                  onClick={() => setResetDialogOpen(true)}
-                  className={[
-                    'w-full py-2.5 px-4 rounded-lg text-sm font-medium',
-                    'bg-slate-700 hover:bg-slate-600 text-slate-300',
-                    'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                    'disabled:opacity-50 disabled:cursor-not-allowed',
-                    'transition-colors duration-150',
-                  ].join(' ')}
-                >
-                  Reset Simulation
-                </button>
+              <Tip tip="Restarts from the full-power design state (shutdown bank withdrawn, control bank at 50 %, design temperatures and pressure). The only way back to power after a SCRAM; the procedure-driven startup of a real plant is not modeled.">
+                {(tipId) => (
+                  <button
+                    aria-describedby={tipId}
+                    type="button"
+                    disabled={!connected}
+                    onClick={() => setResetDialogOpen(true)}
+                    className={[
+                      'w-full py-2.5 px-4 rounded-lg text-sm font-medium',
+                      'bg-slate-700 hover:bg-slate-600 text-slate-300',
+                      'focus:outline-none focus:ring-2 focus:ring-slate-500',
+                      'disabled:opacity-50 disabled:cursor-not-allowed',
+                      'transition-colors duration-150',
+                    ].join(' ')}
+                  >
+                    Reset Simulation
+                  </button>
+                )}
               </Tip>
             </div>
           </section>
@@ -417,34 +448,37 @@ const ControlPanel: FC = () => {
 
             {/* Segmented speed selector */}
             <Tip tip="Real-time multiplier. Useful for observing long transients quickly.">
-              <div
-                className="grid grid-cols-4 gap-1 rounded-lg bg-slate-800 p-1"
-                role="group"
-                aria-label="Simulation speed multiplier"
-              >
-                {SPEED_OPTIONS.map((opt) => {
-                  const active = speed === opt
-                  return (
-                    <button
-                      key={opt}
-                      type="button"
-                      disabled={!connected}
-                      onClick={() => handleSetSpeed(opt)}
-                      aria-pressed={active}
-                      className={[
-                        'py-1.5 rounded-md text-sm font-semibold transition-colors duration-150',
-                        'focus:outline-none focus:ring-2 focus:ring-sky-500',
-                        active
-                          ? 'bg-sky-600 text-white shadow'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700',
-                        'disabled:opacity-50 disabled:cursor-not-allowed',
-                      ].join(' ')}
-                    >
-                      {opt}×
-                    </button>
-                  )
-                })}
-              </div>
+              {(tipId) => (
+                <div
+                  className="grid grid-cols-4 gap-1 rounded-lg bg-slate-800 p-1"
+                  role="group"
+                  aria-label="Simulation speed multiplier"
+                >
+                  {SPEEDS.map((opt) => {
+                    const active = speed === opt
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        disabled={!connected}
+                        onClick={() => handleSetSpeed(opt)}
+                        aria-pressed={active}
+                        aria-describedby={tipId}
+                        className={[
+                          'py-1.5 rounded-md text-sm font-semibold transition-colors duration-150',
+                          'focus:outline-none focus:ring-2 focus:ring-sky-500',
+                          active
+                            ? 'bg-sky-600 text-white shadow'
+                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700',
+                          'disabled:opacity-50 disabled:cursor-not-allowed',
+                        ].join(' ')}
+                      >
+                        {opt}×
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </Tip>
           </section>
 

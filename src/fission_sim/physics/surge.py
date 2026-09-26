@@ -1,34 +1,23 @@
 """Shared helper for computing primary→pressurizer surge mass flow.
 
-Pulled out into its own module so both ``primary_loop.py`` and
+It lives in its own module so both ``primary_loop.py`` and
 ``pressurizer.py`` can compute m_dot_surge identically without
 creating a circular import (pressurizer.py already imports LoopParams
-from primary_loop.py).
-
-The math is the same as before — it was previously inlined inside
-``Pressurizer._compute_m_dot_surge`` — but extracting it lets both
-modules apply it to their respective derivatives, keeping the system
-mass-conservation invariant ``M_loop + M_pzr = const`` to solver
-tolerance.
+from primary_loop.py). Each module applies it to its own derivatives,
+which keeps the system mass-conservation invariant
+``M_loop + M_pzr = const`` to solver tolerance.
 
 Conservation rationale
 ----------------------
-The engine calls ``Pressurizer.outputs(state)`` *without* inputs in
-the state-derived pass (because the pressurizer is classified as
-state-derived so its pressure P is available to the controller early).
-That means the ``m_dot_surge`` value published by the pressurizer's
-outputs port is always 0.0 — the engine has no way to provide the
-inputs needed to compute the real surge. When the loop read that 0.0
-via wiring, its ``dM_loop/dt = -0.0 - m_dot_spray`` never tracked the
-actual surge, while ``Pressurizer.derivatives()`` (which *does* receive
-its inputs from the ODE integrator) correctly applied the real surge to
-``dM_pzr/dt``. The result was a 1,215 kg mass drift in a 300 s cooldown.
-
-Fix: the loop now computes ``m_dot_surge`` itself using the same helper,
-calling it with ``P_primary`` (from ``pzr.P``, a state-derived output
-available in the state-derived pass) rather than the old wired port.
-Both modules call the same pure function with the same inputs at the
-same time step → conservation holds exactly to solver tolerance.
+The pressurizer's outputs are state-derived: the engine evaluates
+``Pressurizer.outputs(state)`` without inputs, so its pressure P is
+available to the controller early. The surge flow depends on inputs
+(the heat flows and the hot-leg temperature), so it cannot be one of
+those outputs, and a wired surge port would not carry the real value.
+Instead the loop and the pressurizer each call this pure function inside
+``derivatives()``, with the same inputs (the loop gets ``P_primary``
+from ``pzr.P``) at the same instant, so the surge leaving one is exactly
+the surge entering the other.
 
 Public references:
 
@@ -50,7 +39,7 @@ from fission_sim.physics.primary_loop import LoopParams
 
 def compute_m_dot_surge(
     *,
-    power_thermal: float,
+    Q_fuel_to_coolant: float,
     Q_sg: float,
     T_hotleg: float,
     P_primary: float,
@@ -65,8 +54,9 @@ def compute_m_dot_surge(
 
     Parameters
     ----------
-    power_thermal : float
-        Heat from the core [W].
+    Q_fuel_to_coolant : float
+        Heat entering the coolant from the fuel [W] (the core's
+        ``Q_fuel_to_coolant`` output, not its fission power).
     Q_sg : float
         Heat removed by the steam generator [W].
     T_hotleg : float
@@ -91,17 +81,38 @@ def compute_m_dot_surge(
     -----
     Algorithm:
 
-    1. Compute dT_avg/dt from the loop's energy imbalance:
+    1. Compute the rate of change of the loop's **mass-weighted** mean
+       temperature from its net energy imbalance:
 
-           dT_avg/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)
+           T_mean    = (M_hot · T_hot + M_cold · T_cold) / (M_hot + M_cold)
+           dT_mean/dt = (Q_core − Q_sg) / ((M_hot + M_cold) · c_p)
 
-       SIMPLIFICATION: symmetric thermal-mass approximation
-       (M_hot ≈ M_cold). Exact for default L1 parameters where they're
-       equal; off by a few percent if the user makes them asymmetric.
+       Adding the loop's two leg energy balances gives this exactly, for
+       any masses: the inter-leg flow term ṁ·c_p·(T_hot − T_cold) cancels.
+       It is the energy-consistent driver of net thermal expansion,
+       because it only changes when heat is added to or removed from the
+       whole inventory.
+
+       Note: this is NOT always the derivative of the loop's published
+       ``T_avg = (T_hot + T_cold) / 2`` (an arithmetic mean, used for SG
+       heat transfer and moderator feedback). The two agree only when
+       M_hot = M_cold, which is the default. With unequal masses the
+       arithmetic T_avg can move while the stored energy, and so the net
+       expansion, does not (e.g. pure redistribution between the legs);
+       this helper then correctly reports zero surge.
 
     2. Volumetric expansion of primary water into/out of pressurizer:
 
-           surge_volume_rate = β_T · V_loop · dT_avg/dt
+           surge_volume_rate = β_T · V_loop · dT_mean/dt
+
+       ``M_hot + M_cold`` is the water inventory of the same ``V_loop``
+       (by default ``V_loop · ρ_ref``; see ``LoopParams``), so this
+       reduces to β_T · (Q_core − Q_sg) / (ρ_ref · c_p): the surge volume
+       for a given heat imbalance does not depend on the size of the
+       loop. If a user overrides the thermal masses so they no longer
+       equal the inventory of ``V_loop``, the two parameters describe
+       different water and the surge prediction inherits that
+       inconsistency.
 
        Volume expanding *out of* the loop pipes goes *into* the
        pressurizer (same sign convention: positive = insurge).
@@ -113,10 +124,10 @@ def compute_m_dot_surge(
        - Outsurge (surge_volume_rate < 0): saturated liquid leaves the
          bottom of the pressurizer → ρ_l_sat.
 
-       The asymmetry is real and important: at design ρ_hotleg ≈ 715
-       kg/m³ vs. ρ_l_sat ≈ 595 kg/m³ (~17 % gap). Using a single value
-       would inflate the conservation-test residual to the size of the
-       test tolerance.
+       The asymmetry is real: at design (15.5 MPa, T_hot = 597.7 K)
+       CoolProp gives ρ_hotleg ≈ 668 kg/m³ vs. ρ_l_sat ≈ 594 kg/m³, an
+       ~11 % gap. Using a single value would misstate the mass carried by
+       a given surge volume by about that much in one direction.
 
     References
     ----------
@@ -127,21 +138,20 @@ def compute_m_dot_surge(
     """
     lp = loop_params
 
-    # SIMPLIFICATION: symmetric thermal mass — assumes M_hot ≈ M_cold so
-    # dT_avg/dt = (Q_core − Q_sg) / (M_total · c_p). At default L1
-    # parameters M_hot = M_cold = 1.5e4 kg, so the approximation is exact.
-    # If the user makes them asymmetric, the surge prediction will be off
-    # by a few percent.
+    # Mass-weighted mean temperature rate of the whole loop inventory
+    # (sum of the two leg energy balances; see Notes step 1). Exact for
+    # any M_hot, M_cold. Equals d(T_avg)/dt of the published arithmetic
+    # T_avg only when M_hot = M_cold (the default).
     M_total = lp.M_hot + lp.M_cold
-    dT_avg_dt = (power_thermal - Q_sg) / (M_total * lp.c_p)
+    dT_mean_dt = (Q_fuel_to_coolant - Q_sg) / (M_total * lp.c_p)
 
     # Volumetric expansion of primary water into the pressurizer.
-    # SIMPLIFICATION: β_T_primary frozen at design (~3.3e-3 /K from
-    # CoolProp at 583 K, 15.5 MPa, verified Task A1). The real value
-    # varies ~50 % across the 568–598 K operating range; frozen-at-
-    # design under-predicts surge magnitude during cooldowns and
-    # over-predicts during heatups. L2 reads β_T from CoolProp every step.
-    surge_volume_rate = lp.beta_T_primary * lp.V_loop * dT_avg_dt
+    # SIMPLIFICATION: β_T_primary frozen at design (3.3e-3 /K; CoolProp
+    # gives 3.26e-3 at 583 K, 15.5 MPa). The real value rises from
+    # 2.67e-3 /K at 568 K to 4.27e-3 /K at 598 K, so the frozen value
+    # over-predicts surge magnitude when the loop is colder than 583 K and
+    # under-predicts it when hotter (see LoopParams.beta_T_primary).
+    surge_volume_rate = lp.beta_T_primary * lp.V_loop * dT_mean_dt
 
     # Direction-branched density.
     if surge_volume_rate >= 0.0:

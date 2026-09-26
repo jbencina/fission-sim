@@ -4,11 +4,7 @@
  * Renders the full-page scaffold:
  *   - Header: wordmark, live sim-clock, connection-status chip, scram indicator
  *   - Main: two-column grid (charts 2/3, sidebar 1/3 at >=lg; single col below)
- *   - Footer: build info + ws status
- *
- * Placeholder sections are rendered with dashed borders so feat-009/010/011
- * workers can see the scaffold clearly. Replace each placeholder with the real
- * component when ready.
+ *   - Footer: build info + ws status + link to the project README
  */
 
 import type { FC } from 'react'
@@ -17,6 +13,7 @@ import type { ConnectionStatus } from '../types/telemetry'
 import ChartGrid from '../charts/ChartGrid'
 import StatusPanel from '../widgets/StatusPanel'
 import ControlPanel from '../controls/ControlPanel'
+import ErrorNotice, { ModelLimitNotice } from '../widgets/ErrorNotice'
 
 // ---------------------------------------------------------------------------
 // Colour/label maps for connection status chip
@@ -146,9 +143,11 @@ const Footer: FC<FooterProps> = ({ status }) => (
       &nbsp;&middot;&nbsp;ws:{' '}
       <span className="font-mono">{status}</span>
     </span>
-    {/* Placeholder anchor — will point to hosted docs in a later milestone */}
+    {/* The project README (model guide, equations, quickstart) on GitHub */}
     <a
-      href="/"
+      href="https://github.com/jbencina/fission-sim#readme"
+      target="_blank"
+      rel="noopener noreferrer"
       className="text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors"
     >
       README
@@ -193,8 +192,8 @@ function formatSimClock(t: number | null | undefined): string {
  *   - Charts column: spans 2 of 3 columns on >=lg screens
  *   - Sidebar: spans 1 of 3 columns on >=lg; stacks below charts on smaller screens
  *
- * Children are NOT accepted — layout regions are hardcoded as placeholders
- * until feat-009/010/011 replace them.
+ * Children are not accepted: the regions are fixed (ChartGrid in the charts
+ * column; StatusPanel and ControlPanel in the sidebar).
  */
 const AppShell: FC = () => {
   const status = useTelemetryStore((s) => s.status)
@@ -211,6 +210,15 @@ const AppShell: FC = () => {
 
       {/* ── Main content area ─────────────────────────────────────────────── */}
       <main className="flex-1 max-w-screen-2xl w-full mx-auto px-4 py-4">
+        {/*
+         * Model-limit halt (persistent until reset) and the dismissible
+         * backend/connection message; each renders nothing when clear.
+         */}
+        <div className="mb-4 flex flex-col gap-2 empty:hidden">
+          <ModelLimitNotice />
+          <ErrorNotice />
+        </div>
+
         {/*
          * Responsive two-column grid:
          *   <lg  → 1 column (grid-cols-1)

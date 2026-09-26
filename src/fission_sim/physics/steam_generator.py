@@ -1,11 +1,12 @@
-"""Steam generator (heat exchanger only) — fidelity level L1.
+"""Steam generator (heat exchanger only) — simplest (algebraic) model.
 
 Models the heat exchanger between the primary and secondary loops as a single
 algebraic relation: Q_sg = UA * (T_avg - T_secondary). No state, no thermal
 lag, no two-phase modeling. The entire vessel — typically containing thousands
 of tubes the size of a small office building — collapses to one equation.
 
-Physics specification: see ``.docs/design.md`` §5.3.
+The README's "Educational Component Guide" and "Equations" sections explain
+this model for learners.
 
 References
 ----------
@@ -34,7 +35,7 @@ import numpy as np
 
 @dataclass(frozen=True)
 class SGParams:
-    """Parameters for the L1 steam generator.
+    """Parameters for the algebraic steam generator.
 
     Parameters
     ----------
@@ -52,7 +53,7 @@ class SGParams:
     Notes
     -----
     "UA" is the standard heat exchanger lumped product: U (overall heat transfer
-    coefficient, [W/(m²·K)]) times A (heat transfer area, [m²]). At L1 it's a
+    coefficient, [W/(m²·K)]) times A (heat transfer area, [m²]). Here it is a
     single constant; in reality it varies with primary flow, secondary flow,
     fouling buildup over years of operation, and water level on the secondary
     side. Real-world value for a large PWR SG: ~1.4 × 10⁸ W/K, meaning a 22 K
@@ -93,7 +94,7 @@ class SGParams:
 
 
 class SteamGenerator:
-    """L1 steam generator: pure algebraic heat exchanger.
+    """Steam generator modeled as a pure algebraic heat exchanger.
 
     Implements ``Q_sg = UA * (T_avg - T_secondary)``. No state, no thermal
     lag, no two-phase secondary side. Heat removal is determined entirely by the
@@ -124,7 +125,7 @@ class SteamGenerator:
         secondary temperature changes.
       * No two-phase modeling on the secondary side; "steam generation" doesn't
         actually appear in the equations — heat just disappears into the sink.
-      * No water level dynamics on the secondary side (M4 will add these).
+      * No water level dynamics on the secondary side.
       * Constant UA (real value depends on flow, fouling, level).
     """
 
@@ -132,6 +133,10 @@ class SteamGenerator:
     state_labels: tuple[str, ...] = ()
     input_ports: tuple[str, ...] = ("T_avg", "T_secondary")
     output_ports: tuple[str, ...] = ("Q_sg",)
+    # Declares to the engine that outputs() needs inputs (T_avg, T_secondary),
+    # so it is evaluated after the modules that supply them instead of being
+    # probed.
+    outputs_require_inputs: bool = True
 
     def __init__(self, params: SGParams) -> None:
         """Construct a steam generator with the given parameters.
@@ -143,11 +148,11 @@ class SteamGenerator:
         self.params = params
 
     def initial_state(self) -> np.ndarray:
-        """Return an empty state vector (SG has no state at L1)."""
+        """Return an empty state vector (this SG model has no state)."""
         return np.empty(0)
 
     def derivatives(self, state: np.ndarray, inputs: dict | None = None) -> np.ndarray:
-        """Return an empty derivatives vector (SG has no evolving state at L1)."""
+        """Return an empty derivatives vector (this SG model has no evolving state)."""
         return np.empty(0)
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
@@ -156,7 +161,7 @@ class SteamGenerator:
         Parameters
         ----------
         state : np.ndarray
-            Ignored — SG has no state at L1.
+            Ignored — this SG model has no state.
         inputs : dict
             Required keys:
 

@@ -1,7 +1,6 @@
-"""Full M2 plant acceptance tests.
+"""Full-plant acceptance tests for the pressurizer and its controller.
 
-Implements the acceptance criteria from spec §5
-(docs/superpowers/specs/2026-05-08-pressurizer-design.md):
+Criteria checked here:
 
   1. Steady state holds.
   2. Power-maneuver pressure swing < 0.5 MPa.
@@ -11,8 +10,8 @@ Implements the acceptance criteria from spec §5
   7. Scram-from-full-power transient with conservation.
   8. Heater-failure cooldown stays subcooled.
 
-Criterion 6 (energy-balance regression) is covered in
-tests/test_primary_plant.py — the existing M1 closure still holds.
+Criterion 6 (energy-balance closure) is covered in
+tests/test_primary_plant.py.
 """
 
 import numpy as np
@@ -30,9 +29,13 @@ from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
 
+# Control-bank travel worth −210 pcm (the maneuver size used below): the
+# default bank is worth 1,200 pcm over full travel, so 210 pcm is 17.5 %.
+ROD_STEP_210_PCM = 0.0021 / RodParams().rho_control_worth
+
 
 def build_m2_plant() -> SimEngine:
-    """Wire the M2 plant at design defaults."""
+    """Wire the full plant (with pressurizer and controller) at design defaults."""
     engine = SimEngine()
     loop_params = LoopParams()
     pzr_params = PressurizerParams(loop_params=loop_params)
@@ -57,7 +60,7 @@ def build_m2_plant() -> SimEngine:
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
     core(rho_rod=rho_rod, T_cool=loop.T_cool)
     pzr(
-        power_thermal=core.power_thermal,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg_sig,
         T_hotleg=loop.T_hot,
         T_coldleg=loop.T_cold,
@@ -69,7 +72,7 @@ def build_m2_plant() -> SimEngine:
         heater_manual=heater_manual, spray_manual=spray_manual,
     )
     loop(
-        power_thermal=core.power_thermal, Q_sg=Q_sg_sig,
+        Q_fuel_to_coolant=core.Q_fuel_to_coolant, Q_sg=Q_sg_sig,
         m_dot_spray=pzr_ctrl.m_dot_spray, P_primary=pzr.P,
     )
     engine.finalize()
@@ -96,14 +99,16 @@ def test_steady_state_holds_for_300s():
 # (run together because they share the same scenario)
 # ---------------------------------------------------------------------------
 def _power_maneuver(t: float) -> dict:
+    """−210 pcm ramped in over 120 s, held, then ramped back out."""
+    low = 0.5 - ROD_STEP_210_PCM
     if t < 30.0:
         rc = 0.5
     elif t < 150.0:
-        rc = 0.5 - 0.015 * (t - 30.0) / 120.0
+        rc = 0.5 - ROD_STEP_210_PCM * (t - 30.0) / 120.0
     elif t < 360.0:
-        rc = 0.485
+        rc = low
     elif t < 480.0:
-        rc = 0.485 + 0.015 * min(t - 360.0, 120.0) / 120.0
+        rc = low + ROD_STEP_210_PCM * min(t - 360.0, 120.0) / 120.0
     else:
         rc = 0.5
     return {"rod_command": rc, "scram": False}
@@ -155,13 +160,14 @@ def test_heater_manual_zero_disables_heater_during_underpressure():
 
     def scenario(t: float) -> dict:
         return {
-            "rod_command": 0.485 if t > 30.0 else 0.5,
+            "rod_command": 0.5 - ROD_STEP_210_PCM if t > 30.0 else 0.5,
             "scram": False,
             "heater_manual": 0.0,
         }
 
     _, dense = engine.run(t_end=400.0, scenario_fn=scenario, dense=True, max_step=0.5)
-    # Sample late in the run when the pressure should be down by ~150 kPa.
+    # Sample late in the run, when pressure is several hundred kPa below
+    # setpoint (well past the 150 kPa deadband where heaters would fire).
     snap = dense.at(300.0)
     assert snap["signals"]["Q_heater"] == 0.0
 
@@ -194,7 +200,7 @@ def test_heater_failure_cooldown_stays_subcooled():
     engine = build_m2_plant()
 
     def scenario(t: float) -> dict:
-        rc = 0.5 - 0.015 * t / 600.0 if t < 600.0 else 0.485
+        rc = 0.5 - ROD_STEP_210_PCM * min(t, 600.0) / 600.0
         return {"rod_command": rc, "scram": False, "heater_manual": 0.0}
 
     _, dense = engine.run(t_end=600.0, scenario_fn=scenario, dense=True, max_step=1.0)
