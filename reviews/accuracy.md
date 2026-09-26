@@ -2,6 +2,9 @@
 
 Baseline: `5dc6e641ef7807e323a5b9c90637696a60ad07e4`.
 Reviewed by the primary agent. Implementation was kept unchanged.
+Independently re-verified on 2026-09-26; see the audit section of
+[README.md](README.md) for what changed. A8–A10 and the second branch of A2
+come from that pass.
 
 ## Assessment
 
@@ -71,6 +74,16 @@ feedback, surge, and pressure trajectories respond to the wrong heat input.
 During heatup the mismatch creates excess modeled stored energy instead.
 Steady-state agreement hides the defect because `P_fission = Q_fc` there.
 
+**Window, and interaction with A3.** The defect acts over the fuel time
+constant `tau_fuel = M_fuel c_p_fuel / hA_fc = 5.17 s`, so it distorts
+roughly the first 10–15 s of a transient rather than the whole trajectory.
+That is exactly the window the SCRAM and rod-step demonstrations occupy.
+Fixing A1 alone is not sufficient. With the configured 30,000 kg of thermal
+mass the loop's own time constant is `(M_hot + M_cold) c_p / UA = 1.375 s`,
+shorter than the fuel's (A9). Once fuel heat is routed correctly, that loop
+still responds about four times faster than its represented inventory
+implies. A1 and A3 together set the transient response; fix them together.
+
 **Recommendation:** expose a distinct fuel-to-coolant heat-transfer signal and
 use it consistently in the loop and surge calculation. Keep fission power as
 a separate displayed quantity. An algebraic heat-transfer component consuming
@@ -104,6 +117,22 @@ last completed time `t=4.6 s`, with a CoolProp `ValueError` at approximately
 16.4545 MPa and 622.780 K. The last successful snapshot has only 0.266 K
 subcooling margin. The runtime catches the error and pauses, but exposes no
 reason distinguishing a model-domain failure from an operator pause.
+
+At the failure the rod is at 0.546, worth +644 pcm, essentially one dollar
+(`sum(beta_i) = 650 pcm`), with `n = 1.78`. The accepted command was a
++1,400 pcm (2.15 $) demand; A8 explains why a 10 % rod move carries that
+much reactivity.
+
+**The crash is the benign branch.** Repeating the same command with the
+loop's thermal masses set to the physically consistent value
+(`M_hot = M_cold = 61,696 kg`, half of `M_loop_initial`) produces **no
+error**. The hot leg crosses saturation at `t = 7.5 s`; by `t = 30–60 s` it
+runs 8–9 K superheated while `density_PT` silently returns about
+103 kg/m³, a vapor density, into the surge calculation. Spray is pinned at
+25 kg/s and the simulation keeps running with nothing shown to the operator.
+Fixing A3 alone therefore converts a loud failure into a silent invalid
+state. The domain check recommended below is required regardless of the
+other fixes; `reproduce.py --transients` shows both branches.
 
 The pressurizer likewise derives quality with a two-phase lever rule without
 checking that its mass/energy state is inside the saturation dome.
@@ -147,7 +176,7 @@ current physical explanation for its value is not.
 
 ### A4 — P2: SCRAM timing claims are contradicted by the actuator equation and test
 
-**Locations:** `src/fission_sim/physics/rod_controller.py:94-116`, `:278-280`;
+**Locations:** `src/fission_sim/physics/rod_controller.py:94-116`, `:269-272`;
 `tests/test_rod_controller.py:243-267`; `README.md:925`, `:1176`.
 
 The first-order tracker slows exponentially as it approaches the target. With
@@ -164,6 +193,13 @@ The test named `test_scram_reaches_zero_in_2s` actually checks position at four
 seconds against a loose 0.05 threshold. Its comment says the speed cap binds
 for two seconds, while its printed numerical estimate corresponds to one.
 The passing test therefore does not establish the documented behavior.
+The test docstring at `:247-248` also promises "constant-velocity full
+insertion in exactly 2 s".
+
+The same comment block holds a second wrong statement: `rod_controller.py:95`
+says the `v_scram` clip binds "for scram from any realistic position
+(>0.05)". The clip binds only while `|error| > v_scram * tau = 0.5`, ten
+times that threshold.
 
 **Recommendation:** either describe the current smooth actuator honestly,
 including a defined insertion tolerance, or choose a SCRAM-specific trajectory
@@ -212,27 +248,94 @@ lower temperatures and **underpredicts** it at higher temperatures. These
 statements refer to temperature relative to the reference, not simply the
 sign of a transient.
 
+The same comment gives the wrong numeric range. It says `beta_T` spans
+"~2.0e-3 to ~3.0e-3 /K, sometimes higher near 583 K"; the wrapper returns
+2.67e-3 to 4.27e-3 /K across 568–598 K, and 583 K is mid-range, not a peak.
+
 **Recommendation:** correct the explanation. Keeping a constant coefficient
 near the design point is reasonable; dynamic properties are optional.
 
-### A7 — P3: Unequal loop masses can invalidate surge more than the comments admit
+### A7 — P3: The surge helper's mean temperature is not the published `T_avg`, and the comment's error bound is unsupported
 
 **Locations:** `src/fission_sim/physics/surge.py:130-136`;
 `src/fission_sim/physics/primary_loop.py:353-356`, `:400-403`.
 
 The helper estimates `dT_avg/dt` as `(Q_core-Q_sg)/((M_hot+M_cold)c_p)`.
-This equals the derivative of the published arithmetic average only when
-the masses are equal. The claim that custom asymmetry changes the answer by
-only a few percent has no general bound.
+That expression is exactly the time derivative of the **mass-weighted**
+mean temperature for any masses, and it is the energy-consistent driver of
+net expansion. It equals the derivative of the loop's published
+**arithmetic** `T_avg` (`primary_loop.py:403`) only when the masses are
+equal. The comment's claim that asymmetry changes the answer by only a few
+percent has no general bound.
 
 **Reproduction:** set `M_hot=10,000`, `M_cold=20,000 kg`; start at reference
 temperatures with the hot leg one kelvin warmer; hold `Q_core=Q_sg=3 GW`.
-The loop gives `dT_avg/dt=-0.4625 K/s`, while the helper reports zero surge.
+The published `T_avg` changes at `-0.4625 K/s` while the helper reports zero
+surge. Net stored energy is unchanged in this case, so zero is the
+defensible physical answer. The defect is that two different "average"
+temperatures coexist without the code saying so.
 
-**Recommendation:** either enforce equal masses as an L1 restriction, or
-derive surge from the same temperature-rate/volume definition as the loop.
-One asymmetric parameter case covers this contract. The default symmetric
-configuration is unaffected.
+**Recommendation:** correct the comment and state which mean drives surge.
+Either publish a mass-weighted average as well, or document that the
+arithmetic `T_avg` used for SG heat transfer and feedback is not the one
+that drives surge. Do not rewrite the helper around the arithmetic mean;
+that would make it less physical. The default symmetric configuration is
+unaffected either way.
+
+### A8 — P2: The operator's rod command carries the whole 14,000 pcm bank worth
+
+**Locations:** `src/fission_sim/physics/rod_controller.py:117-129`, `:344`;
+`src/fission_sim/api/runtime.py` rod-command validation;
+`web/src/controls/ControlPanel.tsx:278`.
+
+Rod worth is linear with `rho_total_worth = 0.14`, so the full 0→1 stroke is
+14,000 pcm and the operator slider spans the entire shutdown worth. A move
+from 0.5 to 0.6 is a +1,400 pcm (2.15 $) demand; one dollar is 4.6 % of
+travel. At the normal rate `v_normal = 0.01 /s` the bank inserts reactivity
+at 140 pcm/s. A real control bank has on the order of 1,000–1,500 pcm over
+its full travel. The number used here is the worth of the whole rod set,
+appropriate for SCRAM but not for the operator's fine control.
+
+This is the root cause of A2. Any accepted command of a few tenths reaches
+prompt criticality within seconds, and the coolant follows within a few more
+because the loop's inertia is also small (A3, A9).
+
+**Recommendation:** separate control-bank worth from shutdown worth, or
+bound the operator command to a band around the design position that maps
+to a realistic control-bank worth. Say in the UI what one slider step is
+worth in pcm. Keep linear worth; an S-curve is optional. One test that a
+full-range operator command stays below prompt critical is enough.
+
+### A9 — P3: The loop's thermal time constant is shorter than the fuel's
+
+**Locations:** `src/fission_sim/physics/primary_loop.py:104-109`;
+`src/fission_sim/physics/steam_generator.py` (`UA`);
+`src/fission_sim/physics/core.py` (`M_fuel`, `c_p_fuel`, `hA_fc`).
+
+| Quantity | Value |
+|---|---:|
+| `tau_fuel = M_fuel c_p_fuel / hA_fc` | 5.17 s |
+| `tau_loop = (M_hot + M_cold) c_p / UA`, configured | 1.375 s |
+| `tau_loop` with the represented 123,393 kg inventory | 5.66 s |
+
+In a real plant the primary inventory responds far more slowly than the fuel.
+Here the ordering is inverted, so with A1 the coolant tracks fission power
+almost instantly. This is the mechanism behind the 4.6 s saturation in A2 and
+the quantitative form of A3. No fix beyond A3 is needed; it is listed so the
+corrected parameters can be checked against this ordering.
+
+### A10 — P3: Parameter comments state numbers the code does not support
+
+| Location | Comment | Problem |
+|---|---|---|
+| `core.py:158-159` | "published PWR range -1 to -5×10⁻⁵ /K at hot full power" for the moderator coefficient | That is −0.6 to −2.8 pcm/°F. Commonly cited hot-full-power values are on the order of −5 to −30 pcm/°F, about −1e-4 to −5e-4 /K. The chosen −5e-5 /K is a defensible weak beginning-of-cycle value; the stated range is not. Verify against a cited table before changing the value. |
+| `primary_loop.py:134-142` | Derives "~80–100 m³ for piping + RPV" by subtracting steam-generator primary volume, then uses 175 m³ | SG primary volume is part of the expanding inventory and should not be subtracted; either way the arithmetic does not produce 175 m³. |
+| `primary_loop.py:227` vs `:96`; `README.md:928` | "~32 K at design" vs "ΔT ≈ 29.5 K"; the README gives hot/cold ~596/~564 K | Derived references are 597.7/568.3 K, ΔT = 29.5 K. One design point, three sets of numbers. `c_p = 5,500` vs CoolProp 5,736 J/(kg K) at the design point is a further 4 % that is harmless but worth a note. |
+| `rod_controller.py:95` | Scram clip binds "from any realistic position (>0.05)" | The threshold is 0.5 (A4). |
+| `tests/test_primary_plant.py:38` | Lists `m_dot_surge` as a loop input | The port is now `P_primary`. |
+
+These are teaching-text defects, not model defects. Fix them together with
+A5 and the readability items.
 
 ## Reasonable simplifications and remaining modeling limits
 
@@ -296,3 +399,9 @@ CoolProp docs, and control-volume text were directly readable. Inherited
 No independent plant benchmark or licensing analysis was performed. The
 strongest conclusions here are reproducible internal inconsistencies, not
 claims of a validated high fidelity plant model.
+
+The second pass re-read every cited location, re-ran every probe, and added
+the rod-worth, time-constant, and silent-saturation probes to
+[reproduce.py](reproduce.py). It confirmed the point-kinetics constants
+(Keepin U-235 six-group values), the SG `UA`, the secondary saturation
+temperature, and the flow-work and mixed-backend statements above.

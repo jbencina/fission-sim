@@ -4,6 +4,10 @@ Run from the repository root after installing its locked Python dependencies:
     .venv/bin/python reviews/reproduce.py
     .venv/bin/python reviews/reproduce.py --transients
 
+Probe labels match the finding identifiers in accuracy.md and craft.md.
+The A8/A9 probes and the second A2 branch were added by the second-pass
+audit.
+
 The runtime probes intentionally inspect private state to diagnose lifecycle
 bugs. Production code should not depend on those private attributes.
 """
@@ -15,11 +19,18 @@ import asyncio
 
 from scipy.integrate import solve_ivp
 
-from fission_sim.api.runtime import SimRuntime
+from fission_sim.api.runtime import (
+    PressurizerControllerParams,
+    PressurizerParams,
+    SimRuntime,
+    SinkParams,
+    _build_engine,
+)
 from fission_sim.physics import coolprop
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
+from fission_sim.physics.steam_generator import SGParams
 
 
 def energy_balance() -> None:
@@ -46,6 +57,16 @@ def parameters_and_rods() -> None:
     lp = LoopParams()
     print("A3: effective thermal mass / actual coolant mass [kg] =",
           lp.M_hot + lp.M_cold, lp.M_loop_initial)
+    p, sg = CoreParams(), SGParams()
+    bank = RodController(RodParams())
+    state = bank.initial_state()
+    state[0] = 0.6
+    print("A8: rod command 0.6 is worth [pcm] =", bank.outputs(state)["rho_rod"] * 1e5,
+          "; one dollar [pcm] =", p.beta_i.sum() * 1e5)
+    print("A9: tau_fuel / tau_loop configured / tau_loop inventory [s] =",
+          p.M_fuel * p.c_p_fuel / p.hA_fc,
+          (lp.M_hot + lp.M_cold) * lp.c_p / sg.UA,
+          lp.M_loop_initial * lp.c_p / sg.UA)
     for temperature in (568, 583, 598):
         print("A6: beta_T at", temperature, "K =",
               coolprop.beta_T(lp.P_ref, temperature), "/K")
@@ -127,6 +148,26 @@ def transients() -> None:
             break
     else:
         print("A2: command 0.6 completed 40 seconds without an error")
+    # Same command with physically consistent loop thermal mass: no error,
+    # but the hot leg boils and density_PT silently returns vapor density.
+    half = LoopParams().M_loop_initial / 2
+    lp = LoopParams(M_hot=half, M_cold=half)
+    engine = _build_engine(
+        core_params=CoreParams(), loop_params=lp, sg_params=SGParams(),
+        sink_params=SinkParams(), rod_params=RodParams(),
+        pzr_params=PressurizerParams(loop_params=lp),
+        ctrl_params=PressurizerControllerParams(),
+        rod_command_default=0.5, P_setpoint_default=1.55e7,
+    )
+    crossed = None
+    for _ in range(600):
+        snap = engine.step(0.1, rod_command=0.6)
+        P, T_hot = snap["pzr"]["P"], snap["loop"]["T_hot"]
+        if crossed is None and T_hot > coolprop.T_sat(P):
+            crossed = engine.t
+    print("A2: with M_hot = M_cold =", round(half), "kg the same command raises nothing;")
+    print("    T_hot crossed T_sat at t =", crossed, "s; at t = 60 s subcooling =",
+          coolprop.T_sat(P) - T_hot, "K, density_PT =", coolprop.density_PT(P=P, T=T_hot), "kg/m3")
 
 
 if __name__ == "__main__":

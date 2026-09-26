@@ -47,3 +47,9 @@ checks and focused reproductions are recorded in [README.md](README.md).
 Implementation files were preserved. Review servers were stopped after the
 browser smoke check. Findings and recommendations are ready for implementation
 as separate changes.
+
+A second-pass audit on 2026-09-26 re-verified every finding against the
+source with four independent checks, corrected three mischaracterizations
+(A7, C3, C6), fixed line references, and added A8–A10, R8, and C8–C10. Its
+scope and the full list of changes are in the audit section of
+[README.md](README.md).
