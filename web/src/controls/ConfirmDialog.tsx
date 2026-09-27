@@ -1,8 +1,8 @@
 /**
  * ConfirmDialog — a simple modal confirmation overlay.
  *
- * Renders a fullscreen dark overlay with a centered card containing a title,
- * message, and two action buttons (Cancel / Confirm). The Confirm button can
+ * Renders a blurred scrim with a centered card containing a title, message,
+ * and two action buttons (Cancel / Confirm). The Confirm button can
  * optionally be rendered in "danger" red styling.
  *
  * Behaviour:
@@ -35,7 +35,7 @@ export interface ConfirmDialogProps {
   confirmLabel?: string
   /**
    * When true the confirm button is rendered with red destructive styling
-   * (bg-red-600) to signal a dangerous or irreversible action.
+   * to signal a dangerous or irreversible action.
    */
   danger?: boolean
   /** Called when the user clicks the Confirm button. */
@@ -139,58 +139,50 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
   if (!open) return null
 
   const confirmClass = danger
-    ? 'bg-red-600 hover:bg-red-500 focus:ring-red-500 text-white'
-    : 'bg-sky-600 hover:bg-sky-500 focus:ring-sky-500 text-white'
+    ? 'bg-danger hover:bg-danger-hover text-white'
+    : 'bg-accent hover:bg-accent-hover text-accent-ink'
 
   return (
     /*
-     * Fullscreen fixed overlay.
-     * bg-black/60 gives a semi-transparent dark scrim behind the card.
-     * z-50 ensures the dialog floats above all other content.
-     * Clicking the backdrop calls onCancel (the onClick is on the overlay div,
-     * but we stop propagation on the card itself to prevent accidental dismissal).
+     * Fullscreen overlay with a blurred scrim. Clicking the scrim cancels;
+     * clicks inside the card stop propagation so they never dismiss it.
      */
     <div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
       onClick={onCancel}
       aria-modal="true"
       role="dialog"
       aria-labelledby="confirm-dialog-title"
+      aria-describedby="confirm-dialog-message"
     >
-      {/* Centered card — stop propagation so clicks inside do NOT close the dialog */}
       <div
         ref={cardRef}
-        className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-md w-full shadow-2xl"
+        className="w-full max-w-[26rem] animate-pop-in rounded-2xl border border-line bg-raised p-5 shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Title */}
         <h2
           id="confirm-dialog-title"
-          className="text-lg font-bold text-slate-100 mb-2"
+          className="text-[17px] font-semibold tracking-[-0.01em] text-ink"
         >
           {title}
         </h2>
+        <p id="confirm-dialog-message" className="mt-2 text-[13px] leading-relaxed text-ink-2">
+          {message}
+        </p>
 
-        {/* Message body */}
-        <p className="text-sm text-slate-300 leading-relaxed mb-6">{message}</p>
-
-        {/* Action buttons — right-aligned */}
-        <div className="flex justify-end gap-3">
-          {/* Cancel — secondary neutral style */}
+        <div className="mt-5 grid grid-cols-2 gap-2">
           <button
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500"
+            className="h-10 rounded-[10px] bg-surface-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-3"
           >
             Cancel
           </button>
-
-          {/* Confirm — primary or danger style depending on props */}
           <button
             ref={confirmRef}
             type="button"
             onClick={onConfirm}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition-colors focus:outline-none focus:ring-2 ${confirmClass}`}
+            className={`h-10 rounded-[10px] text-[13px] font-semibold transition-colors ${confirmClass}`}
           >
             {confirmLabel}
           </button>

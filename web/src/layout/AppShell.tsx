@@ -1,249 +1,58 @@
 /**
- * AppShell — persistent visual chrome for fission-sim web UI.
+ * AppShell — the page layout.
  *
- * Renders the full-page scaffold:
- *   - Header: wordmark, live sim-clock, connection-status chip, scram indicator
- *   - Main: two-column grid (charts 2/3, sidebar 1/3 at >=lg; single col below)
- *   - Footer: build info + ws status + link to the project README
+ *   - Toolbar (sticky): wordmark, connection and simulation state, tools.
+ *   - Notices: a model-limit halt and the dismissible backend/connection
+ *     message, when present.
+ *   - Main: the six trend charts, and a sidebar with the operator controls
+ *     above the plant-status readouts. On wide screens the page fits the
+ *     window and each column scrolls on its own if needed; on narrow screens
+ *     everything stacks and the page scrolls.
+ *   - Footer: the learning-use disclaimer.
  */
 
 import type { FC } from 'react'
-import { useTelemetryStore } from '../state/telemetryStore'
-import type { ConnectionStatus } from '../types/telemetry'
 import ChartGrid from '../charts/ChartGrid'
-import StatusPanel from '../widgets/StatusPanel'
 import ControlPanel from '../controls/ControlPanel'
 import ErrorNotice, { ModelLimitNotice } from '../widgets/ErrorNotice'
+import StatusPanel from '../widgets/StatusPanel'
+import Toolbar from './Toolbar'
 
-// ---------------------------------------------------------------------------
-// Colour/label maps for connection status chip
-// ---------------------------------------------------------------------------
-
-/** Tailwind background-colour class for the status dot. */
-const STATUS_DOT_CLASS: Record<ConnectionStatus, string> = {
-  connecting: 'bg-amber-400',
-  connected: 'bg-green-400',
-  disconnected: 'bg-red-500',
-}
-
-/** Human-readable label for each connection state. */
-const STATUS_LABEL: Record<ConnectionStatus, string> = {
-  connecting: 'Connecting…',
-  connected: 'Connected',
-  disconnected: 'Disconnected',
-}
-
-// ---------------------------------------------------------------------------
-// Reactor-ring SVG icon (inline — no external asset dependency)
-// ---------------------------------------------------------------------------
-
-/** Small inline SVG that suggests a nuclear reactor core / atom ring. */
-const ReactorIcon: FC = () => (
-  <svg
-    aria-hidden="true"
-    width="28"
-    height="28"
-    viewBox="0 0 28 28"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className="shrink-0"
-  >
-    {/* Outer ring */}
-    <circle cx="14" cy="14" r="12" stroke="#f59e0b" strokeWidth="2" />
-    {/* Middle ring */}
-    <circle cx="14" cy="14" r="7" stroke="#fcd34d" strokeWidth="1.5" strokeDasharray="4 2" />
-    {/* Core dot */}
-    <circle cx="14" cy="14" r="2.5" fill="#f59e0b" />
-  </svg>
-)
-
-const DisclaimerBanner: FC = () => (
-  <div className="bg-amber-950/70 border-b border-amber-500/30 px-4 py-2 text-xs leading-relaxed text-amber-100">
-    <div className="max-w-screen-2xl mx-auto">
-      <span className="font-semibold">Learning-use disclaimer:</span>{' '}
-      fission-sim is a personal learning project, not for real-world use. Model
-      behavior, values, and explanations may be incorrect, incomplete, and
-      oversimplified.
-    </div>
-  </div>
-)
-
-// ---------------------------------------------------------------------------
-// Header sub-component
-// ---------------------------------------------------------------------------
-
-interface HeaderProps {
-  /** Formatted sim-clock string, e.g. "T+ 01:23.4" */
-  simClock: string
-  status: ConnectionStatus
-  scrammed: boolean
-}
-
-const Header: FC<HeaderProps> = ({ simClock, status, scrammed }) => {
-  const dotClass = STATUS_DOT_CLASS[status]
-  const label = STATUS_LABEL[status]
-
-  return (
-    <header className="bg-slate-900 border-b border-slate-800 px-4 py-3 flex items-center gap-4 z-10">
-      {/* ── Left: wordmark ─────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 min-w-0">
-        <ReactorIcon />
-        <div className="leading-none">
-          <span className="text-amber-400 font-bold text-lg tracking-tight">
-            fission-sim
-          </span>
-          <span className="block text-slate-400 text-xs tracking-wide">
-            PWR Simulator
-          </span>
-        </div>
-      </div>
-
-      {/* ── Center: live sim-clock ─────────────────────────────────────────── */}
-      <div className="flex-1 flex justify-center">
-        <span
-          className="font-mono tabular-nums text-slate-100 text-base tracking-wide"
-          aria-label="Simulation elapsed time"
-        >
-          {simClock}
-        </span>
-      </div>
-
-      {/* ── Right: status chips ────────────────────────────────────────────── */}
-      <div className="flex items-center gap-2 shrink-0">
-        {/* SCRAM indicator — only visible when active */}
-        {scrammed && (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white tracking-wider uppercase">
-            SCRAMMED
-          </span>
-        )}
-
-        {/* Connection-status chip */}
-        <div className="inline-flex items-center gap-2 rounded-full bg-slate-800 border border-slate-700 px-3 py-1.5 text-sm font-medium shadow-sm">
-          <span className={`inline-block h-2.5 w-2.5 rounded-full ${dotClass}`} />
-          <span className="text-slate-200">{label}</span>
-        </div>
-      </div>
-    </header>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Footer sub-component
-// ---------------------------------------------------------------------------
-
-interface FooterProps {
-  status: ConnectionStatus
-}
-
-const Footer: FC<FooterProps> = ({ status }) => (
-  <footer className="bg-slate-900 border-t border-slate-800 px-4 py-2 text-xs text-slate-500 flex items-center justify-between">
-    <span>
-      fission-sim web UI &middot; build mode:{' '}
-      <span className="font-mono">{import.meta.env.MODE}</span>
-      &nbsp;&middot;&nbsp;ws:{' '}
-      <span className="font-mono">{status}</span>
-    </span>
-    {/* The project README (model guide, equations, quickstart) on GitHub */}
-    <a
-      href="https://github.com/jbencina/fission-sim#readme"
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-slate-500 hover:text-slate-300 underline underline-offset-2 transition-colors"
-    >
-      README
-    </a>
+const Footer: FC = () => (
+  <footer className="border-t border-line">
+    <p className="mx-auto max-w-[1720px] px-4 py-2.5 text-[12px] leading-relaxed text-ink-3 sm:px-6">
+      fission-sim is a personal learning project, not for real-world use. Model behavior, values,
+      and explanations may be incorrect, incomplete, and oversimplified.
+    </p>
   </footer>
 )
 
-// ---------------------------------------------------------------------------
-// Sim-clock formatter
-// ---------------------------------------------------------------------------
+const AppShell: FC = () => (
+  <div className="flex min-h-dvh flex-col lg:h-dvh">
+    <Toolbar />
 
-/**
- * Format simulation time in seconds as "T+ mm:ss.t" with one decimal place.
- *
- * Examples:
- *   0        → "T+ 00:00.0"
- *   90.7     → "T+ 01:30.7"
- *   3661.25  → "T+ 61:01.2"
- */
-function formatSimClock(t: number | null | undefined): string {
-  if (t == null) return 'T+ --:--.--'
-  const totalSeconds = Math.max(0, t)
-  const minutes = Math.floor(totalSeconds / 60)
-  const seconds = totalSeconds % 60
-  const mm = String(minutes).padStart(2, '0')
-  const ss = String(Math.floor(seconds)).padStart(2, '0')
-  const tenths = Math.floor((seconds % 1) * 10)
-  return `T+ ${mm}:${ss}.${tenths}`
-}
+    <main className="mx-auto flex w-full max-w-[1720px] flex-1 flex-col gap-4 px-4 py-4 sm:px-6 lg:min-h-0">
+      <div className="flex flex-col gap-2 empty:hidden">
+        <ModelLimitNotice />
+        <ErrorNotice />
+      </div>
 
-// ---------------------------------------------------------------------------
-// AppShell — top-level layout component
-// ---------------------------------------------------------------------------
+      <div className="grid flex-1 gap-4 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section id="charts" aria-label="Trends" className="lg:scroll-column lg:min-h-0 lg:overflow-y-auto">
+          <ChartGrid />
+        </section>
+        <aside
+          aria-label="Controls and plant status"
+          className="lg:scroll-column grid items-start gap-4 md:grid-cols-2 lg:flex lg:min-h-0 lg:flex-col lg:overflow-y-auto"
+        >
+          <ControlPanel />
+          <StatusPanel />
+        </aside>
+      </div>
+    </main>
 
-/**
- * AppShell
- *
- * Full-page layout shell. Reads connection status and the latest telemetry
- * frame from the global Zustand store; renders header, main grid, and footer.
- *
- * The main grid uses a 3-column CSS grid:
- *   - Charts column: spans 2 of 3 columns on >=lg screens
- *   - Sidebar: spans 1 of 3 columns on >=lg; stacks below charts on smaller screens
- *
- * Children are not accepted: the regions are fixed (ChartGrid in the charts
- * column; StatusPanel and ControlPanel in the sidebar).
- */
-const AppShell: FC = () => {
-  const status = useTelemetryStore((s) => s.status)
-  const latest = useTelemetryStore((s) => s.latest)
-
-  const simClock = formatSimClock(latest?.t)
-  const scrammed = latest?.scrammed === true
-
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
-      {/* ── Header ───────────────────────────────────────────────────────── */}
-      <Header simClock={simClock} status={status} scrammed={scrammed} />
-      <DisclaimerBanner />
-
-      {/* ── Main content area ─────────────────────────────────────────────── */}
-      <main className="flex-1 max-w-screen-2xl w-full mx-auto px-4 py-4">
-        {/*
-         * Model-limit halt (persistent until reset) and the dismissible
-         * backend/connection message; each renders nothing when clear.
-         */}
-        <div className="mb-4 flex flex-col gap-2 empty:hidden">
-          <ModelLimitNotice />
-          <ErrorNotice />
-        </div>
-
-        {/*
-         * Responsive two-column grid:
-         *   <lg  → 1 column (grid-cols-1)
-         *   >=lg → 3-column base with charts spanning 2 cols, sidebar 1 col
-         */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-full">
-
-          {/* ── Charts column (2/3 width on lg+) ─────────────────────────── */}
-          <section id="charts" className="lg:col-span-2">
-            <ChartGrid />
-          </section>
-
-          {/* ── Sidebar (1/3 width on lg+) ───────────────────────────────── */}
-          <div className="flex flex-col gap-4">
-            <StatusPanel />
-            <ControlPanel />
-          </div>
-
-        </div>
-      </main>
-
-      {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <Footer status={status} />
-    </div>
-  )
-}
+    <Footer />
+  </div>
+)
 
 export default AppShell

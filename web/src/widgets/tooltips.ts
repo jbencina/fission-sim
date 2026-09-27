@@ -1,5 +1,6 @@
 /**
- * tooltips — centralized educational tooltip copy for status tiles.
+ * tooltips — centralized educational copy for the status readouts and the
+ * toolbar's simulation-state badges.
  *
  * Each entry describes a telemetry field in plain language suitable for
  * a reader without a nuclear engineering background. The `body` field
@@ -14,11 +15,11 @@
 
 /** Shape of a single tooltip entry. */
 export interface TooltipEntry {
-  /** Short title matching the tile label — displayed in bold at the top of the tooltip. */
+  /** Short label shown on the readout and in bold at the top of its explanation. */
   title: string;
   /** Plain-language explanation ≥40 characters. Includes units and the design-point value. */
   body: string;
-  /** Primary unit string displayed on the tile, e.g. "MW" or "K". */
+  /** Unit displayed after the value, e.g. "MW" or "K". */
   units: string;
 }
 
@@ -30,7 +31,7 @@ export interface TooltipEntry {
  */
 export const TOOLTIPS: Record<string, TooltipEntry> = {
   power_thermal: {
-    title: 'Thermal Power',
+    title: 'Thermal power',
     units: 'MW',
     body:
       'Modeled fission power: the energy released by fission in the core ' +
@@ -43,7 +44,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_hot: {
-    title: 'Hot-leg Temperature',
+    title: 'Hot leg',
     units: 'K',
     body:
       'Coolant temperature leaving the reactor core on its way to the steam ' +
@@ -52,7 +53,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_cold: {
-    title: 'Cold-leg Temperature',
+    title: 'Cold leg',
     units: 'K',
     body:
       'Coolant temperature returning from the steam generator back to the ' +
@@ -61,7 +62,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_avg: {
-    title: 'Average Coolant Temp',
+    title: 'Average coolant',
     units: 'K',
     body:
       'Arithmetic mean of hot-leg and cold-leg temperatures: (T_hot + T_cold)/2. ' +
@@ -71,7 +72,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_fuel: {
-    title: 'Fuel Temperature',
+    title: 'Fuel temperature',
     units: 'K',
     body:
       'Lumped average temperature of all the uranium fuel: one number for ' +
@@ -83,7 +84,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   P_primary_MPa: {
-    title: 'Primary Pressure',
+    title: 'Primary pressure',
     units: 'MPa',
     body:
       'Pressure of the primary coolant loop, maintained by the pressurizer ' +
@@ -94,7 +95,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   rod_position: {
-    title: 'Rod Position',
+    title: 'Rod position',
     units: '%',
     body:
       'Control-bank position, in % of travel withdrawn: 0 % = fully ' +
@@ -106,7 +107,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   rod_command: {
-    title: 'Rod Command',
+    title: 'Rod command',
     units: '%',
     body:
       'Operator target for the control-bank position, in % of travel ' +
@@ -117,7 +118,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   Q_sg: {
-    title: 'SG Heat Transfer',
+    title: 'SG heat transfer',
     units: 'MW',
     body:
       'Heat flowing from the primary coolant to the secondary (steam) side ' +
@@ -127,17 +128,17 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   sim_time: {
-    title: 'Simulation Time',
+    title: 'Simulation time',
     units: 's',
     body:
-      'Elapsed simulation time in seconds (displayed as mm:ss). This is the ' +
+      'Elapsed simulation time (shown as T+ mm:ss.t). This is the ' +
       'model\'s internal clock, independent of real wall-clock time. The speed ' +
       'multiplier controls how fast simulation time advances relative to ' +
       'real time.',
   },
 
   speed: {
-    title: 'Speed Multiplier',
+    title: 'Speed multiplier',
     units: '×',
     body:
       'Real-time multiplier for simulation advancement. At 1×, one simulated ' +
@@ -148,7 +149,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   scrammed: {
-    title: 'SCRAM Status',
+    title: 'SCRAM',
     units: '',
     body:
       'A SCRAM is an emergency reactor shutdown. It immediately commands ' +
@@ -160,16 +161,16 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   running: {
-    title: 'Sim Running',
+    title: 'Run state',
     units: '',
     body:
-      'Whether simulation time is advancing. NO means paused, or halted at ' +
-      'a model limit: values are frozen at the last computed state. Resume ' +
+      'Whether simulation time is advancing. Paused and Halted (stopped at ' +
+      'a model limit) both freeze values at the last computed state. Resume ' +
       'continues a pause; a model-limit halt needs Reset Simulation.',
   },
 
   rho_total: {
-    title: 'Total Reactivity',
+    title: 'Total reactivity',
     units: 'pcm',
     body:
       'Net reactivity — sum of rod, Doppler, and moderator contributions. ' +

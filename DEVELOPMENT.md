@@ -86,7 +86,7 @@ test suite.
 ## End-To-End Smoke Test
 
 The Playwright smoke test runs two checks in a real browser: the educational
-help for a status tile and for a control can be opened with the keyboard
+help for a control and for a status readout can be opened with the keyboard
 alone, and a SCRAM (after a reset to a known running state) produces a large
 power drop.
 
@@ -357,8 +357,8 @@ The browser dashboard is a single-page app in `web/`:
 | Vite | 5.x | Build tool and dev server with backend proxy |
 | React | 18.x | UI component tree |
 | TypeScript | 5.x strict | Type-safe frontend language |
-| Tailwind CSS | 3.x | Utility-first styling |
-| Recharts | 2.x | Time-series charts |
+| Tailwind CSS | 3.x | Utility-first styling, mapped onto theme CSS variables |
+| uPlot | 1.6.x | Canvas time-series charts |
 | Zustand | 5.x | Lightweight global state store for telemetry |
 | ESLint + Prettier | 8.x / 3.x | Lint and format |
 | Vitest | 4.x | Unit tests for store logic and utilities |
@@ -370,17 +370,30 @@ implemented.
 
 A frame's path through the frontend: `wsClient.ts` receives it, the Zustand
 store in `telemetryStore.ts` keeps it as `latest` and appends it to a history
-of up to 600 frames, `chartData.ts` converts units and selects what to plot,
-and the charts and status tiles render it.
+of up to 600 frames, `chartData.ts` turns the history into chart columns
+using the series listed in `chartSpecs.ts`, and the charts and status
+readouts render it.
 
 - Charts show a fixed window of the most recent 60 s of simulated time, at
-  every speed, thinned to at most about 300 points per series.
+  every speed, with every frame in the window drawn.
+- The charts redraw on every display refresh, not only when a frame
+  arrives. One `requestAnimationFrame` loop (`ticker.ts`) drives all six;
+  their right edge follows `displayClock.ts`, which advances continuously
+  one frame period behind the newest frame, so traces scroll smoothly
+  instead of stepping ten times a second. Each y axis is sticky and eases
+  between ranges (`autoRange.ts`). Data, scales and legend values go to
+  uPlot and the DOM directly, so React does not re-render per frame.
+- Colours are CSS variables in `index.css`, one set per theme. The theme
+  (system, light or dark) is chosen in the toolbar, saved in localStorage,
+  and applied by `theme/themeStore.ts`; an inline script in `index.html`
+  applies it before first paint.
 - Backend error frames and connection errors go through the store's
   `reportError` and appear as a dismissible notice (`clearError` hides it).
   A `model_limit` in the latest frame appears as a separate, persistent
   notice that stays until a reset clears it.
-- Each status tile's explanation opens on hover, on keyboard focus of its
-  info button, or on a tap of that button. Control help opens on hover and
+- Each status readout's explanation (and each chart's, and each toolbar
+  badge's) opens on hover, on keyboard focus of its info button, or on a
+  tap of that button. Control help opens on hover and
   on keyboard focus of the control.
 
 ## Component Contract

@@ -4,7 +4,7 @@
  * Pre-condition: the dev stack must already be running (`make dev`).
  * The test does NOT start the stack itself.
  *
- * A second check confirms that a status explanation and an operator-control
+ * A second check confirms that an operator-control explanation and a status
  * explanation can both be revealed with the keyboard alone.
  *
  * SCRAM check:
@@ -15,9 +15,10 @@
 
 import { test, expect, type Locator, type Page } from '@playwright/test'
 
+/** Parse a readout such as "3,000.0" or "−5,528.9" (typographic minus). */
 async function numericText(locator: Locator): Promise<number> {
   const text = (await locator.textContent()) ?? ''
-  return parseFloat(text.trim())
+  return parseFloat(text.trim().replace(/,/g, '').replace('\u2212', '-'))
 }
 
 async function resumeIfPaused(page: Page): Promise<void> {
@@ -49,6 +50,13 @@ test('educational help is reachable with the keyboard', async ({ page }) => {
   await page.goto('/')
   await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
 
+  // Operator explanation: Reset Simulation is enabled whether or not the
+  // reactor is scrammed, so this check does not depend on test order. The
+  // controls come before the status readouts in tab order.
+  const resetButton = page.getByRole('button', { name: /reset simulation/i })
+  await tabTo(page, resetButton)
+  await expectHelpShownFor(page, resetButton)
+
   // Status explanation: the thermal-power tile's info button.
   const powerInfo = page.getByTestId('status-power_thermal').getByRole('button')
   await tabTo(page, powerInfo)
@@ -59,12 +67,6 @@ test('educational help is reachable with the keyboard', async ({ page }) => {
   await page.keyboard.press('Enter')
   await page.keyboard.press('Tab')
   await expect(powerTip).toHaveCSS('opacity', '0')
-
-  // Operator explanation: Reset Simulation is enabled whether or not the
-  // reactor is scrammed, so this check does not depend on test order.
-  const resetButton = page.getByRole('button', { name: /reset simulation/i })
-  await tabTo(page, resetButton)
-  await expectHelpShownFor(page, resetButton)
 })
 
 test('SCRAM drops thermal power', async ({ page }) => {
@@ -103,7 +105,7 @@ test('SCRAM drops thermal power', async ({ page }) => {
   await expect(powerValueSpan).toBeVisible()
 
   // Poll until the span shows a real numeric value (not the placeholder "—").
-  // formatMW returns (W / 1e6).toFixed(1), so full power is "3000.0".
+  // Power is shown in MW with one decimal and thousands separators: "3,000.0".
   await expect.poll(
     async () => {
       const t = (await powerValueSpan.textContent()) ?? ''

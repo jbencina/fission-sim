@@ -1,34 +1,20 @@
 /**
- * ChartGrid — vertical stack of all four real-time telemetry charts.
+ * ChartGrid — the six live trend charts (chartSpecs.ts).
  *
- * Composed of:
- *   - PowerChart       — thermal power in MW
- *   - TemperatureChart — primary loop temperatures in K
- *   - PressureChart    — primary system pressure in MPa
- *   - ReactivityChart  — reactivity components in pcm
- *
- * Rendered in AppShell's charts column.
+ * Two columns on wide screens, filling the height available to them in
+ * three equal rows; one column on narrow screens, where each chart has a
+ * fixed height and the page scrolls.
  */
 
 import type { FC } from 'react'
-import PowerChart from './PowerChart'
-import TemperatureChart from './TemperatureChart'
-import PressureChart from './PressureChart'
-import ReactivityChart from './ReactivityChart'
+import TimeSeriesChart from './TimeSeriesChart'
+import { CHART_SPECS } from './chartSpecs'
 
-/**
- * ChartGrid
- *
- * Renders the four real-time charts in a vertical stack with consistent
- * gap-4 spacing. Each chart manages its own data subscription and
- * ResponsiveContainer sizing.
- */
 const ChartGrid: FC = () => (
-  <div className="flex flex-col gap-4 w-full">
-    <PowerChart />
-    <TemperatureChart />
-    <PressureChart />
-    <ReactivityChart />
+  <div className="grid auto-rows-[15.5rem] grid-cols-1 gap-3 md:grid-cols-2 lg:h-full lg:grid-rows-[repeat(3,minmax(12.5rem,1fr))]">
+    {CHART_SPECS.map((spec) => (
+      <TimeSeriesChart key={spec.id} spec={spec} />
+    ))}
   </div>
 )
 

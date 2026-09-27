@@ -18,6 +18,7 @@
 import type { FC } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { SIM_ERROR_PREFIX, type AppErrorSource } from '../types/telemetry'
+import { AlertIcon, CloseIcon } from '../ui/icons'
 
 /**
  * ModelLimitNotice — why the simulation stopped at the edge of the model.
@@ -47,10 +48,16 @@ export const ModelLimitNotice: FC = () => {
     <div
       role="alert"
       data-testid="model-limit-notice"
-      className="rounded-lg border border-red-500/50 bg-slate-900 px-3 py-2 text-sm text-slate-200"
+      className="flex animate-pop-in items-start gap-3 rounded-xl border border-danger-line bg-danger-soft px-4 py-3"
     >
-      <p className="text-xs font-semibold uppercase tracking-wide text-red-300">{heading}</p>
-      <p className="whitespace-pre-line break-words leading-relaxed first-letter:uppercase">{text}</p>
+      <AlertIcon size={18} className="mt-px shrink-0 text-danger-ink" />
+      <div className="min-w-0 flex-1 text-[13px]">
+        <p className="font-semibold text-danger-ink">{heading}</p>
+        <p className="mt-0.5 whitespace-pre-line break-words leading-relaxed text-ink first-letter:uppercase">
+          {text}
+        </p>
+        <p className="mt-1 text-[12px] text-ink-2">Reset Simulation to continue.</p>
+      </div>
     </div>
   )
 }
@@ -75,21 +82,21 @@ const ErrorNotice: FC = () => {
     <div
       role="alert"
       data-testid="error-notice"
-      className="flex items-start gap-3 rounded-lg border border-amber-500/40 bg-slate-900 px-3 py-2 text-sm text-slate-200"
+      className="flex animate-pop-in items-start gap-3 rounded-xl border border-warn-line bg-warn-soft px-4 py-3"
     >
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-semibold uppercase tracking-wide text-amber-300">
-          {HEADING[lastError.source]}
-        </p>
+      <AlertIcon size={18} className="mt-px shrink-0 text-warn-ink" />
+      <div className="min-w-0 flex-1 text-[13px]">
+        <p className="font-semibold text-warn-ink">{HEADING[lastError.source]}</p>
         {/* whitespace-pre-line keeps line breaks the backend puts in its text. */}
-        <p className="whitespace-pre-line break-words leading-relaxed">{lastError.message}</p>
+        <p className="mt-0.5 whitespace-pre-line break-words leading-relaxed text-ink">{lastError.message}</p>
       </div>
       <button
         type="button"
         onClick={clearError}
-        className="shrink-0 rounded px-2 py-1 text-xs font-medium text-slate-300 hover:bg-slate-800 hover:text-slate-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        aria-label="Dismiss"
+        className="-m-1 shrink-0 rounded-full p-1.5 text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink"
       >
-        Dismiss
+        <CloseIcon size={14} />
       </button>
     </div>
   )

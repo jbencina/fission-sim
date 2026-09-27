@@ -8,7 +8,7 @@ and likely contains bugs and mistakes.
 
 Both a CLI and React UI are available to interact with the simulation.
 
-![fission-sim web UI — SCRAM transient with live charts, status tiles, and operator controls](assets/web-ui.png)
+![fission-sim web UI — SCRAM transient with live trend charts, plant-status readouts, and operator controls](assets/web-ui.png)
 
 Developer workflow, Web API details, architecture notes, the component
 contract, and a step-by-step engine tutorial live in
@@ -52,10 +52,14 @@ terminal).
 
 What to expect in the dashboard:
 
-- The charts show a fixed window of the most recent 60 s of simulated time,
-  whatever the simulation speed.
-- Every status tile has an explanation: hover the tile, or focus or tap its
-  info button. The controls show their help on hover and on keyboard focus.
+- Six live trend charts (power, reactivity, coolant and fuel temperature,
+  pressure, control rods) show a fixed window of the most recent 60 s of
+  simulated time, whatever the simulation speed. Hover a chart to read
+  values at that moment on every chart at once.
+- Every status readout and chart has an explanation: hover it, or focus or
+  tap its info button. The controls show their help on hover and on
+  keyboard focus.
+- Light and dark appearance follow the system, or pick one in the toolbar.
 - Backend and connection errors appear as a notice you can dismiss. If the
   simulation reaches a [model limit](#model-limits), a notice explaining
   which assumption failed stays on screen until you press

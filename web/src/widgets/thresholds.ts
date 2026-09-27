@@ -12,6 +12,9 @@
  * the threshold; `belowAmber` triggers amber if the value falls below it.
  */
 
+/** Alert band of a readout: normal, warning or alarm. */
+export type Band = 'green' | 'amber' | 'red';
+
 /** Colour band thresholds for a single tile. */
 export interface Thresholds {
   /** Value above which the tile turns amber (warning). */
@@ -65,7 +68,7 @@ export const THRESHOLDS: Record<string, Thresholds> = {
  * @param value  - Current numeric value of the tile.
  * @returns      'red' | 'amber' | 'green'
  */
-export function getBand(tileId: string, value: number): 'green' | 'amber' | 'red' {
+export function getBand(tileId: string, value: number): Band {
   const t = THRESHOLDS[tileId];
   if (!t) return 'green';
 

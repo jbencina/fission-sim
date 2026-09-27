@@ -1,161 +1,79 @@
 /**
  * ControlPanel — operator controls for the fission-sim web UI.
  *
- * Provides four control sections:
- *   1. Rod control  — range slider for the control-bank command, shown in % of
- *                     travel withdrawn (sent to the backend as a fraction 0–1).
- *   2. Safety       — SCRAM button with confirmation modal; Reset Scram when active.
- *   3. Run          — Pause/Resume toggle and Reset Simulation (with confirmation).
- *   4. Speed        — Segmented 1× / 2× / 5× / 10× real-time multiplier.
+ * Four groups:
+ *   1. Control rods — a slider for the control-bank command in % of travel
+ *                     withdrawn (sent to the backend as a fraction 0–1). Its
+ *                     track fills to the actual bank position, so the lag
+ *                     between command (the knob) and position (the fill) is
+ *                     visible at a glance.
+ *   2. Safety       — SCRAM with a confirmation dialog; Reset Scram while
+ *                     scrammed.
+ *   3. Run          — Pause/Resume and Reset Simulation (with confirmation).
+ *   4. Speed        — segmented 1× / 2× / 5× / 10× real-time multiplier.
  *
- * All controls dispatch via `useTelemetryStore.getState().sendCommand(cmd)`.
- * When the WebSocket status is not 'connected', every control is visually
- * disabled and a notice is shown at the top of the panel.
+ * All controls dispatch through the telemetry store's `sendCommand`. While
+ * the WebSocket is not connected every control is disabled.
  *
- * Each control has a CSS tooltip (no tooltip library dependency) that appears
- * on hover and on keyboard focus, and is linked to the control with
- * aria-describedby so screen readers read it as the control's description.
+ * Each control explains itself on hover and on keyboard focus; the
+ * explanation is linked to the control with aria-describedby so screen
+ * readers read it as the control's description.
  *
  * @module ControlPanel
  */
 
-import { type FC, useState, useCallback, useRef, useEffect, useId } from 'react'
+import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { SPEEDS, type Speed } from '../types/telemetry'
+import { HelpTip } from '../ui/InfoTip'
+import { formatNumber } from '../ui/format'
+import { PauseIcon, PlayIcon, ResetIcon } from '../ui/icons'
 import ConfirmDialog from './ConfirmDialog'
 
 // ---------------------------------------------------------------------------
-// Inline slider styles
+// Small building blocks
 // ---------------------------------------------------------------------------
 
-/*
- * Tailwind does not ship utilities for styling the <input type="range"> thumb
- * and track cross-browser, so we inject a small <style> block once.
- *
- * Track:       slate-700 background
- * Fill-before: amber-400 (achieved via accent-color on Webkit / custom on FF)
- * Thumb:       sky-400 circle
- */
-const SLIDER_STYLES = `
-  .rod-slider {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: #334155; /* slate-700 */
-    outline: none;
-    cursor: pointer;
-    accent-color: #f59e0b; /* amber-400 — used by Chromium for the filled portion */
-  }
-  .rod-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #38bdf8; /* sky-400 */
-    cursor: pointer;
-    transition: box-shadow 0.15s;
-  }
-  .rod-slider::-webkit-slider-thumb:hover {
-    box-shadow: 0 0 0 4px rgba(56,189,248,0.25);
-  }
-  .rod-slider::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #38bdf8; /* sky-400 */
-    cursor: pointer;
-    border: none;
-    transition: box-shadow 0.15s;
-  }
-  .rod-slider::-moz-range-thumb:hover {
-    box-shadow: 0 0 0 4px rgba(56,189,248,0.25);
-  }
-  .rod-slider:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-`
+const Divider: FC = () => <div className="-mx-4 my-4 h-px bg-line" />
 
-// ---------------------------------------------------------------------------
-// Small tooltip wrapper
-// ---------------------------------------------------------------------------
-
-/**
- * CSS tooltip container.
- *
- * Children are wrapped in a `group` div; the tooltip is a hidden sibling that
- * appears on `group-hover`, and also when a control inside has keyboard focus
- * (`group-has-[:focus-visible]`) so keyboard users get the same explanation.
- *
- * `children` is a function that receives the tooltip's id. Pass it as
- * `aria-describedby` on each focusable control the tip explains, so assistive
- * technology announces the tip when that control is focused.
- */
-const Tip: FC<{
-  tip: string
-  children: (tipId: string) => React.ReactNode
-  className?: string
-}> = ({ tip, children, className = '' }) => {
-  const tipId = useId()
-  return (
-    <div className={`group relative ${className}`}>
-      {children(tipId)}
-      <div
-        id={tipId}
-        className={[
-          'absolute bottom-[calc(100%+6px)] left-0',
-          'z-50 w-64',
-          'bg-slate-950 border border-slate-700 rounded-lg p-3',
-          'text-xs text-slate-200 shadow-lg leading-relaxed',
-          'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100',
-          'transition-opacity duration-150',
-          'pointer-events-none',
-        ].join(' ')}
-        role="tooltip"
-      >
-        {tip}
-      </div>
+const Readout: FC<{ label: string; value: string; swatch: ReactNode; align?: 'left' | 'right' }> = ({
+  label,
+  value,
+  swatch,
+  align = 'left',
+}) => (
+  <div className={align === 'right' ? 'text-right' : ''}>
+    <div
+      className={`flex items-center gap-1.5 text-[12px] text-ink-2 ${align === 'right' ? 'justify-end' : ''}`}
+    >
+      {swatch}
+      {label}
     </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Section heading helper
-// ---------------------------------------------------------------------------
-
-const SectionHeading: FC<{ children: React.ReactNode }> = ({ children }) => (
-  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-3">
-    {children}
-  </h3>
+    <div className="mt-0.5 text-[20px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-ink">
+      {value}
+      <span className="ml-0.5 text-[13px] font-normal text-ink-2">%</span>
+    </div>
+  </div>
 )
+
+const secondaryButton = [
+  'inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] px-3',
+  'bg-surface-2 text-[13px] font-medium text-ink',
+  'transition-[background-color,transform] duration-150 ease-smooth',
+  'hover:bg-surface-3 active:scale-[0.98]',
+  'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-2 disabled:active:scale-100',
+].join(' ')
 
 // ---------------------------------------------------------------------------
 // ControlPanel
 // ---------------------------------------------------------------------------
 
-/**
- * ControlPanel
- *
- * Operator control panel. Reads the latest telemetry frame from the global
- * Zustand store and sends commands back via `sendCommand`.
- *
- * Sections:
- *   Rod control — slider for rod_command; progress bar showing rod_position lag.
- *   Safety      — SCRAM and Reset Scram buttons.
- *   Run         — Pause/Resume and Reset Simulation.
- *   Speed       — segmented speed selector.
- */
 const ControlPanel: FC = () => {
-  // ── Store subscriptions ────────────────────────────────────────────────────
   const status = useTelemetryStore((s) => s.status)
   const latest = useTelemetryStore((s) => s.latest)
   const sendCommand = useTelemetryStore((s) => s.sendCommand)
   const clearHistory = useTelemetryStore((s) => s.clearHistory)
 
-  // Convenience booleans derived from latest frame.
   const connected = status === 'connected'
   const scrammed = latest?.scrammed === true
   const running = latest?.running === true
@@ -165,37 +83,62 @@ const ControlPanel: FC = () => {
   // null until the first frame arrives; the readout then shows "—".
   const rodPosition = latest?.rod_position ?? null
 
-  // ── Local state: slider value ──────────────────────────────────────────────
+  // ── Slider value ───────────────────────────────────────────────────────────
   //
-  // The slider is controlled by local state so dragging it doesn't spam the WS.
-  // We commit the value to the backend on mouseup/touchend/keyup only.
-  //
-  // We track a "committed" value separately; when the backend echoes a new
-  // rod_command we only sync the slider if the user is not actively dragging.
+  // The slider is controlled by local state so dragging it doesn't spam the
+  // WebSocket. The value is sent on the input's native `change` event, which
+  // fires once when a drag is released (wherever the pointer is) and once
+  // per arrow-key step. While the user is not dragging, the slider follows
+  // the backend's rod_command.
   const [localRodCmd, setLocalRodCmd] = useState<number>(latest?.rod_command ?? 0.5)
   const draggingRef = useRef(false)
+  const sliderRef = useRef<HTMLInputElement>(null)
+  const backendRodCmdRef = useRef<number | undefined>(latest?.rod_command)
+  backendRodCmdRef.current = latest?.rod_command
 
-  // Keep slider in sync with backend value when not dragging.
   useEffect(() => {
     if (!draggingRef.current && latest?.rod_command !== undefined) {
       setLocalRodCmd(latest.rod_command)
     }
   }, [latest?.rod_command])
 
-  // ── Commit rod command to backend ─────────────────────────────────────────
-  const commitRodCmd = useCallback(
-    (value: number) => {
+  useEffect(() => {
+    const el = sliderRef.current
+    if (!el) return
+    const commit = () => {
       draggingRef.current = false
-      sendCommand({ type: 'set_rod_command', value })
-    },
-    [sendCommand],
-  )
+      sendCommand({ type: 'set_rod_command', value: parseFloat(el.value) })
+    }
+    // A drag released where it started fires no `change`. Check once any
+    // `change` has had its turn; if none came, stop dragging and show the
+    // backend's command again, or the slider would stop following it.
+    let pending: number | undefined
+    const release = () => {
+      window.clearTimeout(pending)
+      pending = window.setTimeout(() => {
+        if (!draggingRef.current) return
+        draggingRef.current = false
+        const backend = backendRodCmdRef.current
+        if (backend !== undefined) setLocalRodCmd(backend)
+      }, 0)
+    }
+    el.addEventListener('change', commit)
+    el.addEventListener('pointerup', release)
+    el.addEventListener('pointercancel', release)
+    el.addEventListener('blur', release)
+    return () => {
+      window.clearTimeout(pending)
+      el.removeEventListener('change', commit)
+      el.removeEventListener('pointerup', release)
+      el.removeEventListener('pointercancel', release)
+      el.removeEventListener('blur', release)
+    }
+  }, [sendCommand])
 
-  // ── Modal state: which dialog is open ─────────────────────────────────────
+  // ── Dialogs ────────────────────────────────────────────────────────────────
   const [scramDialogOpen, setScramDialogOpen] = useState(false)
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
   const handleScramConfirm = useCallback(() => {
     setScramDialogOpen(false)
     sendCommand({ type: 'scram' })
@@ -222,19 +165,10 @@ const ControlPanel: FC = () => {
     [sendCommand],
   )
 
-  // ── Disabled overlay class when disconnected ───────────────────────────────
-  //
-  // When not connected we want an overlay that signals "inactive" without
-  // hiding the control shapes — opacity-50 and pointer-events-none achieves
-  // this. Individual <button> elements also carry `disabled` for a11y.
-  const disabledClass = connected ? '' : 'opacity-50 pointer-events-none'
+  const positionPct = Math.min(1, Math.max(0, rodPosition ?? 0)) * 100
 
   return (
     <>
-      {/* Inject slider custom CSS once */}
-      <style>{SLIDER_STYLES}</style>
-
-      {/* Modals — rendered outside the disabled overlay */}
       <ConfirmDialog
         open={scramDialogOpen}
         title="Initiate SCRAM?"
@@ -254,205 +188,163 @@ const ControlPanel: FC = () => {
         onCancel={() => setResetDialogOpen(false)}
       />
 
-      {/* ── Panel card ──────────────────────────────────────────────────────── */}
-      <section
-        aria-label="Operator controls"
-        className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col gap-5"
-      >
-        {/* ── Disconnected notice ─────────────────────────────────────────────── */}
-        {!connected && (
-          <div className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-xs text-slate-400 text-center">
-            Disconnected — controls inactive
-          </div>
-        )}
+      <section aria-label="Operator controls" className="card p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="eyebrow">Controls</h2>
+          {!connected && <span className="text-[12px] text-ink-3">Offline · controls inactive</span>}
+        </div>
 
-        {/* Wrap all controls in a div that goes dim + no-pointer when offline */}
-        <div className={`flex flex-col gap-5 ${disabledClass}`}>
-
-          {/* ════════════════════════════════════════════════════════════════════
-              1. ROD CONTROL
-          ═══════════════════════════════════════════════════════════════════ */}
-          <section aria-label="Rod control">
-            <SectionHeading>Rod control</SectionHeading>
-
-            {/* Numeric readout: command vs actual control-bank position, in % withdrawn */}
-            <div className="flex justify-between text-xs text-slate-400 font-mono mb-2">
-              <span>
-                Command:{' '}
-                <span className="text-amber-300">{(localRodCmd * 100).toFixed(1)} %</span>
-              </span>
-              <span>
-                Position:{' '}
-                <span className="text-sky-300">
-                  {rodPosition === null ? '—' : `${(rodPosition * 100).toFixed(1)} %`}
-                </span>
-              </span>
+        <fieldset disabled={!connected} className={connected ? '' : 'opacity-60'}>
+          {/* ── 1. Control rods ─────────────────────────────────────────── */}
+          <section aria-label="Rod control" className="mt-3">
+            <div className="grid grid-cols-2 gap-2">
+              <Readout
+                label="Command"
+                value={formatNumber(localRodCmd * 100, 1)}
+                swatch={<span aria-hidden="true" className="h-2.5 w-2.5 rounded-full border border-line-strong bg-white shadow-sm" />}
+              />
+              <Readout
+                label="Position"
+                align="right"
+                value={formatNumber(rodPosition === null ? null : rodPosition * 100, 1)}
+                swatch={<span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: 'var(--series-purple)' }} />}
+              />
             </div>
 
-            {/* Rod command slider with tooltip */}
-            <Tip tip="Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second: 100 s for a full stroke, 50 s from design to either end. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.">
+            <HelpTip tip="Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second: 100 s for a full stroke, 50 s from design to either end. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.">
               {(tipId) => (
-                <input
-                  aria-describedby={tipId}
-                  type="range"
-                  className="rod-slider"
-                  min={0}
-                  max={1}
-                  step={0.01}
-                  value={localRodCmd}
-                  disabled={!connected}
-                  aria-label="Rod command"
-                  aria-valuetext={`${(localRodCmd * 100).toFixed(0)} % withdrawn`}
-                  onChange={(e) => {
-                    draggingRef.current = true
-                    setLocalRodCmd(parseFloat(e.target.value))
-                  }}
-                  onMouseUp={(e) =>
-                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                  }
-                  onTouchEnd={(e) =>
-                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                  }
-                  onKeyUp={(e) =>
-                    commitRodCmd(parseFloat((e.target as HTMLInputElement).value))
-                  }
-                />
+                <div className="relative mt-2">
+                  {/* Visible track, inset by the knob radius so fill and knob line up. */}
+                  <div aria-hidden="true" className="pointer-events-none absolute inset-x-[11px] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-surface-3">
+                    <div
+                      className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-200 ease-linear"
+                      style={{ width: `${positionPct}%`, background: 'var(--series-purple)' }}
+                    />
+                    <div className="absolute left-1/2 top-1/2 h-3 w-px -translate-y-1/2 bg-line-strong" />
+                  </div>
+                  <input
+                    ref={sliderRef}
+                    aria-describedby={tipId}
+                    type="range"
+                    className="rod-range relative"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={localRodCmd}
+                    disabled={!connected}
+                    aria-label="Rod command"
+                    aria-valuetext={`${(localRodCmd * 100).toFixed(0)} % withdrawn`}
+                    onChange={(e) => {
+                      draggingRef.current = true
+                      setLocalRodCmd(parseFloat(e.target.value))
+                    }}
+                  />
+                </div>
               )}
-            </Tip>
-
-            {/* Actual control-bank position bar — shows lag between command and position */}
-            <div className="mt-2">
-              <div className="text-[10px] text-slate-500 mb-1">Actual control-bank position</div>
-              <div className="h-1.5 w-full rounded bg-slate-700 overflow-hidden">
-                <div
-                  className="h-full bg-sky-500 rounded transition-all duration-300"
-                  style={{ width: `${Math.min(1, Math.max(0, rodPosition ?? 0)) * 100}%` }}
-                />
-              </div>
+            </HelpTip>
+            <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[11px] text-ink-3">
+              <span>Inserted</span>
+              <span>Design 50</span>
+              <span>Withdrawn</span>
             </div>
           </section>
 
-          {/* ════════════════════════════════════════════════════════════════════
-              2. SAFETY
-          ═══════════════════════════════════════════════════════════════════ */}
-          <section aria-label="Safety">
-            <SectionHeading>Safety</SectionHeading>
+          <Divider />
 
-            {/* SCRAM button */}
-            <Tip tip="Emergency shutdown. Immediately commands the control and shutdown banks to drop; both are fully inserted within about 2 s, adding about −7,000 pcm. Fission power falls to a few percent within seconds, then fades as delayed-neutron precursors decay.">
+          {/* ── 2. Safety ───────────────────────────────────────────────── */}
+          {/* While scrammed, Reset Scram takes half of the row instead of adding one. */}
+          <section aria-label="Safety" className={scrammed ? 'grid grid-cols-2 gap-2' : ''}>
+            <HelpTip tip="Emergency shutdown. Immediately commands the control and shutdown banks to drop; both are fully inserted within about 2 s, adding about −7,000 pcm. Fission power falls to a few percent within seconds, then fades as delayed-neutron precursors decay.">
               {(tipId) => (
                 <button
                   aria-describedby={tipId}
                   type="button"
                   disabled={!connected || scrammed}
                   onClick={() => setScramDialogOpen(true)}
-                  className={[
-                    'w-full py-4 px-6 rounded-lg text-lg font-bold uppercase tracking-wide',
-                    'bg-red-600 text-white',
-                    'hover:bg-red-500 hover:ring-2 hover:ring-red-400/50',
-                    'focus:outline-none focus:ring-2 focus:ring-red-400',
-                    'disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:ring-0',
-                    'transition-all duration-150',
-                  ].join(' ')}
                   title={scrammed ? 'Reactor is already scrammed' : undefined}
+                  className={[
+                    'h-12 w-full rounded-xl bg-danger text-[15px] font-bold tracking-[0.12em] text-white',
+                    'shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(0,0,0,0.2)]',
+                    'transition-[background-color,transform,opacity] duration-150 ease-smooth',
+                    'hover:bg-danger-hover active:scale-[0.99]',
+                    'disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-danger disabled:active:scale-100',
+                  ].join(' ')}
                 >
                   SCRAM
                 </button>
               )}
-            </Tip>
+            </HelpTip>
 
-            {/* Reset Scram — only shown when reactor is in scrammed state */}
             {scrammed && (
-              <div className="mt-2">
-                <Tip tip="Clears the SCRAM latch and returns the control bank to your rod command. The shutdown bank stays fully inserted, so the reactor stays subcritical: total reactivity stays below about −4,300 pcm even with the control bank fully withdrawn and the plant cooled down. To return to power, use Reset Simulation.">
-                  {(tipId) => (
-                    <button
-                      aria-describedby={tipId}
-                      type="button"
-                      disabled={!connected}
-                      onClick={handleResetScram}
-                      className={[
-                        'w-full py-2 px-4 rounded-lg text-sm font-medium',
-                        'bg-slate-700 hover:bg-slate-600 text-slate-200',
-                        'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                        'disabled:opacity-50 disabled:cursor-not-allowed',
-                        'transition-colors duration-150',
-                      ].join(' ')}
-                    >
-                      Reset Scram
-                    </button>
-                  )}
-                </Tip>
-              </div>
-            )}
-          </section>
-
-          {/* ════════════════════════════════════════════════════════════════════
-              3. RUN CONTROL
-          ═══════════════════════════════════════════════════════════════════ */}
-          <section aria-label="Run control">
-            <SectionHeading>Run</SectionHeading>
-
-            <div className="flex flex-col gap-2">
-              {/* Pause / Resume toggle */}
-              <Tip tip="Pauses simulator time advancement. Values are frozen; the display still updates when you change a control (SCRAM, speed, rods).">
-                {(tipId) => (
-                  <button
-                    aria-describedby={tipId}
-                    type="button"
-                    disabled={!connected || halted}
-                    onClick={handlePauseResume}
-                    className={[
-                      'w-full py-2.5 px-4 rounded-lg text-sm font-semibold',
-                      running
-                        ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                        : 'bg-green-700 hover:bg-green-600 text-white',
-                      'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                      'transition-colors duration-150',
-                    ].join(' ')}
-                  >
-                    {running ? 'Pause' : 'Resume'}
-                  </button>
-                )}
-              </Tip>
-
-              {/* Reset Simulation */}
-              <Tip tip="Restarts from the full-power design state (shutdown bank withdrawn, control bank at 50 %, design temperatures and pressure). The only way back to power after a SCRAM; the procedure-driven startup of a real plant is not modeled.">
+              <HelpTip
+                align="end"
+                tip="Clears the SCRAM latch and returns the control bank to your rod command. The shutdown bank stays fully inserted, so the reactor stays subcritical: total reactivity stays below about −4,300 pcm even with the control bank fully withdrawn and the plant cooled down. To return to power, use Reset Simulation."
+              >
                 {(tipId) => (
                   <button
                     aria-describedby={tipId}
                     type="button"
                     disabled={!connected}
-                    onClick={() => setResetDialogOpen(true)}
-                    className={[
-                      'w-full py-2.5 px-4 rounded-lg text-sm font-medium',
-                      'bg-slate-700 hover:bg-slate-600 text-slate-300',
-                      'focus:outline-none focus:ring-2 focus:ring-slate-500',
-                      'disabled:opacity-50 disabled:cursor-not-allowed',
-                      'transition-colors duration-150',
-                    ].join(' ')}
+                    onClick={handleResetScram}
+                    className={`${secondaryButton} !h-12 w-full !rounded-xl`}
                   >
-                    Reset Simulation
+                    Reset Scram
                   </button>
                 )}
-              </Tip>
-            </div>
+              </HelpTip>
+            )}
           </section>
 
-          {/* ════════════════════════════════════════════════════════════════════
-              4. SPEED
-          ═══════════════════════════════════════════════════════════════════ */}
-          <section aria-label="Speed control">
-            <SectionHeading>Speed</SectionHeading>
+          <Divider />
 
-            {/* Segmented speed selector */}
-            <Tip tip="Real-time multiplier. Useful for observing long transients quickly.">
+          {/* ── 3. Run ──────────────────────────────────────────────────── */}
+          <section aria-label="Run control" className="grid grid-cols-2 gap-2">
+            <HelpTip tip="Pauses simulator time advancement. Values are frozen; the display still updates when you change a control (SCRAM, speed, rods).">
+              {(tipId) => (
+                <button
+                  aria-describedby={tipId}
+                  type="button"
+                  disabled={!connected || halted}
+                  onClick={handlePauseResume}
+                  className={
+                    running
+                      ? `${secondaryButton} w-full`
+                      : `${secondaryButton} w-full !bg-accent !text-accent-ink hover:!bg-accent-hover`
+                  }
+                >
+                  {running ? <PauseIcon size={14} /> : <PlayIcon size={13} />}
+                  {running ? 'Pause' : 'Resume'}
+                </button>
+              )}
+            </HelpTip>
+            <HelpTip
+              align="end"
+              tip="Restarts from the full-power design state (shutdown bank withdrawn, control bank at 50 %, design temperatures and pressure). The only way back to power after a SCRAM; the procedure-driven startup of a real plant is not modeled."
+            >
+              {(tipId) => (
+                <button
+                  aria-describedby={tipId}
+                  type="button"
+                  disabled={!connected}
+                  onClick={() => setResetDialogOpen(true)}
+                  className={`${secondaryButton} w-full`}
+                >
+                  <ResetIcon size={14} />
+                  Reset Simulation
+                </button>
+              )}
+            </HelpTip>
+          </section>
+
+          {/* ── 4. Speed ────────────────────────────────────────────────── */}
+          <section aria-label="Speed control" className="mt-3 flex items-center justify-between gap-3">
+            <span className="text-[13px] text-ink-2">Speed</span>
+            <HelpTip align="end" tip="Real-time multiplier. Useful for observing long transients quickly.">
               {(tipId) => (
                 <div
-                  className="grid grid-cols-4 gap-1 rounded-lg bg-slate-800 p-1"
                   role="group"
                   aria-label="Simulation speed multiplier"
+                  className="inline-flex gap-0.5 rounded-[9px] bg-surface-2 p-0.5"
                 >
                   {SPEEDS.map((opt) => {
                     const active = speed === opt
@@ -465,12 +357,10 @@ const ControlPanel: FC = () => {
                         aria-pressed={active}
                         aria-describedby={tipId}
                         className={[
-                          'py-1.5 rounded-md text-sm font-semibold transition-colors duration-150',
-                          'focus:outline-none focus:ring-2 focus:ring-sky-500',
-                          active
-                            ? 'bg-sky-600 text-white shadow'
-                            : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700',
-                          'disabled:opacity-50 disabled:cursor-not-allowed',
+                          'h-7 w-11 rounded-[7px] text-[13px] font-medium tabular-nums',
+                          'transition-colors duration-150 ease-smooth',
+                          active ? 'bg-seg-on text-ink shadow-[0_1px_2px_rgba(0,0,0,0.14)]' : 'text-ink-2 hover:text-ink',
+                          'disabled:cursor-not-allowed',
                         ].join(' ')}
                       >
                         {opt}×
@@ -479,10 +369,9 @@ const ControlPanel: FC = () => {
                   })}
                 </div>
               )}
-            </Tip>
+            </HelpTip>
           </section>
-
-        </div>
+        </fieldset>
       </section>
     </>
   )
