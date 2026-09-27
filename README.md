@@ -773,6 +773,7 @@ thermodynamic property, for example:
 rho = density(P, T)
 h   = enthalpy(P, T)
 T_sat = saturation_temperature(P)
+P_sat = saturation_pressure(T)
 P = pressure(D, U)
 ```
 
@@ -792,6 +793,7 @@ or steam properties in SI units.
 | `density_PT(P, T)`             | Pa, K     | kg/m³            | Subcooled liquid density               |
 | `enthalpy_PT(P, T)`            | Pa, K     | J/kg             | Subcooled liquid specific enthalpy     |
 | `T_sat(P)`                     | Pa        | K                | Saturation temperature                 |
+| `P_sat(T)`                     | K         | Pa               | Saturation pressure                    |
 | `sat_liquid_density(P)`        | Pa        | kg/m³            | Q = 0 branch                          |
 | `sat_vapor_density(P)`         | Pa        | kg/m³            | Q = 1 branch                          |
 | `sat_liquid_enthalpy(P)`       | Pa        | J/kg             | Q = 0 branch                          |

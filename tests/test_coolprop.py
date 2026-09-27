@@ -77,6 +77,19 @@ def test_saturation_temperature_at_design_pressure():
     assert 615.0 < T_sat < 622.0
 
 
+def test_P_sat_inverts_T_sat():
+    """P_sat at 558 K is ~6.899 MPa and inverts T_sat."""
+    P = coolprop.P_sat(T=558.0)
+    assert 6.85e6 < P < 6.95e6
+    assert abs(coolprop.T_sat(P=P) - 558.0) < 1e-6
+
+
+def test_P_sat_rejects_supercritical_temperature():
+    """Above the critical temperature there is no saturation line."""
+    with pytest.raises(ModelDomainError):
+        coolprop.P_sat(T=700.0)
+
+
 def test_saturated_liquid_density_at_design_pressure():
     """Saturated liquid density at 15.5 MPa is ~595 kg/m³."""
     rho_l = coolprop.sat_liquid_density(P=1.55e7)

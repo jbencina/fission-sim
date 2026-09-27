@@ -225,6 +225,33 @@ def T_sat(P: float) -> float:
     return _props("T", "P", P, "Q", 0.0, _FLUID_FAST)
 
 
+def P_sat(T: float) -> float:
+    """Saturation pressure of water at given temperature.
+
+    Inverse of :func:`T_sat`. Used to place a saturated component at the
+    pressure whose boiling point matches its reference temperature
+    (558 K -> 6.899 MPa for the planned steam-generator shell side).
+
+    Parameters
+    ----------
+    T : float
+        Saturation temperature [K].
+
+    Returns
+    -------
+    float
+        Saturation pressure [Pa].
+
+    Raises
+    ------
+    ModelDomainError
+        If CoolProp cannot evaluate the saturation state, for example above
+        the critical temperature (647.096 K), where no liquid-vapor
+        saturation line exists.
+    """
+    return _props("P", "T", T, "Q", 0.0, _FLUID_FAST)
+
+
 def sat_liquid_density(P: float) -> float:
     """Saturated-liquid density at given pressure (Q=0).
 
