@@ -743,14 +743,17 @@ default pressure setpoint.
 ### CoolProp wrapper (`src/fission_sim/physics/coolprop.py`)
 
 Thin pass-through to CoolProp. All water/steam property calls in the project
-go through this module. Concentrating the dependency here lets results be
-cached, the backend swapped, or simplified correlations substituted without
+go through this module. Successful lookups are memoized with a 16,384-entry
+LRU cache because the BDF solver's finite-difference Jacobian repeats exact
+property arguments; CoolProp properties are pure functions of those arguments,
+so caching does not change results. Concentrating the dependency here also
+lets the backend be swapped or simplified correlations substituted without
 touching any physics module. Saturation-line queries use CoolProp's fast
 IAPWS-IF97 backend; `density_PT`, `enthalpy_PT`, `beta_T`, and `P_from_DU` use
 its Helmholtz (HEOS) backend, which accepts states closer to the saturation
 line and input pairs IF97 does not. A property lookup that CoolProp cannot
 evaluate raises `ModelDomainError`, which the runtime reports as a
-[model limit](#model-limits).
+[model limit](#model-limits); failed lookups are not cached.
 
 All inputs and outputs are SI (Pa, K, kg/m³, J/kg, 1/K).
 
@@ -797,6 +800,8 @@ or steam properties in SI units.
 | `sat_vapor_internal_energy(P)` | Pa        | J/kg             | Q = 1 branch                          |
 | `beta_T(P, T)`                 | Pa, K     | 1/K              | (1/V)·(∂V/∂T)_P; 3.26e-3 at 583 K, 15.5 MPa |
 | `P_from_DU(D, U)`              | kg/m³, J/kg| Pa             | Inverts saturation surface (D, U) → P |
+| `clear_cache()`                | —         | None             | Clears memoized CoolProp values       |
+| `cache_info()`                 | —         | cache stats      | Reports LRU hits, misses, and size    |
 
 ### Surge helper (`src/fission_sim/physics/surge.py`)
 

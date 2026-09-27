@@ -1,9 +1,10 @@
 """Thin wrapper around CoolProp for IAPWS-97 water/steam properties.
 
 By design, all water/steam property calls go through this module.
-Concentrating the dependency here lets us cache results, swap backends,
-or substitute simplified correlations without touching the physics
-modules. The README's "CoolProp wrapper" subsection explains it for learners.
+Concentrating the dependency here now caches repeated results and still lets
+us swap backends or substitute simplified correlations without touching the
+physics modules. The README's "CoolProp wrapper" subsection explains it for
+learners.
 
 All inputs are SI (Pa, K). All outputs are SI (kg/m³, J/kg, J/(kg·K),
 1/K). Quantity names follow the project convention: ``rho`` for density,
@@ -24,6 +25,8 @@ Public references:
 """
 
 from __future__ import annotations
+
+from functools import lru_cache
 
 import CoolProp.CoolProp as CP
 
@@ -55,6 +58,11 @@ _FLUID_DOME = "Water"
 # ``_FLUID`` still finds a sensible default.
 _FLUID = _FLUID_FAST
 
+# Cache size chosen from M3.0 profiling: large enough to hold the repeated
+# states from many BDF Jacobian evaluations while still being tiny compared
+# with the plant state history kept by tests and examples.
+_PROPS_CACHE_MAXSIZE = 16_384
+
 
 # Fragments of CoolProp error messages that mean the *call* is wrong (a
 # misspelled property or fluid name, or a query the backend does not
@@ -67,6 +75,49 @@ _CALL_ERROR_MARKERS = (
     "Initialize failed",
     "not implemented",
 )
+
+
+@lru_cache(maxsize=_PROPS_CACHE_MAXSIZE)
+def _cached_props(output: str, name1: str, value1: float, name2: str, value2: float, fluid: str) -> float:
+    """Call the raw CoolProp backend with an LRU cache around successful lookups."""
+    # The BDF integrator estimates a finite-difference Jacobian by
+    # re-evaluating the right-hand side with one state variable perturbed
+    # at a time. Most water-property calls therefore repeat the exact same
+    # (property, input pair, fluid) arguments. Profiling found roughly
+    # 96 % of runtime inside ``PropsSI``. CoolProp property values are pure
+    # functions of these inputs, so caching successful calls is bit-for-bit
+    # equivalent to calling CoolProp every time. Raised exceptions are not
+    # cached by ``functools.lru_cache``, which keeps domain-limit failures
+    # observable on every retry. CPython's LRU cache is protected by a lock;
+    # that is enough thread safety here, and the web runtime advances the
+    # simulator from one stepping thread.
+    return CP.PropsSI(output, name1, value1, name2, value2, fluid)
+
+
+def clear_cache() -> None:
+    """Clear cached CoolProp property values.
+
+    Tests sometimes monkeypatch CoolProp or inspect cache hit counts. This
+    helper gives them a public reset point without reaching into private
+    implementation details.
+
+    Returns
+    -------
+    None
+        The cache is emptied in place.
+    """
+    _cached_props.cache_clear()
+
+
+def cache_info():
+    """Return cache statistics for CoolProp property lookups.
+
+    Returns
+    -------
+    functools.CacheInfo
+        Named tuple with ``hits``, ``misses``, ``maxsize``, and ``currsize``.
+    """
+    return _cached_props.cache_info()
 
 
 def _props(output: str, name1: str, value1: float, name2: str, value2: float, fluid: str) -> float:
@@ -84,7 +135,7 @@ def _props(output: str, name1: str, value1: float, name2: str, value2: float, fl
     ``_CALL_ERROR_MARKERS``) are re-raised unchanged.
     """
     try:
-        return CP.PropsSI(output, name1, value1, name2, value2, fluid)
+        return _cached_props(output, name1, value1, name2, value2, fluid)
     except ValueError as err:
         if any(marker in str(err) for marker in _CALL_ERROR_MARKERS):
             raise

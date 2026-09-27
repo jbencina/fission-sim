@@ -13,6 +13,51 @@ from fission_sim.physics import coolprop
 from fission_sim.physics.domain import ModelDomainError
 
 
+@pytest.mark.parametrize(
+    ("output", "name1", "value1", "name2", "value2", "fluid"),
+    [
+        ("T", "P", 1.55e7, "Q", 0.0, coolprop._FLUID_FAST),
+        ("D", "P", 1.55e7, "T", 583.0, coolprop._FLUID_DOME),
+    ],
+    ids=["IF97-saturation", "HEOS-subcooled-density"],
+)
+def test_cached_property_lookup_matches_direct_coolprop(output, name1, value1, name2, value2, fluid):
+    """The cache returns CoolProp's exact float, not a rounded or recomputed value."""
+    coolprop.clear_cache()
+    direct = CP.PropsSI(output, name1, value1, name2, value2, fluid)
+    cached = coolprop._props(output, name1, value1, name2, value2, fluid)
+    assert cached == direct
+
+
+def test_failing_state_lookup_is_not_cached():
+    """Repeated domain failures still call CoolProp and raise ModelDomainError."""
+    coolprop.clear_cache()
+    P = 1.55e7
+    T_on_line = CP.PropsSI("T", "P", P, "Q", 0.0, coolprop._FLUID_DOME)
+
+    for _ in range(2):
+        with pytest.raises(ModelDomainError):
+            coolprop.density_PT(P=P, T=T_on_line)
+
+    info = coolprop.cache_info()
+    assert info.misses == 2
+    assert info.currsize == 0
+
+
+def test_cache_hits_increase_on_repeated_lookup():
+    """A second identical property request is served from the LRU cache."""
+    coolprop.clear_cache()
+    first = coolprop.T_sat(P=1.55e7)
+    after_first = coolprop.cache_info()
+    second = coolprop.T_sat(P=1.55e7)
+    after_second = coolprop.cache_info()
+
+    assert second == first
+    assert after_first.misses == 1
+    assert after_first.hits == 0
+    assert after_second.hits == after_first.hits + 1
+
+
 def test_subcooled_density_at_primary_conditions():
     """Subcooled water at 583 K, 15.5 MPa is ~715 kg/m³."""
     rho = coolprop.density_PT(P=1.55e7, T=583.0)
