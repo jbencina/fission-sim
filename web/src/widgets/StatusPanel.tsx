@@ -1,11 +1,11 @@
 /**
- * StatusPanel — live digital readouts of the plant state.
+ * StatusPanel — the plant's readouts as label / value rows.
  *
- * Four headline tiles (thermal power, average coolant temperature, primary
+ * Four headline rows (thermal power, average coolant temperature, primary
  * pressure, total reactivity) and grouped rows for the rest. Every readout
- * has an explanation (tooltips.ts) and some carry an illustrative alert band
- * (thresholds.ts). Simulation time, speed, run state and SCRAM status are
- * shown, with their explanations, in the toolbar.
+ * has an explanation (tooltips.ts) and some carry an illustrative alert
+ * band (thresholds.ts). Simulation time, run state and SCRAM status are in
+ * the toolbar; the loop schematic shows the same temperatures in place.
  *
  * Before the first telemetry frame every value shows "—".
  *
@@ -15,7 +15,8 @@
 import type { FC, ReactNode } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { formatNumber, kelvinToCelsius } from '../ui/format'
-import { InfoRow, StatTile } from './Readouts'
+import { InfoRow } from './Readouts'
+import { criticalityWord } from './loopState'
 import { getBand } from './thresholds'
 import { TOOLTIPS } from './tooltips'
 
@@ -25,15 +26,9 @@ const DESIGN_POWER_MW = 3000
 const celsius = (k: number | null): string | undefined =>
   k === null ? undefined : `${formatNumber(kelvinToCelsius(k), 1)} °C`
 
-/** Word for the sign of the displayed (one-decimal) reactivity. */
-function criticality(pcm: number): string {
-  if (Math.abs(pcm) < 0.05) return 'critical'
-  return pcm > 0 ? 'supercritical' : 'subcritical'
-}
-
 const Group: FC<{ title: string; children: ReactNode }> = ({ title, children }) => (
-  <div className="mt-4">
-    <h3 className="eyebrow mb-1">{title}</h3>
+  <div className="mt-3">
+    <h3 className="mb-0.5 text-[11.5px] tracking-[0.04em] text-ink-3">{title}</h3>
     <div>{children}</div>
   </div>
 )
@@ -50,42 +45,36 @@ const StatusPanel: FC = () => {
   const tCold = latest?.T_cold ?? null
 
   return (
-    <section aria-label="Plant status" className="card p-4">
-      <h2 className="eyebrow">Plant status</h2>
+    <section aria-label="Plant status" className="panel p-4">
+      <h2 className="eyebrow mb-1">Readouts</h2>
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <StatTile
-          data-testid="status-power_thermal"
-          tooltip={TOOLTIPS.power_thermal}
-          value={formatNumber(powerMW, 1)}
-          secondary={
-            powerMW === null
-              ? undefined
-              : `${formatNumber((powerMW / DESIGN_POWER_MW) * 100, 1)} % of design`
-          }
-        />
-        <StatTile
-          data-testid="status-T_avg"
-          tooltip={TOOLTIPS.T_avg}
-          value={formatNumber(tAvg, 1)}
-          secondary={celsius(tAvg)}
-          align="end"
-        />
-        <StatTile
-          data-testid="status-P_primary_MPa"
-          tooltip={TOOLTIPS.P_primary_MPa}
-          value={formatNumber(pMPa, 2)}
-          band={pMPa === null ? 'green' : getBand('P_primary_MPa', pMPa)}
-        />
-        <StatTile
-          data-testid="status-rho_total"
-          tooltip={TOOLTIPS.rho_total}
-          value={formatNumber(rhoPcm, 1)}
-          secondary={rhoPcm === null ? undefined : criticality(rhoPcm)}
-          band={rhoPcm === null ? 'green' : getBand('rho_total', rhoPcm)}
-          align="end"
-        />
-      </div>
+      <InfoRow
+        data-testid="status-power_thermal"
+        tooltip={TOOLTIPS.power_thermal}
+        value={formatNumber(powerMW, 1)}
+        secondary={
+          powerMW === null ? undefined : `${formatNumber((powerMW / DESIGN_POWER_MW) * 100, 0)} % of design`
+        }
+      />
+      <InfoRow
+        data-testid="status-T_avg"
+        tooltip={TOOLTIPS.T_avg}
+        value={formatNumber(tAvg, 1)}
+        secondary={celsius(tAvg)}
+      />
+      <InfoRow
+        data-testid="status-P_primary_MPa"
+        tooltip={TOOLTIPS.P_primary_MPa}
+        value={formatNumber(pMPa, 2)}
+        band={pMPa === null ? 'green' : getBand('P_primary_MPa', pMPa)}
+      />
+      <InfoRow
+        data-testid="status-rho_total"
+        tooltip={TOOLTIPS.rho_total}
+        value={formatNumber(rhoPcm, 1)}
+        secondary={rhoPcm === null ? undefined : criticalityWord(rhoPcm)}
+        band={rhoPcm === null ? 'green' : getBand('rho_total', rhoPcm)}
+      />
 
       <Group title="Core">
         <InfoRow
@@ -117,7 +106,7 @@ const StatusPanel: FC = () => {
         />
       </Group>
 
-      <Group title="Control rods">
+      <Group title="Control bank">
         <InfoRow
           data-testid="status-rod_position"
           tooltip={TOOLTIPS.rod_position}

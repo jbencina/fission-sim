@@ -1,15 +1,17 @@
 import type { Config } from 'tailwindcss'
 
 /*
- * Colours are CSS variables defined in src/index.css, one set per theme, so
- * a class such as `bg-surface-solid` follows the active theme without any
- * `dark:` variants.
+ * Colours are CSS variables defined in src/index.css, so a class such as
+ * `bg-canvas` always means the console's one palette.
  */
 const config: Config = {
-  darkMode: ['selector', '[data-theme="dark"]'],
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['"IBM Plex Sans"', 'system-ui', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace'],
+      },
       colors: {
         canvas: 'var(--canvas)',
         surface: {

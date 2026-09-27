@@ -1,7 +1,7 @@
 /**
  * ConfirmDialog — a simple modal confirmation overlay.
  *
- * Renders a blurred scrim with a centered card containing a title, message,
+ * Renders a dark scrim with a centered card containing a title, message,
  * and two action buttons (Cancel / Confirm). The Confirm button can
  * optionally be rendered in "danger" red styling.
  *
@@ -138,9 +138,7 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
   // Render nothing when closed.
   if (!open) return null
 
-  const confirmClass = danger
-    ? 'bg-danger hover:bg-danger-hover text-white'
-    : 'bg-accent hover:bg-accent-hover text-accent-ink'
+  const confirmClass = danger ? 'btn btn-danger w-full' : 'btn w-full !border-ink'
 
   return (
     /*
@@ -148,7 +146,7 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
      * clicks inside the card stop propagation so they never dismiss it.
      */
     <div
-      className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-black/60 p-4"
       onClick={onCancel}
       aria-modal="true"
       role="dialog"
@@ -157,12 +155,12 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
     >
       <div
         ref={cardRef}
-        className="w-full max-w-[26rem] animate-pop-in rounded-2xl border border-line bg-raised p-5 shadow-pop"
+        className="w-full max-w-[26rem] animate-pop-in border border-line-strong bg-raised p-5 shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
         <h2
           id="confirm-dialog-title"
-          className="text-[17px] font-semibold tracking-[-0.01em] text-ink"
+          className="text-[15px] font-normal tracking-[0.02em] text-ink"
         >
           {title}
         </h2>
@@ -174,7 +172,7 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
           <button
             type="button"
             onClick={onCancel}
-            className="h-10 rounded-[10px] bg-surface-2 text-[13px] font-medium text-ink transition-colors hover:bg-surface-3"
+            className="btn w-full"
           >
             Cancel
           </button>
@@ -182,7 +180,7 @@ const ConfirmDialog: FC<ConfirmDialogProps> = ({
             ref={confirmRef}
             type="button"
             onClick={onConfirm}
-            className={`h-10 rounded-[10px] text-[13px] font-semibold transition-colors ${confirmClass}`}
+            className={confirmClass}
           >
             {confirmLabel}
           </button>

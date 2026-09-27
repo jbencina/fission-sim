@@ -12,6 +12,7 @@
 
 import { create } from 'zustand';
 import type { AppErrorSource, Command, ConnectionStatus, Frame } from '../types/telemetry';
+import { EVENTS_CAP, type PlantEvent, detectEvents } from './events';
 
 /**
  * Maximum number of history frames retained.
@@ -47,6 +48,9 @@ export interface TelemetryState {
    */
   history: Frame[];
 
+  /** Plant events derived from the frames, oldest first, at most EVENTS_CAP. */
+  events: PlantEvent[];
+
   /** Current WebSocket connection state. */
   status: ConnectionStatus;
 
@@ -63,9 +67,10 @@ export interface TelemetryState {
   // Actions -----------------------------------------------------------------
 
   /**
-   * Append a new telemetry frame to history and update `latest`.
-   * Drops the oldest frame when history exceeds HISTORY_CAP. If simulation time
-   * moves backward, treats it as a backend reset and starts a fresh history.
+   * Append a new telemetry frame to history, update `latest`, and append
+   * any events the new frame reveals (events.ts). Drops the oldest frame
+   * when history exceeds HISTORY_CAP. If simulation time moves backward,
+   * treats it as a backend reset and starts a fresh history and event list.
    */
   pushFrame: (frame: Frame) => void;
 
@@ -120,6 +125,7 @@ let _send: ((cmd: Command) => void) | null = null;
 export const useTelemetryStore = create<TelemetryState>()((set) => ({
   latest: null,
   history: [],
+  events: [],
   status: 'connecting',
   lastError: null,
   connectionNoticeDismissed: false,
@@ -134,7 +140,12 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
         : state.history.length < HISTORY_CAP
           ? [...state.history, frame]
           : [...state.history.slice(1), frame];
-      return { latest: frame, history };
+      // Events restart on a reset too; otherwise the newest ones are kept.
+      const fresh = detectEvents(state.latest, frame);
+      let events = state.events;
+      if (timeRolledBack) events = fresh;
+      else if (fresh.length > 0) events = [...state.events, ...fresh].slice(-EVENTS_CAP);
+      return { latest: frame, history, events };
     }),
 
   setStatus: (status: ConnectionStatus) =>

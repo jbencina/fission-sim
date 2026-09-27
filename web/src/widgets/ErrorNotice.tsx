@@ -48,7 +48,7 @@ export const ModelLimitNotice: FC = () => {
     <div
       role="alert"
       data-testid="model-limit-notice"
-      className="flex animate-pop-in items-start gap-3 rounded-xl border border-danger-line bg-danger-soft px-4 py-3"
+      className="flex animate-pop-in items-start gap-3 border border-danger px-4 py-3"
     >
       <AlertIcon size={18} className="mt-px shrink-0 text-danger-ink" />
       <div className="min-w-0 flex-1 text-[13px]">
@@ -82,7 +82,7 @@ const ErrorNotice: FC = () => {
     <div
       role="alert"
       data-testid="error-notice"
-      className="flex animate-pop-in items-start gap-3 rounded-xl border border-warn-line bg-warn-soft px-4 py-3"
+      className="flex animate-pop-in items-start gap-3 border border-warn px-4 py-3"
     >
       <AlertIcon size={18} className="mt-px shrink-0 text-warn-ink" />
       <div className="min-w-0 flex-1 text-[13px]">
@@ -94,7 +94,7 @@ const ErrorNotice: FC = () => {
         type="button"
         onClick={clearError}
         aria-label="Dismiss"
-        className="-m-1 shrink-0 rounded-full p-1.5 text-ink-2 transition-colors hover:bg-surface-3 hover:text-ink"
+        className="-m-1 shrink-0 p-1.5 text-ink-2 transition-colors hover:text-ink"
       >
         <CloseIcon size={14} />
       </button>

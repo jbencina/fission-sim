@@ -1,5 +1,5 @@
 /**
- * TimeSeriesChart — one live trend card, drawn on canvas by uPlot.
+ * TimeSeriesChart — one live trend, drawn on canvas by uPlot.
  *
  * Smoothness comes from three things working together:
  *   - The x window [now − 60 s, now] moves on every display refresh, driven
@@ -12,14 +12,14 @@
  * Grid lines stay fixed at 10 s intervals relative to "now" while the traces
  * slide under them. Hovering shows a crosshair synchronised across every
  * chart, and the legend switches from the latest values to the values under
- * the cursor.
+ * the cursor. The time axis is labelled only when `timeAxis` is set, so a
+ * grid of charts can label its bottom row alone.
  */
 
 import { type FC, useEffect, useId, useRef } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { useTelemetryStore } from '../state/telemetryStore'
-import { useThemeStore } from '../theme/themeStore'
 import { InfoTip } from '../ui/InfoTip'
 import { MINUS, formatNumber } from '../ui/format'
 import { AutoRange, niceStep, stepDecimals, visibleExtent } from './autoRange'
@@ -27,21 +27,14 @@ import { CHART_WINDOW_S, toColumns } from './chartData'
 import type { ChartSpec } from './chartSpecs'
 import { subscribeTick } from './ticker'
 
-const FONT = '11px -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", sans-serif'
-const Y_AXIS_SIZE = 50
+const FONT = '300 10.5px "IBM Plex Mono", ui-monospace, monospace'
+const Y_AXIS_SIZE = 48
 const X_AXIS_SIZE = 22
+const X_AXIS_HIDDEN_SIZE = 6
 const SYNC_KEY = 'plant-trends'
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-}
-
-/** `#rrggbb` (or any CSS colour the canvas accepts) at the given opacity. */
-function withAlpha(color: string, alpha: number): string {
-  const m = /^#([0-9a-f]{6})$/i.exec(color)
-  if (!m) return color
-  const n = parseInt(m[1], 16)
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`
 }
 
 /** Axis/cursor label for a time relative to now, e.g. "−30s" or "now". */
@@ -58,26 +51,25 @@ function setText(el: HTMLElement | null | undefined, text: string): void {
 const Swatch: FC<{ color: string; dashed: boolean }> = ({ color, dashed }) => (
   <span
     aria-hidden="true"
-    className="inline-block h-[2px] w-3 shrink-0 rounded-full"
+    className="inline-block h-px w-3 shrink-0"
     style={
       dashed
         ? {
             backgroundImage: `linear-gradient(90deg, var(${color}) 55%, transparent 0)`,
-            backgroundSize: '5px 2px',
+            backgroundSize: '4px 1px',
           }
         : { background: `var(${color})` }
     }
   />
 )
 
-const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
-  const theme = useThemeStore((s) => s.resolved)
+const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, timeAxis }) => {
   const empty = useTelemetryStore((s) => s.history.length === 0)
   const titleId = useId()
   const plotRef = useRef<HTMLDivElement>(null)
   const valueRefs = useRef<(HTMLSpanElement | null)[]>([])
   const cursorRef = useRef<HTMLSpanElement>(null)
-  // Outlives chart re-creation on a theme change, so the axis does not jump.
+  // Outlives chart re-creation (the axis toggling), so the range does not jump.
   const rangeRef = useRef<AutoRange | null>(null)
   rangeRef.current ??= new AutoRange(spec.range)
 
@@ -89,7 +81,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
     const ink3 = cssVar('--ink-3')
     const line = cssVar('--line')
     const lineStrong = cssVar('--line-strong')
-    const surface = cssVar('--surface-solid')
+    const canvas = cssVar('--canvas')
     const colors = spec.series.map((s) => cssVar(s.color))
     const extractors = spec.series.map((s) => s.value)
 
@@ -120,20 +112,12 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
       legendDirty = false
     }
 
-    const gradient = (color: string) => (u: uPlot) => {
-      const { top, height } = u.bbox
-      const g = u.ctx.createLinearGradient(0, top, 0, top + height)
-      g.addColorStop(0, withAlpha(color, theme === 'dark' ? 0.22 : 0.16))
-      g.addColorStop(1, withAlpha(color, 0))
-      return g
-    }
-
     const rect = el.getBoundingClientRect()
     const opts: uPlot.Options = {
       width: Math.max(1, Math.floor(rect.width)),
       height: Math.max(1, Math.floor(rect.height)),
       pxAlign: false,
-      padding: [6, 14, 0, 0],
+      padding: [6, 12, 0, 0],
       legend: { show: false },
       select: { show: false, left: 0, top: 0, width: 0, height: 0 },
       cursor: {
@@ -142,8 +126,8 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
         drag: { x: false, y: false, setScale: false },
         points: {
           size: 7,
-          width: 1.5,
-          fill: () => surface,
+          width: 1,
+          fill: () => canvas,
           stroke: (_u, i) => colors[i - 1] ?? ink3,
         },
       },
@@ -155,7 +139,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
         {
           stroke: ink3,
           font: FONT,
-          size: X_AXIS_SIZE,
+          size: timeAxis ? X_AXIS_SIZE : X_AXIS_HIDDEN_SIZE,
           gap: 4,
           grid: { show: false },
           ticks: { show: false },
@@ -165,7 +149,8 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
             for (let r = -CHART_WINDOW_S; r <= 0; r += step) out.push(max + r)
             return out
           },
-          values: (u, splits) => splits.map((v) => relativeLabel(v - (u.scales.x.max ?? v))),
+          values: (u, splits) =>
+            timeAxis ? splits.map((v) => relativeLabel(v - (u.scales.x.max ?? v))) : splits.map(() => ''),
         },
         {
           stroke: ink3,
@@ -200,9 +185,8 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
         ...spec.series.map((s, i) => ({
           label: s.label,
           stroke: colors[i],
-          width: s.width ?? 1.5,
+          width: s.width ?? 1.1,
           dash: s.dash,
-          fill: s.fill ? gradient(colors[i]) : undefined,
           points: { show: false },
         })),
       ],
@@ -280,38 +264,36 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
       resize.disconnect()
       u.destroy()
     }
-  }, [spec, theme])
+  }, [spec, timeAxis])
+
+  const primary = spec.series.find((s) => s.width !== undefined && s.dash === undefined) ?? spec.series[0]
+  const primaryIndex = spec.series.indexOf(primary)
 
   return (
-    <section aria-labelledby={titleId} className="card flex min-h-0 flex-col px-4 pb-2 pt-3.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <h3 id={titleId} className="truncate text-[13px] font-semibold tracking-[-0.01em] text-ink">
-            {spec.title}
-          </h3>
-          <span className="shrink-0 text-[12px] text-ink-3">{spec.unit}</span>
-          <InfoTip title={spec.title} body={spec.description} className="ml-0.5" />
-        </div>
-        <span ref={cursorRef} aria-hidden="true" className="shrink-0 text-[12px] tabular-nums text-ink-3" />
+    <section aria-labelledby={titleId} className="flex min-h-0 flex-col bg-canvas px-4 pb-1.5 pt-3">
+      <div className="flex items-baseline gap-2">
+        <h3 id={titleId} className="eyebrow truncate !text-ink">
+          {spec.title}
+        </h3>
+        <span className="shrink-0 text-[11.5px] text-ink-2">{spec.unit}</span>
+        <InfoTip title={spec.title} body={spec.description} className="ml-0.5 self-center" />
+        <span ref={cursorRef} aria-hidden="true" className="ml-auto shrink-0 font-mono text-[11px] text-ink-3" />
       </div>
 
       {/*
-        Label above value, on every chart: the legend has the same height
-        everywhere and never re-wraps as values change width, so plots in a
-        row stay aligned and never resize mid-transient.
+        Label and value per series on one row. The row keeps the same height
+        on every chart, so plots in a row stay aligned as values change width.
       */}
-      <ul className="mt-2 flex flex-wrap gap-x-5 gap-y-1">
+      <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5">
         {spec.series.map((s, i) => (
-          <li key={s.label} className="min-w-[4.5rem] whitespace-nowrap">
-            <div className="flex items-center gap-1.5 text-[11px] leading-4 text-ink-2">
-              <Swatch color={s.color} dashed={s.dash !== undefined} />
-              {s.label}
-            </div>
+          <li key={s.label} className="flex items-center gap-1.5 whitespace-nowrap text-[11.5px] text-ink-2">
+            <Swatch color={s.color} dashed={s.dash !== undefined} />
+            {s.label}
             <span
               ref={(node) => {
                 valueRefs.current[i] = node
               }}
-              className="block text-[13px] font-semibold leading-5 tabular-nums text-ink"
+              className={`font-mono tabular-nums ${i === primaryIndex ? 'text-ink' : 'text-ink-2'}`}
             />
           </li>
         ))}
@@ -326,7 +308,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec }> = ({ spec }) => {
           className="absolute inset-0"
         />
         {empty && (
-          <div className="pointer-events-none absolute inset-0 grid place-items-center text-[13px] text-ink-3">
+          <div className="pointer-events-none absolute inset-0 grid place-items-center text-[12px] text-ink-3">
             Waiting for telemetry…
           </div>
         )}

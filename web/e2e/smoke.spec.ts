@@ -8,7 +8,7 @@
  * explanation can both be revealed with the keyboard alone.
  *
  * SCRAM check:
- *   Navigate to the app, wait for "Connected" chip, reset the sim to ensure
+ *   Navigate to the app, wait for "Connected", reset the sim to ensure
  *   a clean steady-state start, read the initial thermal power, click SCRAM +
  *   confirm the modal, wait 12 s, assert power dropped by ≥50%.
  */
@@ -72,7 +72,7 @@ test('educational help is reachable with the keyboard', async ({ page }) => {
 test('SCRAM drops thermal power', async ({ page }) => {
   await page.goto('/')
 
-  // Wait for the WebSocket to connect — the UI shows a "Connected" chip.
+  // Wait for the WebSocket to connect — the toolbar shows "Connected".
   await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
   await expect(page.getByText(/personal learning project/i)).toBeVisible()
 
@@ -97,7 +97,7 @@ test('SCRAM drops thermal power', async ({ page }) => {
 
   // ── Read the initial thermal power ─────────────────────────────────────────
   //
-  // The StatusTile for power has data-testid="status-power_thermal" on the card
+  // The readout row for power has data-testid="status-power_thermal" on the row
   // and data-testid="status-power_thermal-value" on the inner value <span>.
   // We read the value span to avoid tooltip text (which also contains numbers)
   // from being included in the textContent.

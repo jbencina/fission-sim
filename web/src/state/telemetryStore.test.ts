@@ -12,6 +12,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { HISTORY_CAP, useTelemetryStore } from './telemetryStore';
+import { EVENTS_CAP } from './events';
 import { makeFrame } from '../test/makeFrame';
 
 // ---------------------------------------------------------------------------
@@ -161,5 +162,28 @@ describe('clearHistory', () => {
     expect(state.latest).toEqual(latest);
     expect(state.status).toBe('connected');
     expect(state.lastError?.message).toBe('old warning');
+  });
+});
+
+describe('events', () => {
+  it('appends derived events and restarts them on a reset', () => {
+    const { pushFrame } = useTelemetryStore.getState();
+    pushFrame(makeFrame(1));
+    pushFrame(makeFrame(2, { scrammed: true, rod_position: 0.3 }));
+    expect(useTelemetryStore.getState().events.map((e) => e.text)).toEqual([
+      'Telemetry link established',
+      'SCRAM latched, both banks dropping',
+    ]);
+    pushFrame(makeFrame(0.1));
+    expect(useTelemetryStore.getState().events.map((e) => e.text)).toEqual([
+      'Simulation reset to the design state',
+    ]);
+  });
+
+  it('keeps at most EVENTS_CAP events', () => {
+    const { pushFrame } = useTelemetryStore.getState();
+    pushFrame(makeFrame(1));
+    for (let i = 2; i < 2 + EVENTS_CAP + 20; i++) pushFrame(makeFrame(i, { speed: i % 2 ? 1 : 2 }));
+    expect(useTelemetryStore.getState().events).toHaveLength(EVENTS_CAP);
   });
 });

@@ -37,3 +37,11 @@ describe('formatClock', () => {
     expect(formatClock(null)).toBe('--:--.-');
   });
 });
+
+describe('formatClock rounding', () => {
+  it('never shows ten tenths when t sits just under a whole second', () => {
+    expect(formatClock(133.99999999)).toBe('02:14.0');
+    expect(formatClock(59.9999999)).toBe('01:00.0');
+    expect(formatClock(0.96)).toBe('00:00.9');
+  });
+});

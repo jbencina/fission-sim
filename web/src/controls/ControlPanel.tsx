@@ -2,11 +2,12 @@
  * ControlPanel — operator controls for the fission-sim web UI.
  *
  * Four groups:
- *   1. Control rods — a slider for the control-bank command in % of travel
- *                     withdrawn (sent to the backend as a fraction 0–1). Its
- *                     track fills to the actual bank position, so the lag
- *                     between command (the knob) and position (the fill) is
- *                     visible at a glance.
+ *   1. Control rods — a ring gauge showing the bank's position (dot) and the
+ *                     command (amber tick), with a slider beneath it for the
+ *                     command in % of travel withdrawn (sent to the backend
+ *                     as a fraction 0–1). The slider's track carries an amber
+ *                     marker at the actual position, so the lag between
+ *                     command and position is visible at a glance.
  *   2. Safety       — SCRAM with a confirmation dialog; Reset Scram while
  *                     scrammed.
  *   3. Run          — Pause/Resume and Reset Simulation (with confirmation).
@@ -22,47 +23,28 @@
  * @module ControlPanel
  */
 
-import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type FC, useCallback, useEffect, useRef, useState } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { SPEEDS, type Speed } from '../types/telemetry'
 import { HelpTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
 import { PauseIcon, PlayIcon, ResetIcon } from '../ui/icons'
 import ConfirmDialog from './ConfirmDialog'
+import RodGauge from './RodGauge'
 
 // ---------------------------------------------------------------------------
 // Small building blocks
 // ---------------------------------------------------------------------------
 
-const Divider: FC = () => <div className="-mx-4 my-4 h-px bg-line" />
-
-const Readout: FC<{ label: string; value: string; swatch: ReactNode; align?: 'left' | 'right' }> = ({
-  label,
-  value,
-  swatch,
-  align = 'left',
-}) => (
-  <div className={align === 'right' ? 'text-right' : ''}>
-    <div
-      className={`flex items-center gap-1.5 text-[12px] text-ink-2 ${align === 'right' ? 'justify-end' : ''}`}
-    >
-      {swatch}
-      {label}
-    </div>
-    <div className="mt-0.5 text-[20px] font-semibold leading-tight tracking-[-0.02em] tabular-nums text-ink">
+const Readout: FC<{ label: string; value: string }> = ({ label, value }) => (
+  <div>
+    <div className="text-[11.5px] tracking-[0.04em] text-ink-2">{label}</div>
+    <div className="font-mono text-[22px] font-light leading-tight tabular-nums text-ink">
       {value}
-      <span className="ml-0.5 text-[13px] font-normal text-ink-2">%</span>
+      <span className="ml-1 font-sans text-[11px] text-ink-2">%</span>
     </div>
   </div>
 )
-
-const secondaryButton = [
-  'inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] px-3',
-  'bg-surface-2 text-[13px] font-medium text-ink',
-  'transition-[background-color,transform] duration-150 ease-smooth',
-  'hover:bg-surface-3 active:scale-[0.98]',
-  'disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-surface-2 disabled:active:scale-100',
-].join(' ')
 
 // ---------------------------------------------------------------------------
 // ControlPanel
@@ -188,39 +170,44 @@ const ControlPanel: FC = () => {
         onCancel={() => setResetDialogOpen(false)}
       />
 
-      <section aria-label="Operator controls" className="card p-4">
+      <section aria-label="Operator controls" className="panel p-4">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="eyebrow">Controls</h2>
-          {!connected && <span className="text-[12px] text-ink-3">Offline · controls inactive</span>}
+          <h2 className="eyebrow">Control bank</h2>
+          {!connected && <span className="text-[11.5px] text-ink-3">Offline, controls inactive</span>}
         </div>
 
         <fieldset disabled={!connected} className={connected ? '' : 'opacity-60'}>
           {/* ── 1. Control rods ─────────────────────────────────────────── */}
           <section aria-label="Rod control" className="mt-3">
-            <div className="grid grid-cols-2 gap-2">
-              <Readout
-                label="Command"
-                value={formatNumber(localRodCmd * 100, 1)}
-                swatch={<span aria-hidden="true" className="h-2.5 w-2.5 rounded-full border border-line-strong bg-white shadow-sm" />}
-              />
-              <Readout
-                label="Position"
-                align="right"
-                value={formatNumber(rodPosition === null ? null : rodPosition * 100, 1)}
-                swatch={<span aria-hidden="true" className="h-2.5 w-2.5 rounded-full" style={{ background: 'var(--series-purple)' }} />}
-              />
+            <div className="flex items-start gap-4">
+              <RodGauge position={rodPosition} command={localRodCmd} />
+              <div className="flex min-h-[124px] min-w-0 flex-1 flex-col justify-between">
+                <Readout label="Command" value={formatNumber(localRodCmd * 100, 0)} />
+                <Readout
+                  label="Position"
+                  value={formatNumber(rodPosition === null ? null : rodPosition * 100, 0)}
+                />
+                <p className="text-[11.5px] leading-snug text-ink-2">
+                  {scrammed
+                    ? 'Shutdown bank is in. Reset the SCRAM to give the control bank back to your command.'
+                    : 'The bank moves at 1 % per second toward the command.'}
+                </p>
+              </div>
             </div>
 
             <HelpTip tip="Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second: 100 s for a full stroke, 50 s from design to either end. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.">
               {(tipId) => (
-                <div className="relative mt-2">
-                  {/* Visible track, inset by the knob radius so fill and knob line up. */}
-                  <div aria-hidden="true" className="pointer-events-none absolute inset-x-[11px] top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-surface-3">
+                <div className="relative mt-3">
+                  {/* Visible 1 px track, inset by the knob radius so the marker and knob line up. The white marker is the bank's actual position, as on the gauge. */}
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-[7px] top-1/2 h-px -translate-y-1/2 bg-line-strong"
+                  >
+                    <div className="absolute left-1/2 top-1/2 h-2.5 w-px -translate-y-1/2 bg-ink-3" />
                     <div
-                      className="absolute inset-y-0 left-0 rounded-full transition-[width] duration-200 ease-linear"
-                      style={{ width: `${positionPct}%`, background: 'var(--series-purple)' }}
+                      className="absolute top-1/2 h-3 w-0.5 -translate-y-1/2 bg-ink transition-[left] duration-200 ease-linear"
+                      style={{ left: `${positionPct}%` }}
                     />
-                    <div className="absolute left-1/2 top-1/2 h-3 w-px -translate-y-1/2 bg-line-strong" />
                   </div>
                   <input
                     ref={sliderRef}
@@ -242,14 +229,14 @@ const ControlPanel: FC = () => {
                 </div>
               )}
             </HelpTip>
-            <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[11px] text-ink-3">
+            <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[10.5px] text-ink-3">
               <span>Inserted</span>
               <span>Design 50</span>
               <span>Withdrawn</span>
             </div>
           </section>
 
-          <Divider />
+          <div className="-mx-4 my-4 h-px bg-line" />
 
           {/* ── 2. Safety ───────────────────────────────────────────────── */}
           {/* While scrammed, Reset Scram takes half of the row instead of adding one. */}
@@ -262,15 +249,9 @@ const ControlPanel: FC = () => {
                   disabled={!connected || scrammed}
                   onClick={() => setScramDialogOpen(true)}
                   title={scrammed ? 'Reactor is already scrammed' : undefined}
-                  className={[
-                    'h-12 w-full rounded-xl bg-danger text-[15px] font-bold tracking-[0.12em] text-white',
-                    'shadow-[inset_0_1px_0_rgba(255,255,255,0.18),0_1px_2px_rgba(0,0,0,0.2)]',
-                    'transition-[background-color,transform,opacity] duration-150 ease-smooth',
-                    'hover:bg-danger-hover active:scale-[0.99]',
-                    'disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-danger disabled:active:scale-100',
-                  ].join(' ')}
+                  className={`btn btn-danger !h-11 w-full disabled:!opacity-100 ${scrammed ? '!indent-[0.1em] !tracking-[0.1em] text-[12px]' : 'text-[13px]'}`}
                 >
-                  SCRAM
+                  {scrammed ? 'SCRAM LATCHED' : 'SCRAM'}
                 </button>
               )}
             </HelpTip>
@@ -286,7 +267,7 @@ const ControlPanel: FC = () => {
                     type="button"
                     disabled={!connected}
                     onClick={handleResetScram}
-                    className={`${secondaryButton} !h-12 w-full !rounded-xl`}
+                    className="btn !h-11 w-full !border-ink"
                   >
                     Reset Scram
                   </button>
@@ -295,10 +276,8 @@ const ControlPanel: FC = () => {
             )}
           </section>
 
-          <Divider />
-
           {/* ── 3. Run ──────────────────────────────────────────────────── */}
-          <section aria-label="Run control" className="grid grid-cols-2 gap-2">
+          <section aria-label="Run control" className="mt-2 grid grid-cols-2 gap-2">
             <HelpTip tip="Pauses simulator time advancement. Values are frozen; the display still updates when you change a control (SCRAM, speed, rods).">
               {(tipId) => (
                 <button
@@ -306,13 +285,9 @@ const ControlPanel: FC = () => {
                   type="button"
                   disabled={!connected || halted}
                   onClick={handlePauseResume}
-                  className={
-                    running
-                      ? `${secondaryButton} w-full`
-                      : `${secondaryButton} w-full !bg-accent !text-accent-ink hover:!bg-accent-hover`
-                  }
+                  className={`btn w-full ${running ? '' : '!border-ink'}`}
                 >
-                  {running ? <PauseIcon size={14} /> : <PlayIcon size={13} />}
+                  {running ? <PauseIcon size={13} /> : <PlayIcon size={12} />}
                   {running ? 'Pause' : 'Resume'}
                 </button>
               )}
@@ -327,9 +302,9 @@ const ControlPanel: FC = () => {
                   type="button"
                   disabled={!connected}
                   onClick={() => setResetDialogOpen(true)}
-                  className={`${secondaryButton} w-full`}
+                  className="btn w-full"
                 >
-                  <ResetIcon size={14} />
+                  <ResetIcon size={13} />
                   Reset Simulation
                 </button>
               )}
@@ -338,14 +313,10 @@ const ControlPanel: FC = () => {
 
           {/* ── 4. Speed ────────────────────────────────────────────────── */}
           <section aria-label="Speed control" className="mt-3 flex items-center justify-between gap-3">
-            <span className="text-[13px] text-ink-2">Speed</span>
+            <span className="eyebrow">Speed</span>
             <HelpTip align="end" tip="Real-time multiplier. Useful for observing long transients quickly.">
               {(tipId) => (
-                <div
-                  role="group"
-                  aria-label="Simulation speed multiplier"
-                  className="inline-flex gap-0.5 rounded-[9px] bg-surface-2 p-0.5"
-                >
+                <div role="group" aria-label="Simulation speed multiplier" className="seg">
                   {SPEEDS.map((opt) => {
                     const active = speed === opt
                     return (
@@ -357,9 +328,8 @@ const ControlPanel: FC = () => {
                         aria-pressed={active}
                         aria-describedby={tipId}
                         className={[
-                          'h-7 w-11 rounded-[7px] text-[13px] font-medium tabular-nums',
-                          'transition-colors duration-150 ease-smooth',
-                          active ? 'bg-seg-on text-ink shadow-[0_1px_2px_rgba(0,0,0,0.14)]' : 'text-ink-2 hover:text-ink',
+                          'h-9 w-11 font-mono text-[12px] tabular-nums transition-colors',
+                          active ? 'seg-on' : 'text-ink-2 hover:text-ink',
                           'disabled:cursor-not-allowed',
                         ].join(' ')}
                       >

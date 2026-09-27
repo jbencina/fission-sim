@@ -47,11 +47,12 @@ export function formatNumber(
  */
 export function formatClock(t: number | null | undefined): string {
   if (t === null || t === undefined || !Number.isFinite(t)) return '--:--.-'
-  const total = Math.max(0, t)
-  const minutes = Math.floor(total / 60)
-  const seconds = total - minutes * 60
-  const whole = Math.floor(seconds)
-  const tenths = Math.floor((seconds - whole) * 10 + 1e-9)
+  // Work in whole tenths so a value just under a second (floating-point
+  // drift makes these common) never prints as ten tenths.
+  const tenthsTotal = Math.floor(Math.max(0, t) * 10 + 1e-6)
+  const minutes = Math.floor(tenthsTotal / 600)
+  const whole = Math.floor(tenthsTotal / 10) % 60
+  const tenths = tenthsTotal % 10
   return `${String(minutes).padStart(2, '0')}:${String(whole).padStart(2, '0')}.${tenths}`
 }
 

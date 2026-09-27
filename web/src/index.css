@@ -1,11 +1,11 @@
 /*
- * Design tokens for the fission-sim dashboard.
+ * Design tokens for the fission-sim console.
  *
- * Every colour the UI uses is a CSS variable here, defined once for the light
- * theme and once for the dark theme; `data-theme` on <html> picks the set
- * (see `theme/useTheme.ts`). Tailwind maps its colour names onto these
- * variables (tailwind.config.ts), and the canvas charts read the same
- * variables at draw time, so the two stay in step when the theme changes.
+ * One palette, defined once: a black ground, white ink at three strengths,
+ * hairlines at two strengths, amber for caution and red for alarm. The
+ * only chart hue is a soft blue for the cold leg and moderator feedback.
+ * Tailwind maps its colour names onto these variables (tailwind.config.ts)
+ * and the canvas charts read the same variables at draw time.
  */
 
 @tailwind base;
@@ -14,105 +14,52 @@
 
 @layer base {
   :root {
-    color-scheme: light;
-
-    --canvas: #f5f5f7;
-    --surface: rgba(255, 255, 255, 0.78);
-    --surface-solid: #ffffff;
-    --surface-2: rgba(0, 0, 0, 0.04);
-    --surface-3: rgba(0, 0, 0, 0.08);
-    --raised: #ffffff;
-
-    --ink: #1d1d1f;
-    --ink-2: #6e6e73;
-    --ink-3: #86868b;
-
-    --line: rgba(0, 0, 0, 0.08);
-    --line-strong: rgba(0, 0, 0, 0.14);
-
-    --accent: #0071e3;
-    --accent-hover: #0077ed;
-    --accent-soft: rgba(0, 113, 227, 0.12);
-    --accent-ink: #ffffff;
-
-    --live: #34c759;
-    --warn: #ff9500;
-    --warn-ink: #b25000;
-    --warn-soft: rgba(255, 149, 0, 0.12);
-    --warn-line: rgba(255, 149, 0, 0.45);
-    --danger: #ff3b30;
-    --danger-hover: #ff5147;
-    --danger-ink: #d70015;
-    --danger-soft: rgba(255, 59, 48, 0.1);
-    --danger-line: rgba(255, 59, 48, 0.4);
-
-    /* Selected segment of a segmented control. */
-    --seg-on: #ffffff;
-
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 28px rgba(0, 0, 0, 0.12);
-    --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.08), 0 16px 48px rgba(0, 0, 0, 0.18);
-
-    /* Chart series palette (Apple system colours, light variants). */
-    --series-blue: #007aff;
-    --series-orange: #ff9500;
-    --series-red: #ff3b30;
-    --series-teal: #30b0c7;
-    --series-purple: #af52de;
-    --series-indigo: #5856d6;
-    --series-gray: #8e8e93;
-    --series-ink: #1d1d1f;
-
-    --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
-  }
-
-  [data-theme='dark'] {
     color-scheme: dark;
 
-    --canvas: #111112;
-    --surface: rgba(28, 28, 30, 0.78);
-    --surface-solid: #1c1c1e;
-    --surface-2: rgba(255, 255, 255, 0.06);
-    --surface-3: rgba(255, 255, 255, 0.11);
-    --raised: #2c2c2e;
+    --canvas: #050607;
+    --surface: #050607;
+    --surface-solid: #050607;
+    --surface-2: rgba(255, 255, 255, 0.05);
+    --surface-3: rgba(255, 255, 255, 0.09);
+    --raised: #0b0d10;
 
-    --ink: #f5f5f7;
-    --ink-2: #a1a1a6;
-    --ink-3: #737378;
+    --ink: #f2f4f6;
+    --ink-2: #8d949c;
+    --ink-3: #737a82;
 
     --line: rgba(255, 255, 255, 0.09);
-    --line-strong: rgba(255, 255, 255, 0.16);
+    --line-strong: rgba(255, 255, 255, 0.22);
 
-    --accent: #0a84ff;
-    --accent-hover: #409cff;
-    --accent-soft: rgba(10, 132, 255, 0.22);
-    --accent-ink: #ffffff;
+    --accent: #f2f4f6;
+    --accent-hover: #ffffff;
+    --accent-soft: rgba(255, 255, 255, 0.16);
+    --accent-ink: #050607;
 
-    --live: #30d158;
-    --warn: #ff9f0a;
-    --warn-ink: #ffb340;
-    --warn-soft: rgba(255, 159, 10, 0.14);
-    --warn-line: rgba(255, 159, 10, 0.45);
-    --danger: #ff453a;
-    --danger-hover: #ff6259;
-    --danger-ink: #ff6961;
-    --danger-soft: rgba(255, 69, 58, 0.15);
-    --danger-line: rgba(255, 69, 58, 0.45);
+    --live: #f2f4f6;
+    --warn: #d8b46a;
+    --warn-ink: #d8b46a;
+    --warn-soft: rgba(216, 180, 106, 0.1);
+    --warn-line: rgba(216, 180, 106, 0.6);
+    --danger: #ff3d3d;
+    --danger-hover: #ff5a5a;
+    --danger-ink: #ff3d3d;
+    --danger-soft: rgba(255, 61, 61, 0.1);
+    --danger-line: rgba(255, 61, 61, 0.6);
 
-    --seg-on: #636366;
+    --seg-on: #f2f4f6;
 
-    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 28px rgba(0, 0, 0, 0.5);
-    --shadow-pop: 0 2px 6px rgba(0, 0, 0, 0.4), 0 16px 48px rgba(0, 0, 0, 0.6);
+    --shadow-card: none;
+    --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.6);
+    --shadow-pop: 0 16px 48px rgba(0, 0, 0, 0.7);
 
-    --series-blue: #0a84ff;
-    --series-orange: #ff9f0a;
-    --series-red: #ff453a;
-    --series-teal: #64d2ff;
-    --series-purple: #bf5af2;
-    --series-indigo: #7d7aff;
-    --series-gray: #98989d;
-    --series-ink: #f5f5f7;
+    /* Chart series. */
+    --series-ink: #ffffff;
+    --series-gray: #6a7178;
+    --series-blue: #7fb0e6;
+    --series-hot: #c9ced3;
+    --series-rod: #9aa3ad;
+
+    --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   html {
@@ -122,9 +69,8 @@
   body {
     background: var(--canvas);
     color: var(--ink);
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI',
-      'Helvetica Neue', Arial, sans-serif;
-    font-size: 14px;
+    font-family: 'IBM Plex Sans', system-ui, sans-serif;
+    font-size: 13px;
     line-height: 1.4;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -139,47 +85,93 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 1px solid var(--accent);
     outline-offset: 2px;
   }
 }
 
 @layer components {
-  /* Small uppercase heading used for cards and sections, as in adsb-map. */
+  /* Panel label: the one place uppercase is used. */
   .eyebrow {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 11.5px;
+    font-weight: 400;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-3);
+    letter-spacing: 0.16em;
+    color: var(--ink-2);
   }
 
-  .card {
-    background: var(--surface-solid);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    box-shadow: var(--shadow-card);
+  .panel {
+    border: 1px solid var(--line-strong);
+    background: var(--canvas);
   }
 
-  /* Independently scrolling column: thin themed scrollbar, and a reserved
-     gutter so content never shifts sideways when the scrollbar appears. */
+  /* Outlined control, 40 px tall. */
+  .btn {
+    display: inline-flex;
+    height: 40px;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 0 12px;
+    border: 1px solid var(--line-strong);
+    background: transparent;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--ink);
+    white-space: nowrap;
+    transition:
+      background-color 0.15s var(--ease),
+      border-color 0.15s var(--ease);
+  }
+  .btn:hover:not(:disabled) {
+    background: var(--surface-2);
+    border-color: var(--ink);
+  }
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+  .btn-danger {
+    border-color: var(--danger);
+    color: var(--danger);
+    letter-spacing: 0.3em;
+    text-indent: 0.3em;
+    font-weight: 400;
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: var(--danger-soft);
+    border-color: var(--danger);
+  }
+
+  /* Segmented control. */
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line-strong);
+  }
+  .seg > * {
+    border-right: 1px solid var(--line-strong);
+  }
+  .seg > *:last-child {
+    border-right: 0;
+  }
+  .seg-on {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  /* Independently scrolling column: thin scrollbar, and a reserved gutter
+     so content never shifts sideways when the scrollbar appears. */
   .scroll-column {
     scrollbar-width: thin;
     scrollbar-color: var(--line-strong) transparent;
     scrollbar-gutter: stable;
   }
-
-  .glass {
-    background: var(--surface);
-    -webkit-backdrop-filter: saturate(160%) blur(24px);
-    backdrop-filter: saturate(160%) blur(24px);
-  }
 }
 
 /*
  * Rod-command slider: a native range input (keyboard and screen-reader
- * support for free) with its own track hidden. The visible track, showing
- * the actual rod position, is drawn behind it by ControlPanel.
+ * support for free) with its own track hidden. The visible 1 px track and
+ * the position marker are drawn behind it by ControlPanel.
  */
 .rod-range {
   -webkit-appearance: none;
@@ -205,56 +197,36 @@
 .rod-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 22px;
-  height: 22px;
-  margin-top: 3px;
+  width: 14px;
+  height: 14px;
+  margin-top: 7px;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.12),
-    0 1px 2px rgba(0, 0, 0, 0.12),
-    0 3px 8px rgba(0, 0, 0, 0.16);
-  transition:
-    transform 0.15s var(--ease),
-    box-shadow 0.15s var(--ease);
+  background: var(--ink);
+  box-shadow: 0 0 0 3px var(--canvas);
 }
 .rod-range::-moz-range-thumb {
-  width: 22px;
-  height: 22px;
+  width: 14px;
+  height: 14px;
   border: 0;
   border-radius: 50%;
-  background: #ffffff;
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.12),
-    0 1px 2px rgba(0, 0, 0, 0.12),
-    0 3px 8px rgba(0, 0, 0, 0.16);
-  transition:
-    transform 0.15s var(--ease),
-    box-shadow 0.15s var(--ease);
-}
-.rod-range:active::-webkit-slider-thumb {
-  transform: scale(1.08);
-}
-.rod-range:active::-moz-range-thumb {
-  transform: scale(1.08);
+  background: var(--ink);
+  box-shadow: 0 0 0 3px var(--canvas);
 }
 .rod-range:focus-visible::-webkit-slider-thumb {
   box-shadow:
-    0 0 0 2px var(--accent),
-    0 0 0 6px var(--accent-soft),
-    0 3px 8px rgba(0, 0, 0, 0.16);
+    0 0 0 3px var(--canvas),
+    0 0 0 4px var(--ink);
 }
 .rod-range:focus-visible::-moz-range-thumb {
   box-shadow:
-    0 0 0 2px var(--accent),
-    0 0 0 6px var(--accent-soft),
-    0 3px 8px rgba(0, 0, 0, 0.16);
+    0 0 0 3px var(--canvas),
+    0 0 0 4px var(--ink);
 }
 .rod-range:disabled {
   cursor: not-allowed;
 }
 
-/* uPlot: crosshair and hover markers in the theme's colours. */
+/* uPlot: crosshair and hover markers in the console's colours. */
 .uplot {
   font-family: inherit;
 }

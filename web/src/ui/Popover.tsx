@@ -72,7 +72,7 @@ const Popover: FC<PopoverProps> = ({ id, open, anchor, align = 'start', side = '
       style={pos ? { top: pos.top, left: pos.left } : { top: 0, left: 0 }}
       className={[
         'pointer-events-none fixed z-[60] w-72 max-w-[calc(100vw-16px)]',
-        'rounded-xl border border-line bg-raised p-3 shadow-pop',
+        'border border-line-strong bg-raised p-3 shadow-pop',
         'text-[12.5px] leading-relaxed text-ink-2',
         'transition-[opacity,transform] duration-150 ease-smooth',
         open && pos ? 'translate-y-0 opacity-100' : 'translate-y-0.5 opacity-0',

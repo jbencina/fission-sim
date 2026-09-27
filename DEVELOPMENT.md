@@ -357,7 +357,7 @@ The browser dashboard is a single-page app in `web/`:
 | Vite | 5.x | Build tool and dev server with backend proxy |
 | React | 18.x | UI component tree |
 | TypeScript | 5.x strict | Type-safe frontend language |
-| Tailwind CSS | 3.x | Utility-first styling, mapped onto theme CSS variables |
+| Tailwind CSS | 3.x | Utility-first styling, mapped onto the console's CSS variables |
 | uPlot | 1.6.x | Canvas time-series charts |
 | Zustand | 5.x | Lightweight global state store for telemetry |
 | ESLint + Prettier | 8.x / 3.x | Lint and format |
@@ -383,10 +383,14 @@ readouts render it.
   instead of stepping ten times a second. Each y axis is sticky and eases
   between ranges (`autoRange.ts`). Data, scales and legend values go to
   uPlot and the DOM directly, so React does not re-render per frame.
-- Colours are CSS variables in `index.css`, one set per theme. The theme
-  (system, light or dark) is chosen in the toolbar, saved in localStorage,
-  and applied by `theme/themeStore.ts`; an inline script in `index.html`
-  applies it before first paint.
+- Colours are CSS variables in `index.css`: one palette, a black ground with
+  white ink and hairlines, amber for caution and red for alarm. There is no
+  light theme. Text is IBM Plex Sans and every number IBM Plex Mono,
+  self-hosted from `@fontsource`.
+- `widgets/PlantMimic.tsx` draws the loop schematic from the latest frame;
+  `widgets/loopState.ts` words its title. `state/events.ts` derives plant
+  events from consecutive frames and the store keeps the newest 100 for
+  `widgets/EventLog.tsx`.
 - Backend error frames and connection errors go through the store's
   `reportError` and appear as a dismissible notice (`clearError` hides it).
   A `model_limit` in the latest frame appears as a separate, persistent
