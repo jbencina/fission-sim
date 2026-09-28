@@ -346,6 +346,11 @@ Layer rules:
   `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. The older
   `SecondarySink` remains available for M1/M2 regression plants but is not
   in the standard wiring.
+- The standard module classes are `RodController`, `PointKineticsCore`,
+  `PrimaryLoop`, `SteamGenerator`, `SGSecondary`, `Turbine`,
+  `FeedwaterController`, `TavgController`, `Pressurizer`, and
+  `PressurizerController`. There is no `sink` module key in a standard M3
+  snapshot.
 - `fission_sim.api` is the only package that knows about asyncio, HTTP, or
   WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
 - The Vite frontend is a separate process. During development, the Vite proxy
@@ -442,8 +447,10 @@ engine evaluates `outputs()` in one of two ways, decided once in `finalize()`:
   computed module. Every output must depend only on the component's own state
   and fixed parameters. Examples: the loop's `T_avg = (T_hot + T_cold) / 2`,
   the rod controller's `rho_rod` from the two bank positions, the
-  pressurizer's pressure `P` from its mass and internal energy, and the
-  secondary sink's constant `T_secondary`.
+  pressurizer's pressure `P` from its mass and internal energy, and the SG
+  shell's `P_steam` / `T_secondary` / `level_sg` from its mass and internal
+  energy. The older M1/M2 secondary sink's constant `T_secondary` follows the
+  same state-derived rule in regression plants.
 - **Computed:** called as `outputs(state, inputs=...)` after the modules that
   produce its inputs, in dependency order. Examples: the steam generator's
   `Q_sg = UA · (T_avg − T_secondary)`, the core's
@@ -664,7 +671,10 @@ state.
 ### Snapshot Dict Shape
 
 Returned by `step()`, `run()`, and `engine.snapshot()`. This is the plant
-above after `step(dt=5.0)` at the design steady state, values rounded:
+above after `step(dt=5.0)` at the design steady state, values rounded.
+
+There is no `sink` key in this M3 standard-plant shape; `SecondarySink`
+appears only in deliberately hand-wired M1/M2 regression plants.
 
 ```python
 {
@@ -701,19 +711,25 @@ above after `step(dt=5.0)` at the design steady state, values rounded:
     "sg": {"Q_sg": 3.0e9, "T_avg": 583.0, "T_secondary": 558.0, "delta_T": 25.0},
     "sg_sec": {
         "P_steam": 6.899e6, "T_secondary": 558.0, "level_sg": 0.5,
-        "x": 0.0462, "M_sec": 233239.1, "U_sec": 3.06608e11,
-        "P_fw_flash": 2.6389e6,
+        "x": 0.0462, "M_l": 222458.1, "M_v": 10781.0,
+        "M_sec": 233239.1, "U_sec": 3.06608e11,
+        "h_g": 2.77387e6, "h_fw": 9.76402e5, "P_fw_flash": 2.6389e6,
+        "Q_sg": 3.0e9,
         "m_steam": 1669.0, "m_dump": 0.0, "m_fw": 1669.0,
         "Q_steam_net": 3.0e9,
     },
     "turbine": {
         "load": 1.0, "m_steam": 1669.0, "m_dump": 0.0,
-        "P_electric": 9.9e8, "T_ref": 583.0, "trip_active": False,
+        "P_electric": 9.9e8, "T_ref": 583.0, "P_steam": 6.899e6,
+        "load_demand": 1.0, "turbine_trip": False, "scram": False,
+        "trip_active": False,
     },
     "fw_ctrl": {"m_fw": 1669.0, "m_steam": 1669.0, "m_dump": 0.0},
     "tavg_ctrl": {
         "rod_demand_auto": 0.5, "rod_demand": 0.5,
         "T_err": 0.0, "rod_auto": False, "acting": False,
+        "T_avg": 583.0, "T_ref": 583.0, "rod_position": 0.5,
+        "rod_command": 0.5, "scram": False, "turbine_trip": False,
     },
     "pzr": {
         "P": 15499345.2, "level": 0.49999, "T_sat": 617.938,

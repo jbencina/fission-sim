@@ -164,7 +164,7 @@ Its snapshot module keys are `rod`, `core`, `loop`, `sg`, `sg_sec`,
 `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. Its externals are
 `rod_command`, `scram`, `P_setpoint`, `heater_manual`, `spray_manual`,
 `turbine_load`, `turbine_trip`, and `rod_auto`. `SecondarySink` remains in
-the package for older fixed-secondary examples/tests, but it is no longer in
+the package for older M1/M2 examples/tests, but it is no longer in
 the standard plant. `sg_sec` telemetry includes `P_steam`, `T_secondary`,
 `level_sg`, shell quality `x`, inventory/energy, steam/feedwater flows, and
 `P_fw_flash` (the feedwater-temperature saturation pressure used by domain
@@ -179,24 +179,35 @@ checks).
 | `rho_rod`, `rho_doppler`, `rho_moderator` | The three visible reactivity contributions. |
 | `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
+| `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
 | `P_steam`, `level_sg`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | M3 secondary-side pressure/inventory, turbine/dump flows, gross electric power, and rod-control temperature reference. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
+
+In the measured M3 acceptance scenarios, a 100 % → 90 % turbine-admission cut
+with rods manual is only about a 3 % power reduction because steam pressure
+rises and preserves steam flow. With rods automatic, `T_avg` returns to the
+new `T_ref`. A turbine trip without SCRAM settles near 94 % fission power on
+the full-capacity dump path; a SCRAM trips the turbine through the P-4
+interlock.
 
 The component guide below explains each model in more depth.
 
 ### Model Limits
 
-The simulator models a liquid-filled primary loop and a pressurizer that holds
-a steam bubble over water. Its equations cannot tell by themselves when a
-transient leaves that picture, so the state after every step is checked
-against these limits (`src/fission_sim/physics/domain.py`):
+The simulator models a liquid-filled primary loop, a pressurizer that holds a
+steam bubble over water, and an M3 steam-generator shell that holds saturated
+water under saturated steam. Its equations cannot tell by themselves when a
+transient leaves those pictures, so the state after every accepted step is
+checked against these limits (`src/fission_sim/physics/domain.py`):
 
 | Limit | Why |
 |---|---|
 | Hot-leg water stays below its boiling point, `T_hot < T_sat(P)` | The loop equations describe liquid water only; boiling and steam voids are not modeled. |
 | The pressurizer holds both steam and water (steam quality strictly between 0 and 1) | At 0 it has filled solid with water, at 1 it has boiled dry. Its pressure comes from the steam bubble. |
-| The steam-generator shell holds both water and steam, with steam pressure between 3 and 12 MPa | The M3 shell model assumes saturated water under its own steam and liquid 500 K feedwater; below 3 MPa that feedwater would flash to steam. |
+| Steam pressure stays between the feedwater-flash floor and 12 MPa | The shell energy balance assumes liquid feedwater at 500 K. The default floor is 3.0 MPa, safely above `P_fw_flash = P_sat(500 K) ≈ 2.64 MPa`; below that feedwater would flash to steam before entering the shell. |
+| `sg_dry`: shell quality stays below 1 | At quality 1 no liquid remains on the SG shell side, so the boiling heat-transfer picture no longer applies. |
+| `sg_solid`: shell quality stays above 0 | At quality 0 the steam space is gone; pressure would be set by compressing liquid water, which this saturated-shell model does not include. |
 | Primary pressure between 1 and 21 MPa | Below, far outside pressurized-water-reactor operation; above, close to water's critical point (22.064 MPa), where liquid and steam stop being distinct. |
 | Positive loop inventory, finite numbers, and water-property lookups that succeed | Otherwise the equations cannot be evaluated at all. |
 
@@ -225,10 +236,12 @@ Other simplifications to keep in mind (these do not stop the simulation):
 - Surge comes from thermal expansion only: the loop's water inventory is not
   checked against its fixed volume, so the compressibility of water as
   pressure changes is ignored.
-- The steam generator has a fixed `UA`, and the M3 secondary side is still
-  simplified: one saturated shell inventory, one turbine/dump path, ideal
-  feedwater flow matching, no condenser, no tube-metal heat capacity, and no
-  indicated-level swell/shrink model.
+- The steam generator still uses one constant `UA`; there is no tube-metal
+  heat capacity. The shell level is a collapsed liquid volume fraction
+  without swell/shrink, feedwater temperature is fixed at 500 K, feedwater
+  flow exactly matches steam outflow in M3, turbine admission is a linear
+  valve, and steam dump / relief / safety hardware is one proportional path
+  that starts opening at 7.6 MPa and reaches full design flow at 8.2 MPa.
 - After a SCRAM only a full reset returns the plant to power (see
   [RodController](#rodcontroller-srcfission_simphysicsrod_controllerpy)).
 
@@ -969,20 +982,379 @@ duty, and derived `UA`.
 | `Q_design`        | W     | 3.0e9                                      | Match core's P_design          |
 | `UA`              | W/K   | derived: Q_design / (T_p_ref − T_s_ref)    | = 1.2e8; closes design steady   |
 
-### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
 
-Retained for M1/M2 fixed-secondary regression plants. The standard plant now
-uses `SGSecondary`, `Turbine`, and `FeedwaterController` instead.
+### SGSecondary (`src/fission_sim/physics/sg_secondary.py`)
 
-L1 stand-in for the entire secondary side (turbine + condenser + feedwater).
-Constant `T_secondary`; no state, no inputs.
+L1 saturated steam-generator shell side. It replaces the old constant secondary
+temperature in the standard plant with a real water/steam inventory, steam
+pressure, and collapsed level.
 
 **What it represents**
 
-This is a placeholder for everything on the secondary side: boiling water in the
-steam generator, turbine, condenser, and feedwater system. For now it simply
-holds the secondary temperature fixed so the primary-side simulator has
-somewhere to send heat.
+`SGSecondary` is the secondary side of the four steam generators, lumped into
+one rigid volume. Primary heat `Q_sg` boils shell-side water. Steam leaves
+through the turbine and the dump path. Feedwater enters as warm liquid and
+replaces the outgoing steam mass.
+
+The component uses the same saturated-mixture closure as the pressurizer:
+from total mass `M_sec`, total internal energy `U_sec`, and volume `V_sec`, it
+finds saturation pressure and splits the mixture into liquid and vapor with
+the lever rule. The published `level_sg` is **collapsed level**: the fraction
+of shell volume that would be liquid if the bubbles were collapsed away.
+
+**Equations used**
+
+```text
+dM_sec/dt = m_fw − m_steam − m_dump
+
+dU_sec/dt = Q_sg + m_fw · h_fw(P_steam, T_fw)
+            − (m_steam + m_dump) · h_g(P_steam)
+```
+
+`h_g` is saturated-vapor enthalpy at the shell pressure. `h_fw` is CoolProp's
+enthalpy for the feedwater at the same pressure and constant `T_fw = 500 K`.
+The domain check keeps `P_steam` above 3.0 MPa, and also above
+`P_fw_flash · 1.001` if a non-default feedwater temperature raises that floor.
+
+**API**
+
+**Constructor**
+
+    SGSecondary(params: SGSecondaryParams)
+
+**State vector** (`state_size = 2`)
+
+    state_labels = ("M_sec", "U_sec")
+    units:        kg, J
+
+| Index | Name    | Meaning                                             |
+|------:|---------|-----------------------------------------------------|
+| 0     | M_sec   | Total shell-side water mass, liquid plus vapor [kg] |
+| 1     | U_sec   | Total shell-side internal energy [J]                |
+
+**Methods**
+
+    initial_state() -> np.ndarray
+        [M_sec_initial, U_sec_initial]
+
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {
+            "Q_sg":    float [W],
+            "m_steam": float [kg/s],
+            "m_dump":  float [kg/s],
+            "m_fw":    float [kg/s],
+        }
+
+    outputs(state, inputs=None) -> {
+        "P_steam":    float [Pa],
+        "T_secondary": float [K],
+        "level_sg":   float [0..1],
+    }
+        State-derived: depends only on M_sec and U_sec.
+
+    telemetry(state, inputs=None) -> outputs() ∪ {
+        "x", "M_l", "M_v", "M_sec", "U_sec", "h_g", "h_fw",
+        "P_fw_flash", "Q_sg", "m_steam", "m_dump", "m_fw",
+        "Q_steam_net",
+    }
+        Flow-dependent keys are None when inputs is omitted.
+
+**SGSecondaryParams (frozen dataclass)**
+
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `V_sec` | m³ | 600.0 | Four large SG shells lumped as one volume |
+| `T_sec_ref` | K | 558.0 | Existing SG secondary reference; gives `P_ref = 6.899 MPa` |
+| `level_ref` | — | 0.5 | Half-full collapsed level at design |
+| `T_fw` | K | 500.0 | Final feedwater temperature after heaters |
+| `Q_design` | W | 3.0e9 | Same nominal thermal power as the core and SG |
+| `P_ref` | Pa | None → `P_sat(T_sec_ref)` = 6.899e6 | Design steam pressure |
+| `P_fw_flash` | Pa | None → `P_sat(T_fw)` = 2.6389e6 | Feedwater flash-pressure floor input |
+| `m_steam_design` | kg/s | None → ≈ 1,669 | `Q_design / (h_g − h_fw)` |
+| `M_sec_initial` | kg | None → 2.33239e5 | Saturated mixture at `P_ref`, `level_ref` |
+| `U_sec_initial` | J | None → 3.06608e11 | Root-solved so `(D, U)` inversion returns `P_ref` |
+
+**Simplifications / what to watch**
+
+- No tube-metal heat capacity, recirculation ratio, separators, carryover, or
+  void swell. `level_sg` is not an indicated narrow-range level.
+- The shell is always in saturated equilibrium. Subcooled boiling, dryout,
+  and two-phase flow patterns are not represented.
+- M3 feedwater exactly matches outgoing steam mass, so total shell mass stays
+  constant to solver tolerance. Collapsed level can still move because liquid
+  and vapor densities change with pressure.
+- A huge shell volume (`V_sec = 6.0e7 m³`) reproduces the M1/M2 constant-
+  temperature secondary within 0.5 K in the regression test.
+
+### Turbine (`src/fission_sim/physics/turbine.py`)
+
+L1 turbine admission, steam dump, gross electric power, and average-
+temperature reference program.
+
+**What it represents**
+
+The turbine component turns steam-header pressure and an operator load demand
+into steam flow. Its state `load` is valve admission, not guaranteed electric
+megawatt load. This distinction matters: after a 10 % admission cut, steam
+pressure rises, so the actual steam flow and reactor power fall by only about
+3 % in the implemented L1 model.
+
+The same component also contains the lumped steam dump / relief path and the
+Westinghouse-style `T_ref` program used by automatic rod control. A direct
+`turbine_trip` or a reactor `scram` closes the turbine stop valves. The
+`scram` input models the P-4 interlock: a reactor trip trips the turbine so a
+shut-down heat source is not still feeding full turbine flow.
+
+**Equations used**
+
+```text
+dload/dt = clip((load_demand − load) / tau_gov, −ramp_rate, +ramp_rate)
+```
+
+During `turbine_trip` or `scram`:
+
+```text
+dload/dt = −load / tau_trip
+```
+
+Outputs:
+
+```text
+m_steam    = k_valve · load · P_steam
+m_dump     = m_steam_design · clip((P_steam − P_dump_set) /
+                                   (P_dump_full − P_dump_set), 0, 1)
+P_electric = eta · m_steam · (h_g(P_steam) − h_fw(P_steam, T_fw))
+T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
+```
+
+**API**
+
+**Constructor**
+
+    Turbine(params: TurbineParams)
+
+**State vector** (`state_size = 1`)
+
+    state_labels = ("load",)
+    units:        dimensionless valve admission
+
+**Methods**
+
+    initial_state() -> np.ndarray     # [load_initial]
+
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {"P_steam": float [Pa], "load_demand": float [0..1],
+                 "turbine_trip": bool, "scram": bool}
+
+    outputs(state, *, inputs) -> {
+        "m_steam":    float [kg/s],
+        "m_dump":     float [kg/s],
+        "P_electric": float [W],
+        "T_ref":      float [K],
+    }
+        Computed: needs P_steam and validates finite load demand.
+
+    telemetry(state, inputs=None) -> outputs() ∪ {
+        "load", "P_steam", "load_demand", "turbine_trip", "scram",
+        "trip_active",
+    }
+
+**TurbineParams (frozen dataclass)**
+
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `sg_params` | — | `SGSecondaryParams()` | Provides `P_ref`, `m_steam_design`, `T_fw` |
+| `ramp_rate` | 1/s | 8.33e-4 | 5.0 %/min educational load ramp |
+| `tau_gov` | s | 1.0 | Fast governor lag; ramp limit usually controls |
+| `tau_trip` | s | 0.5 | Fast stop-valve closure after trip or SCRAM |
+| `eta` | — | 0.33 | 3.0 GWth × 0.33 = 990 MW gross electric |
+| `P_dump_set` | Pa | 7.6e6 | Dump / relief path starts opening at 7.6 MPa |
+| `P_dump_full` | Pa | 8.2e6 | Full dump capacity at 8.2 MPa |
+| `T_ref_noload` | K | 565.0 | No-load Tavg reference |
+| `T_ref_full` | K | 583.0 | Full-load Tavg reference; matches `LoopParams.T_avg_ref` |
+| `load_initial` | — | 1.0 | Design full admission |
+| `k_valve` | kg/(s·Pa) | None → 2.419e-4 | `m_steam_design / P_ref` |
+
+**Simplifications / what to watch**
+
+- `load` is valve admission. At 90 % admission, the measured acceptance
+  endpoint is `n ≈ 0.972`, `T_avg ≈ 587.8 K`, and `P_steam ≈ 7.48 MPa`, not
+  90 % reactor power.
+- A turbine trip without SCRAM settles near `n ≈ 0.941`, `T_avg ≈ 593.2 K`,
+  and `P_steam ≈ 8.17 MPa`, because the one dump path has about 100 % steam
+  capacity at full open.
+- There is no condenser, turbine inertia, extraction feedwater heating,
+  moisture separation/reheat, generator frequency, or real multi-valve
+  governor.
+- Dump, power-operated relief, and safety valves are one proportional path;
+  real plants have staggered setpoints and limited condenser dump capacity.
+
+### FeedwaterController (`src/fission_sim/control/feedwater_controller.py`)
+
+M3 stateless feedwater stand-in: exact mass-flow matching.
+
+**What it represents**
+
+Real steam generators need feedwater controls to maintain tube coverage while
+steam flow changes. M3 has the shell, turbine, and dump path but not yet the
+M4 feedwater actuator or three-element level controller, so this component
+commands feedwater equal to all steam leaving the shell.
+
+**Equation used**
+
+```text
+m_fw = m_steam + m_dump
+```
+
+That makes `dM_sec/dt = 0` in `SGSecondary` for M3, except for solver roundoff.
+
+**API**
+
+**Constructor**
+
+    FeedwaterController(params: FeedwaterControllerParams)
+
+**State vector** (`state_size = 0`)
+
+    state_labels = ()
+
+**Methods**
+
+    initial_state() -> np.ndarray      # np.empty(0)
+    derivatives(state, inputs) -> np.ndarray  # np.empty(0)
+
+    outputs(state, *, inputs) -> {"m_fw": float [kg/s]}
+        inputs: {"m_steam": float [kg/s], "m_dump": float [kg/s]}
+
+    telemetry(state, inputs=None) -> {"m_fw", "m_steam", "m_dump"}
+        All values are None when inputs is omitted.
+
+**FeedwaterControllerParams (frozen dataclass)**
+
+No tunable M3 fields. The dataclass exists so the standard-plant factory keeps
+a stable parameter hook when M4 replaces this ideal match with level control.
+
+**Simplifications / what to watch**
+
+- This is not three-element control. It ignores measured level and feedwater
+  flow; it only replaces the steam mass that left.
+- Because pressure changes density, `level_sg` can drift slightly even with
+  constant total shell mass.
+- Feedwater temperature is constant at `SGSecondaryParams.T_fw = 500 K`.
+
+### TavgController (`src/fission_sim/control/tavg_controller.py`)
+
+L1 automatic rod-demand controller for programmed average primary temperature.
+
+**What it represents**
+
+When `rod_auto` is false, the controller passes the operator's `rod_command`
+through to `RodController`. When `rod_auto` is true and no trip is active, it
+compares measured `T_avg` with the turbine's `T_ref` program and moves the
+rod demand inward or outward through a deadband and speed program. The
+physical rod bank is still modeled by `RodController`.
+
+Automatic action is suspended while `scram` or `turbine_trip` is true. During
+suspension, the output holds the actual `rod_position`, and the internal
+automatic demand tracks that position for a bumpless return to automatic.
+
+**Equations used**
+
+```text
+err = T_avg − T_ref
+```
+
+The speed schedule is:
+
+```text
+speed(|err|) = 0                                      if |err| ≤ deadband
+             = v_min + (v_max − v_min) ·
+               (|err| − deadband) / (err_max − deadband)   between
+             = v_max                                  if |err| ≥ err_max
+```
+
+In active automatic mode:
+
+```text
+d(rod_demand_auto)/dt = −sign(err) · speed(|err|)
+```
+
+Hotter-than-reference coolant inserts rods; colder-than-reference coolant
+withdraws rods. Outside active automatic mode:
+
+```text
+d(rod_demand_auto)/dt = (rod_position − rod_demand_auto) / tau_track
+```
+
+**API**
+
+**Constructor**
+
+    TavgController(params: TavgControllerParams, rod_position_initial=0.5)
+
+`build_standard_plant()` passes the resolved initial rod position: `RodParams.rod_position_initial`
+if supplied, otherwise `RodParams.rod_position_design` (0.5). That keeps the
+controller and physical bank aligned at startup.
+
+**State vector** (`state_size = 1`)
+
+    state_labels = ("rod_demand_auto",)
+    units:        dimensionless fraction withdrawn
+
+**Methods**
+
+    initial_state() -> np.ndarray       # [rod_position_initial]
+    speed(abs_err) -> float [1/s]
+
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {"T_avg": float [K], "T_ref": float [K],
+                 "rod_position": float [0..1], "rod_command": float [0..1],
+                 "rod_auto": bool, "scram": bool, "turbine_trip": bool}
+
+    outputs(state, *, inputs) -> {"rod_demand": float [0..1 nominal]}
+        Manual: `rod_command`; active auto: clipped state; suspended auto:
+        current `rod_position`.
+
+    telemetry(state, inputs=None) -> {
+        "rod_demand_auto", "rod_demand", "T_err", "rod_auto", "acting",
+        "T_avg", "T_ref", "rod_position", "rod_command", "scram",
+        "turbine_trip",
+    }
+
+**TavgControllerParams (frozen dataclass)**
+
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `deadband` | K | 0.8 | About 1.5 °F Tavg deadband |
+| `err_max` | K | 2.8 | About 5 °F full-speed error |
+| `v_min` | 1/s | 5.8e-4 | ≈ 8 steps/min of a 228-step bank |
+| `v_max` | 1/s | 5.3e-3 | ≈ 72 steps/min of a 228-step bank |
+| `tau_track` | s | 1.0 | Tracking lag for bumpless mode transfers |
+
+**Simplifications / what to watch**
+
+- No auctioneered loop Tavg, rod-bank overlap logic, axial offset control,
+  boron letdown, or operator rod-stop alarms.
+- The controller's manual→auto transfer is bumpless because the internal
+  demand tracks actual `rod_position` in manual. On auto→manual, the caller
+  must set the external `rod_command` to the current `rod_position`; otherwise
+  a stale manual command will move the rods.
+- In the implemented acceptance test for a 100 % → 90 % admission reduction,
+  rods-auto returns `T_avg` to within 1.0 K of `T_ref = 581.2 K` and inserts
+  the control bank to about 0.393 withdrawn.
+
+### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
+
+M1/M2 constant-secondary stand-in retained for regression and comparison plants.
+The standard M3 plant does **not** use it; it uses `SGSecondary`, `Turbine`,
+and `FeedwaterController` instead.
+
+**What it represents**
+
+`SecondarySink` is the old placeholder for everything beyond the primary side.
+It holds one constant secondary temperature so early tests and examples can
+exercise the core, loop, SG heat exchanger, rods, and pressurizer without a
+secondary inventory.
 
 **Equation used**
 
@@ -990,20 +1362,16 @@ somewhere to send heat.
 T_secondary = constant
 ```
 
-That is intentionally crude. It means the secondary side can absorb any heat the
-steam generator sends without its own temperature changing. A dynamic
-secondary side (turbine, feedwater, steam-generator level) is not modeled; see
-the [Roadmap](#roadmap).
+With no state and no inputs, it can absorb any `Q_sg` without changing pressure,
+flow, level, or feedwater. In M3 it is useful mainly as the reference plant for
+the huge-shell regression: an enormous `SGSecondary` volume behaves like this
+constant-temperature stand-in.
 
 **API**
 
 **Constructor**
 
     SecondarySink(params: SinkParams)
-
-**State and parameters**
-
-There is no state. The only parameter is the fixed secondary temperature.
 
 **State vector** (`state_size = 0`)
 
@@ -1018,9 +1386,15 @@ There is no state. The only parameter is the fixed secondary temperature.
 
 **SinkParams (frozen dataclass)**
 
-| Field           | Units | Default | Source / note                                    |
-|-----------------|-------|---------|--------------------------------------------------|
-| `T_secondary`   | K     | 558     | Saturation temp at ~6.9 MPa (typical PWR steam)  |
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `T_secondary` | K | 558.0 | Same design saturation temperature used by M3 `SGSecondary` |
+
+**Simplifications / what to watch**
+
+Everything secondary-side is frozen: no steam pressure, inventory, turbine,
+steam dump, feedwater, or level. Use it only when deliberately building an
+M1/M2-style test plant.
 
 ### RodController (`src/fission_sim/physics/rod_controller.py`)
 
@@ -1167,6 +1541,12 @@ worths, and the design/critical position.
 - **Scram.** Emergency shutdown. The rod controller's `scram=True` input immediately commands the control bank and the shutdown bank to full insertion; they fall at 0.5 of full travel per second, 99 % inserted within about 2 s, for −7,000 pcm relative to the design state.
 - **Control rods.** Physical rods of neutron-absorbing material slid into and out of the core. We model two lumped banks with linear worth: the operator's control bank (1,200 pcm) and a shutdown bank (6,400 pcm) that only a SCRAM inserts.
 - **Primary loop / secondary side.** Primary loop water actually touches the fuel; the secondary side gets heat (via the steam generator) and drives the turbine. Mathematically separate; never mix.
+- **Steam dump.** A bypass/relief path that sends steam somewhere other than the turbine when pressure is high. M3 lumps condenser steam dump, SG power-operated relief, and safety valves into one proportional path from 7.6 to 8.2 MPa.
+- **T_ref program.** A load-dependent reference for average primary temperature. M3 uses a straight line from 565 K at no-load turbine admission to 583 K at full admission.
+- **Collapsed level.** Liquid volume fraction after imagining all bubbles collapsed out of the mixture. `level_sg` is collapsed level, not an indicated level with swell and shrink.
+- **P-4 interlock.** Westinghouse trip logic in which a reactor trip also trips the turbine. In this model, `scram=True` closes the turbine through the turbine component's `scram` input.
+- **Admission.** Turbine valve opening fraction. `turbine_load` is admission demand, so a 10 % admission cut is not the same as demanding 90 % electric power.
+- **Three-element control placeholder.** Real feedwater control usually compares level, steam flow, and feedwater flow. M3 has only the placeholder `m_fw = m_steam + m_dump`; M4 is the planned real level-control step.
 - **Hot leg / cold leg.** Primary water leaving the core (hot, 597.7 K at design) vs returning (cold, 568.3 K). Their difference is ΔT = 29.5 K and their mean is T_avg = 583.0 K. The model's parameters are generic Westinghouse 4-loop values, with the design power rounded to 3,000 MWth.
 - **Steady state.** Power, temperatures, and reactivity all constant; ρ_total = 0; energy in = energy out.
 - **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 40 µs; the fuel and loop thermal time constants are ~5 s; the longest-lived precursor group decays over ~80 s (1/λ₁). Total span ~10⁶. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
@@ -1188,6 +1568,15 @@ worths, and the design/critical position.
 | `T_hot`, `T_cold`, `T_avg` | Coolant exit / return / mean temperature | K |
 | `T_cool` | Coolant temperature the core sees; = `T_avg` at L1 | K |
 | `T_secondary` | Steam-side temperature | K |
+| `P_steam` | Steam-generator shell / main steam pressure | Pa |
+| `M_sec`, `U_sec` | SG shell total mass / internal energy | kg, J |
+| `level_sg` | SG shell collapsed liquid level, `V_l / V_sec` | — |
+| `P_fw_flash` | Feedwater saturation pressure at `T_fw`; pressure-floor reference | Pa |
+| `m_steam`, `m_dump`, `m_fw` | Turbine steam / dump steam / feedwater mass flow | kg/s |
+| `load`, `load_demand` | Turbine admission state / demand | — |
+| `P_electric` | Gross turbine-generator electric power | W |
+| `T_ref` | Average primary-temperature reference from turbine load | K |
+| `rod_demand_auto`, `rod_demand` | Automatic rod demand state / demand sent to RodController | — |
 | `ṁ` | Primary mass flow rate | kg/s |
 | `c_p` | Specific heat of water | J/(kg·K) |
 | `c_p_fuel` | Specific heat of fuel | J/(kg·K) |
@@ -1239,6 +1628,7 @@ The source files retain the textbook citations used while developing the model. 
 | Heat transfer / steam generator | `Q = UA·ΔT`, LMTD simplification, overall heat-transfer coefficient | [ASHRAE Handbook, Ch. 48 Heat Exchangers](https://handbook.ashrae.org/Handbooks/S16/IP/S16_Ch48/s16_ch48_ip.aspx); [DOE-HDBK-1012/2-92 Thermodynamics, Heat Transfer, and Fluid Flow](https://www.steamtablesonline.com/pdf/Thermodynamics-Volume2.pdf) |
 | Water/steam properties | CoolProp water property calls and IAPWS-IF97 backend | [CoolProp IF97 Steam/Water Properties](https://coolprop.org/fluid_properties/IF97.html); [IAPWS IF97 Revised Release](https://iapws.org/documents/release/IF97-Rev) |
 | PWR plant context | Pressurizer steam-water equilibrium, heaters/spray, surge from coolant expansion, primary/secondary separation | [U.S. NRC Reactor Concepts Manual: Pressurized Water Reactor Systems](https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf) |
+| Turbine, steam dump, and Tavg control context | PWR secondary-side heat removal, turbine-generator role, reactor/turbine trip context, programmed Tavg control | [U.S. NRC Reactor Concepts Manual: Pressurized Water Reactor Systems](https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf) |
 | Rod scram timing | Rapid rod insertion / fall into the core for PWR scram timing; this model's constant-velocity drop inserts 99 % of travel within about 2 s | [Nuclear-power.com, "SCRAM - Reactor Trip"](https://www.nuclear-power.com/nuclear-power/reactor-physics/reactor-dynamics/scram-reactor-trip/) |
 
 ## Equations
@@ -1387,10 +1777,132 @@ Q_sg = UA · (T_avg − T_secondary)
 `UA` is calibrated so the design-point steady state closes:
 `UA = Q_design / (T_primary_ref − T_secondary_ref)`.
 
+### SG secondary shell — `sg_secondary.py`
+
+State: `M_sec` (mass [kg]), `U_sec` (internal energy [J]). Saturated shell-side
+water/steam mixture in one rigid volume.
+
+**Saturation closure** uses `pressurizer.saturation_state(M_sec, U_sec, V_sec)`:
+
+```
+ρ_avg = M_sec / V_sec
+u_avg = U_sec / M_sec
+P_steam = CoolProp(D=ρ_avg, U=u_avg)
+```
+
+Then the same lever rule gives quality `x`, liquid/vapor masses, and collapsed
+level `level_sg`. The design mass is built from IF97 saturated densities at
+`T_sec_ref = 558 K`; the design internal energy is root-solved so the shared
+HEOS `(D, U)` pressure inversion returns `P_ref = 6.899 MPa` exactly.
+
+**Mass balance:**
+
+```
+dM_sec/dt = m_fw − m_steam − m_dump
+```
+
+**Energy balance:**
+
+```
+dU_sec/dt = Q_sg + m_fw · h_fw(P_steam, T_fw)
+            − (m_steam + m_dump) · h_g(P_steam)
+```
+
+At the default design point, `h_g = 2.774 MJ/kg`, `h_fw = 0.976 MJ/kg`, and
+`m_steam_design = 3.0 GW / (h_g − h_fw) ≈ 1,669 kg/s`.
+
+### Turbine and steam dump — `turbine.py`
+
+State: `load`, normalized turbine admission.
+
+**Governor load state:**
+
+```
+dload/dt = clip((load_demand − load) / tau_gov, −ramp_rate, +ramp_rate)
+```
+
+`ramp_rate = 8.33e-4 1/s`, about 5 %/min. During `turbine_trip` or `scram`:
+
+```
+dload/dt = −load / tau_trip
+```
+
+`tau_trip = 0.5 s`. The `scram` branch is the P-4 interlock.
+
+**Steam and dump flows:**
+
+```
+m_steam = k_valve · load · P_steam
+k_valve = m_steam_design / P_ref
+
+m_dump = m_steam_design · clip((P_steam − P_dump_set) /
+                               (P_dump_full − P_dump_set), 0, 1)
+```
+
+`P_dump_set = 7.6 MPa`; `P_dump_full = 8.2 MPa`.
+
+**Gross electric power and Tavg reference:**
+
+```
+P_electric = eta · m_steam · (h_g(P_steam) − h_fw(P_steam, T_fw))
+T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
+```
+
+`eta = 0.33`, so the design output is 990 MW. `T_ref` spans 565 to 583 K.
+
+### Feedwater flow match — `feedwater_controller.py`
+
+M3 has no feedwater actuator and no level controller state. It closes the shell
+mass balance with one algebraic output:
+
+```
+m_fw = m_steam + m_dump
+```
+
+This is the M3 placeholder for M4's three-element controller and feedwater
+actuator.
+
+### Average-temperature rod program — `tavg_controller.py`
+
+State: `rod_demand_auto`, the automatic control-bank demand.
+
+**Temperature error:**
+
+```
+err = T_avg − T_ref
+```
+
+**Speed program:**
+
+```
+speed(|err|) = 0                                             if |err| ≤ 0.8 K
+             = v_min + (v_max − v_min) · (|err| − 0.8) / 2.0  for 0.8..2.8 K
+             = v_max                                         if |err| ≥ 2.8 K
+```
+
+`v_min = 5.8e-4 1/s` and `v_max = 5.3e-3 1/s`, about 8 to 72 steps/min of a
+228-step bank.
+
+**Active automatic rod demand:**
+
+```
+d(rod_demand_auto)/dt = −sign(err) · speed(|err|)
+```
+
+**Tracking when manual, SCRAMed, or turbine-tripped:**
+
+```
+d(rod_demand_auto)/dt = (rod_position − rod_demand_auto) / tau_track
+```
+
+`tau_track = 1 s`. The published `rod_demand` is manual `rod_command`, clipped
+auto state, or held `rod_position` during suspended automatic action.
+
 ### Secondary sink — `secondary_sink.py`
 
-No state, no inputs.
-Public cross-check: NRC PWR Systems for secondary-side/steam-generator context.
+M1/M2 regression stand-in only; not part of the standard M3 plant. No state,
+no inputs. Public cross-check: NRC PWR Systems for secondary-side/steam-
+generator context.
 
 ```
 T_secondary = const   # 558 K (saturation at ~6.9 MPa)
@@ -1432,16 +1944,45 @@ bank for bumpless manual/automatic transfers.
 
 ### Coupled-plant acceptance checks
 
-Milestone 1 (see [Roadmap](#roadmap)) defined acceptance criteria for the
-coupled plant. `tests/test_primary_plant.py` machine-verifies their current
-form on a hand-wired plant:
+The coupled-plant tests are executable acceptance criteria, not just examples.
+They live in `tests/test_primary_plant.py`, `tests/test_pressurizer_plant.py`,
+and `tests/test_secondary_plant.py`.
+
+**M1 primary/core checks**
 
 1. **Steady state** — after 60 s at default inputs, n = 1.0 ± 0.1 %, loop temperatures within 0.05 K of reference, both rod banks where they started.
 2. **Feedback levelling** — a +210 pcm control-bank withdrawal (rod command 0.5 → 0.675) raises power and heats the loop, and Doppler plus moderator feedback level power off on a plateau.
-3. **Scram** — after `scram = True` at t = 10 s, n < 0.10 by t = 11.5 s (prompt drop) and n < 0.05 by t = 15 s, with the delayed-neutron tail still present at t = 60 s (n > 10⁻⁴). Both banks are within 1 % of the bottom 2 s after the trip, and the core stays subcritical for the next 300 s.
-4. **Energy balance** — fission power ≈ Q_sg within 0.1 % at steady state and within 1 % on the plateau after the rod step. During a SCRAM, the change of heat stored in fuel and loop matches the integrated heat flows.
+3. **Scram** — after `scram = True` at t = 10 s, n < 0.10 by t = 11.5 s and n < 0.05 by t = 15 s, with the delayed-neutron tail still present at t = 60 s. Both banks are within 1 % of the bottom 2 s after the trip, and the core stays subcritical for the next 300 s.
+4. **Energy balance** — fission power ≈ `Q_sg` within 0.1 % at steady state and within 1 % on the plateau after the rod step. During a SCRAM, the change of heat stored in fuel and loop matches the integrated heat flows.
 5. **Timescale ordering** — the loop's thermal time constant (≈ 5.66 s) exceeds the fuel's (≈ 5.17 s).
 6. **Reset after SCRAM** — after a 20-minute cooldown, clearing the latch and withdrawing the control bank fully leaves the core at least 4,000 pcm subcritical.
+
+**M2 pressurizer checks**
+
+`tests/test_pressurizer_plant.py` verifies steady pressure hold for 300 s,
+pressure response to a −210 pcm power maneuver, outsurge and falling pressure
+on cooldown, manual heater override, conservation of `M_loop + M_pzr` within
+1 kg through maneuvers and SCRAMs, heater-failure cooldown that stays
+subcooled, and model-limit halts at the pressurizer/primary-loop domain edge.
+
+**M3 secondary/turbine/Tavg checks**
+
+`tests/test_secondary_plant.py` samples dense BDF solutions every 1.0 s and
+checks the implemented secondary side:
+
+1. **Design steady state, 600 s** — `n = 1`, `T_avg = 583 K`, `P_steam = 6.899 MPa`, `level_sg = 0.5`, and turbine `load = 1` remain at design.
+2. **Steady secondary energy balance** — `Q_sg` matches steam heat export within 0.5 %.
+3. **Flow-matching feedwater mass balance** — shell mass drift stays below 1 kg during a load-change transient.
+4. **100 % → 90 % admission, rods manual** — settles in the measured A6 bands: `n = 0.96..0.98`, `T_avg = 586..590 K`, `P_steam = 7.35..7.65 MPa`, with secondary energy residual below 1 %.
+5. **100 % → 90 % admission, rods automatic** — `T_avg` returns to within 1.0 K of `T_ref = 581.2 K`, rods insert, and `n = 0.88..0.95`.
+6. **Turbine trip without SCRAM** — pressure stays below 8.5 MPa, dump flow opens, turbine load goes to zero, and the plant settles in measured bands near `n = 0.941`, `T_avg = 593.2 K`, `P_steam = 8.17 MPa`.
+7. **SCRAM alone** — the P-4 interlock trips the turbine, pressure stays below 8.5 MPa, and final fission power is below 1 %.
+8. **Turbine trip with SCRAM** — final fission power is below 1 %, and the primary loop remains subcooled through the cooldown.
+9. **Huge shell regression** — with `V_sec = 6.0e7 m³`, M3 reproduces the old M2 constant-secondary plant within 0.5 K in `T_avg`.
+
+The same file also checks the static secondary-domain limits (`steam_pressure`,
+`sg_dry`, `sg_solid`), finite/clipped turbine-load defaults, and that M2-style
+snapshots without `sg_sec` still pass the primary domain checker.
 
 ## Roadmap
 
@@ -1451,45 +1992,41 @@ project's commit history:
 - **Milestones M1, M2, ...** — numbered stages of the physics model, below.
 - **Fidelity levels L1, L2, L3** — how detailed one component's model is; see
   the [Glossary](#glossary).
-- **feat-001 … feat-016** — the work items of the web dashboard, named in
+- **feat-001 … feat-016** — the completed web-dashboard work items named in
   commit messages.
 
 **Milestone 1 — Drivable Reactor Core** — complete. PointKineticsCore,
 PrimaryLoop, SteamGenerator, SecondarySink, RodController, and the SimEngine
-graph runner: a coupled plant that can be driven with rod commands and SCRAM,
-checked by the [acceptance checks](#coupled-plant-acceptance-checks) above.
+graph runner: a coupled plant that can be driven with rod commands and SCRAM.
 
-**Milestone 2 — Pressurizer** — complete. Added:
-- `src/fission_sim/physics/coolprop.py` — CoolProp wrapper (IAPWS-97)
-- `src/fission_sim/physics/pressurizer.py` — two-phase pressurizer with saturation closure
-- `src/fission_sim/physics/surge.py` — shared surge helper (mass conservation)
-- `src/fission_sim/control/pressurizer_controller.py` — proportional-with-deadband pressure controller
-- `PrimaryLoop` extended: `state_size` 2→3 (`M_loop`), new inputs `m_dot_spray` and `P_primary`
-- `LoopParams` extended: `P_ref`, `V_loop`, `beta_T_primary`, `M_loop_initial`
+**Milestone 2 — Pressurizer** — complete. Added the CoolProp wrapper, two-phase
+pressurizer, shared surge helper, proportional-with-deadband pressurizer
+controller, loop mass-inventory bookkeeping, and primary-domain model-limit
+halts.
 
-M2 acceptance tests: `tests/test_pressurizer_plant.py` — a 300 s steady-state
-pressure hold, the pressure swing during a −210 pcm power maneuver, outsurge
-and falling pressure on cooldown, the manual heater override, the mass
-conservation invariant (`M_loop + M_pzr` constant within 1 kg) through a
-maneuver and a SCRAM, and a heater-failure cooldown that stays subcooled.
+**Milestone 3 — Secondary Side, Turbine, and Tavg Program** — complete. Added:
 
-**Web dashboard (feat-001 … feat-016)** — complete; it has no milestone
-number. The FastAPI backend with `SimRuntime` and the WebSocket
-telemetry/command API, the React dashboard (charts, status tiles with
-explanations, operator controls), the `make dev` launcher, and a Playwright
-smoke test.
+- `src/fission_sim/physics/sg_secondary.py` — saturated SG shell inventory,
+  steam pressure, collapsed level, and feedwater flash-pressure domain data
+- `src/fission_sim/physics/turbine.py` — turbine admission, steam dump,
+  gross electric power, `T_ref`, and the SCRAM→turbine-trip P-4 interlock
+- `src/fission_sim/control/feedwater_controller.py` — M3 ideal feedwater
+  mass-flow matching
+- `src/fission_sim/control/tavg_controller.py` — automatic average-
+  temperature rod-demand program with bumpless tracking
+- `src/fission_sim/validation/secondary_acceptance.py` and
+  `scripts/validate_secondary.py` — shared M3 acceptance scenarios and CLI
+- `build_standard_plant()` now wires the ten-module M3 plant; `SecondarySink`
+  remains only for M1/M2-style test plants.
 
-**Accuracy and learning-path revision** — complete. Follows the repository
-review in [`reviews/`](reviews/README.md): the loop is heated by the heat
-leaving the fuel (`Q_fuel_to_coolant`) rather than by fission power; loop
-thermal masses are sized to the water they represent; separate control and
-shutdown rod banks; the [model-limit](#model-limits) halt; the shared
-standard-plant factory (`src/fission_sim/plant.py`); runtime lifecycle and
-publication fixes; and dashboard explanations reachable by keyboard and touch.
+**Milestone 4 — Steam-Generator Level and Feedwater Dynamics** — next. Planned
+scope: feedwater actuator, three-element level-control logic, level setpoint
+and manual feedwater externals, and domain limits for tube uncovering and
+overfill.
 
-**Planned, not built.** The labels M3-M6 refer to planned milestones: M3, the
-secondary side and turbine (with a load-dependent `Tref`); M4,
-steam-generator water-level dynamics; M5, the Reactor Protection System
-(automatic trips); M6, xenon and fission-product decay heat. Other future
-work has no number: a two-phase steam generator, PORV/CVCS (pressurizer relief
-valve; chemical and volume control), and multi-loop geometry.
+**Planned after M4.** M5 is the Reactor Protection System (automatic trips).
+M6 is xenon and fission-product decay heat. Other possible work has no current
+milestone: higher-fidelity secondary/turbine physics, PORV/CVCS behavior, and
+multi-loop geometry. Phase D dashboard integration is outside the current
+M3/M4 run; the web runtime keeps working with the standard plant but gains no
+new operator commands in this slice.
