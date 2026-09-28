@@ -33,28 +33,30 @@ from fission_sim.validation.secondary_acceptance import (
     AUTO_N_BAND,
     AUTO_TAVG_TREF_TOL,
     DT,
-    ENERGY_BALANCE_FRAC,
     HUGE_SHELL_TAVG_TOL,
+    LOAD_HEAT_RATE_MISMATCH_FRAC,
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
     MASS_DRIFT_LIMIT,
     SCRAM_N_MAX,
+    STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
     STEADY_LOAD_TOL,
     STEADY_N_TOL,
     STEADY_P_STEAM_TOL,
     STEADY_TAVG_TOL,
     STEAM_PRESSURE_MAX_ON_TRIP,
-    TRANSIENT_ENERGY_BALANCE_FRAC,
+    TRANSIENT_ENERGY_ACCUMULATION_FRAC,
     TRIP_N_BAND,
     TRIP_P_STEAM_BAND,
     TRIP_TAVG_BAND,
     CriterionResult,
+    equilibrium_heat_rate_mismatch_fraction,
     ramp_to,
     result,
     run_dense,
-    secondary_energy_fraction,
+    secondary_energy_accumulation_fraction,
     series,
 )
 
@@ -258,13 +260,13 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
             ]
         )
     elif spec.slug == "energy_balance":
-        frac = secondary_energy_fraction(snaps[-1])
+        frac = equilibrium_heat_rate_mismatch_fraction(snaps[-1])
         rows.append(
             result(
-                f"{prefix}: secondary energy residual",
+                "equilibrium: heat-rate mismatch",
                 frac,
-                f"< {ENERGY_BALANCE_FRAC}",
-                frac < ENERGY_BALANCE_FRAC,
+                f"< {STEADY_HEAT_RATE_MISMATCH_FRAC}",
+                frac < STEADY_HEAT_RATE_MISMATCH_FRAC,
             )
         )
     elif spec.slug == "mass_match":
@@ -275,7 +277,8 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
         n = series(snaps, "core", "n")[-1]
         T_avg = series(snaps, "loop", "T_avg")[-1]
         P = series(snaps, "sg_sec", "P_steam")
-        frac = secondary_energy_fraction(snaps[-1])
+        heat_rate_frac = equilibrium_heat_rate_mismatch_fraction(snaps[-1])
+        accumulation_frac = secondary_energy_accumulation_fraction(snaps)
         rows.extend(
             [
                 result(f"{prefix}: final n", n, _band_text(MANUAL_N_BAND), _between(n, MANUAL_N_BAND)),
@@ -294,10 +297,16 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
                 result(f"{prefix}: T_avg warmed", T_avg, "> 583.5 K", T_avg > 583.5),
                 result(f"{prefix}: P_steam rose", P[-1] - P[0], "> 100000 Pa", P[-1] > P[0] + 1e5),
                 result(
-                    f"{prefix}: secondary energy residual",
-                    frac,
-                    f"< {TRANSIENT_ENERGY_BALANCE_FRAC}",
-                    frac < TRANSIENT_ENERGY_BALANCE_FRAC,
+                    f"{prefix}: equilibrium heat-rate mismatch",
+                    heat_rate_frac,
+                    f"< {LOAD_HEAT_RATE_MISMATCH_FRAC}",
+                    heat_rate_frac < LOAD_HEAT_RATE_MISMATCH_FRAC,
+                ),
+                result(
+                    f"{prefix}: shell energy accumulation",
+                    accumulation_frac,
+                    f"< {TRANSIENT_ENERGY_ACCUMULATION_FRAC}",
+                    accumulation_frac < TRANSIENT_ENERGY_ACCUMULATION_FRAC,
                 ),
             ]
         )
