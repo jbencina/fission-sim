@@ -62,6 +62,7 @@ import numpy as np
 from scipy.optimize import brentq
 
 from fission_sim.physics import coolprop
+from fission_sim.physics.domain import LEVEL_SG_MIN
 from fission_sim.physics.pressurizer import saturation_state
 
 
@@ -543,16 +544,23 @@ class SGSecondary:
         -------
         dict
             Always contains ``P_steam``, ``T_secondary``, ``level_sg``, ``x``,
-            ``M_l``, ``M_v``, ``M_sec``, ``U_sec``, ``h_g``, and ``h_fw``.
-            Also contains ``P_fw_flash`` plus ``Q_sg``, ``m_steam``,
-            ``m_dump``, ``m_fw``, and ``Q_steam_net``; flow-dependent values
-            are numeric when ``inputs`` is provided and None otherwise.
+            ``level_margin_low``, ``M_l``, ``M_v``, ``M_sec``, ``U_sec``,
+            ``h_g``, ``h_fw``, and ``P_fw_flash``.
+            Also contains ``Q_sg``, ``m_steam``, ``m_dump``, ``m_fw``, and
+            ``Q_steam_net``; those are numeric when ``inputs`` is provided.
+            ``boil_off_time_s`` is also numeric when ``inputs`` is provided.
+            Input-dependent keys are None otherwise.
 
         Notes
         -----
         ``x`` is quality, the vapor mass fraction. A value of 0.05 means five
         percent of the shell mass is steam by mass, even though steam occupies
         much more volume than water.
+
+        ``boil_off_time_s`` answers the operator question "how long would the
+        water last if feedwater stopped now?" It divides the current liquid
+        mass by the current steam outflow and is a dashboard cue, not a new
+        ODE state.
         """
         p = self.params
         M_sec, U_sec = state[0], state[1]
@@ -563,6 +571,9 @@ class SGSecondary:
             "P_steam": sat.P,
             "T_secondary": sat.T_sat,
             "level_sg": sat.level,
+            # Margin to tube uncovering: positive means the simplified
+            # constant-UA heat-transfer picture is still inside its level band.
+            "level_margin_low": sat.level - LEVEL_SG_MIN,
             "x": sat.x,
             "M_l": sat.M_l,
             "M_v": sat.M_v,
@@ -579,15 +590,19 @@ class SGSecondary:
             out["m_dump"] = None
             out["m_fw"] = None
             out["Q_steam_net"] = None
+            out["boil_off_time_s"] = None
         else:
             m_out = inputs["m_steam"] + inputs["m_dump"]
             # Net heat exported by outgoing steam after subtracting the
             # enthalpy brought back by replacement feedwater.
             Q_steam_net = m_out * sat.h_v - inputs["m_fw"] * h_fw
+            # How long the liquid inventory would last if feedwater stopped now.
+            boil_off_time_s = sat.M_l / max(m_out, 1.0e-6)
             out["Q_sg"] = inputs["Q_sg"]
             out["m_steam"] = inputs["m_steam"]
             out["m_dump"] = inputs["m_dump"]
             out["m_fw"] = inputs["m_fw"]
             out["Q_steam_net"] = Q_steam_net
+            out["boil_off_time_s"] = boil_off_time_s
 
         return out

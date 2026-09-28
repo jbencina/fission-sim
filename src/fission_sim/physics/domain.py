@@ -19,7 +19,9 @@ equations cannot check for themselves:
    Its steam pressure must stay in the range where the 500 K feedwater is
    still liquid when it enters; below that, a CoolProp ``(P, T_fw)`` lookup
    would quietly describe vapor feedwater rather than the liquid feedwater
-   assumed by the energy balance.
+   assumed by the energy balance. Its collapsed water level must also stay
+   in the range where the tube bundle remains covered and the steam space
+   remains available for dry steam.
 
 Outside these limits the code does not fail on its own. The property
 library happily returns a steam density for water that is past saturation,
@@ -28,7 +30,7 @@ so the simulation would keep running and plot numbers that describe no real
 plant. :func:`check_primary_domain` turns those silent failures into a
 :class:`ModelDomainError` that names the broken assumption, so a front end
 can stop and explain instead. :func:`check_secondary_domain` does the same
-for the M3 steam-generator shell side.
+for the steam-generator shell side.
 
 When to check
 -------------
@@ -100,6 +102,19 @@ FW_FLASH_MARGIN: float = 1.0e-3
 # ceiling for the simplified shell, not a plant protection setpoint.
 P_STEAM_MAX: float = 12.0e6
 
+# Lowest steam-generator collapsed liquid level [-]. Provenance: conservative
+# surrogate model limit, not a plant elevation: the top of a U-tube bundle is
+# represented as roughly the bottom 30 % of this single lumped shell's
+# collapsed-level range.
+LEVEL_SG_MIN: float = 0.30
+
+# Highest steam-generator collapsed liquid level [-]. Provenance: conservative
+# surrogate model limit, not a plant elevation: above about 95 % the lumped
+# shell has effectively lost its steam space, so liquid carryover into steam
+# piping is the operator-relevant boundary before the lever-rule closure fills
+# solid.
+LEVEL_SG_MAX: float = 0.95
+
 
 class ModelDomainError(ValueError):
     """The simulated state has left the region the model's equations describe.
@@ -121,7 +136,8 @@ class ModelDomainError(ValueError):
         ``"non_finite"``, ``"loop_inventory"``, ``"pressure"``,
         ``"pressurizer_solid"``, ``"pressurizer_dry"``,
         ``"hot_leg_subcooling"``, ``"steam_pressure"``, ``"sg_dry"``,
-        ``"sg_solid"``, ``"property_lookup"``.
+        ``"sg_solid"``, ``"sg_tubes_uncovered"``, ``"sg_overfill"``,
+        ``"property_lookup"``.
     """
 
     def __init__(self, message: str, *, limit: str) -> None:
@@ -222,9 +238,14 @@ def check_primary_domain(
             limit="hot_leg_subcooling",
         )
 
-
-def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | None = None) -> None:
-    """Raise ``ModelDomainError`` if the SG shell is outside the M3 domain.
+def check_secondary_domain(
+    *,
+    P_steam: float,
+    x_sg: float,
+    level_sg: float = 0.5,
+    P_fw_flash: float | None = None,
+) -> None:
+    """Raise ``ModelDomainError`` if the SG shell is outside the model domain.
 
     Parameters
     ----------
@@ -232,6 +253,11 @@ def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | N
         Saturated steam-generator shell pressure [Pa].
     x_sg : float
         Steam-generator shell quality (vapor mass fraction) [-].
+    level_sg : float, default 0.5
+        Collapsed steam-generator liquid level, ``V_l / V_sec`` [-].
+        The default is the centered design level so M3-era callers that only
+        knew about pressure and quality still exercise the older checks. New
+        snapshot checks pass the actual ``SGSecondary`` telemetry.
     P_fw_flash : float or None, optional
         Saturation pressure at the configured feedwater temperature [Pa].
         When provided, the pressure floor is raised above this value so the
@@ -242,10 +268,13 @@ def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | N
     ------
     ModelDomainError
         With a learner-readable message for the first violated secondary
-        limit, checked in this order: finite numbers, pressure, shell
-        quality.
+        limit, checked in this order: finite numbers, pressure, level, shell
+        quality. The level bounds come before the all-steam/all-water
+        lever-rule endpoints because in a real transient tube uncovering or
+        liquid carryover would normally be the operator-visible problem long
+        before ``x_sg`` reaches 0 or 1.
     """
-    values = {"P_steam": P_steam, "x_sg": x_sg}
+    values = {"P_steam": P_steam, "x_sg": x_sg, "level_sg": level_sg}
     if P_fw_flash is not None:
         values["P_fw_flash"] = P_fw_flash
     bad = [name for name, value in values.items() if not math.isfinite(value)]
@@ -282,6 +311,22 @@ def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | N
             "setpoint; real steam generators use separate relief and safety "
             "valves outside this model.",
             limit="steam_pressure",
+        )
+    if level_sg < LEVEL_SG_MIN:
+        raise ModelDomainError(
+            "Steam-generator collapsed liquid fraction fell below the conservative 30 % surrogate model "
+            "limit for the top of the tube bundle: with tubes uncovered the model's constant "
+            "heat-transfer coefficient no longer applies. This is a simulation validity limit, not a "
+            "plant elevation or protection setpoint; in a real plant a low-low level trip and auxiliary "
+            "feedwater would have acted long before this.",
+            limit="sg_tubes_uncovered",
+        )
+    if level_sg > LEVEL_SG_MAX:
+        raise ModelDomainError(
+            "Steam-generator collapsed liquid fraction rose above the conservative 95 % surrogate model "
+            "limit: the steam space is nearly gone and water would carry over into the steam lines. This "
+            "is a simulation validity limit, not a plant elevation or protection setpoint.",
+            limit="sg_overfill",
         )
     if x_sg >= 1.0:
         raise ModelDomainError(
@@ -335,11 +380,14 @@ def check_snapshot(snap: dict) -> None:
         check_secondary_domain(
             P_steam=sg_sec["P_steam"],
             x_sg=sg_sec["x"],
+            level_sg=sg_sec["level_sg"],
             P_fw_flash=sg_sec.get("P_fw_flash"),
         )
 
 
 __all__ = [
+    "LEVEL_SG_MAX",
+    "LEVEL_SG_MIN",
     "MIN_SUBCOOLING",
     "FW_FLASH_MARGIN",
     "P_CRITICAL",

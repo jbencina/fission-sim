@@ -180,7 +180,7 @@ checks).
 | `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
 | `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
-| `P_steam`, `level_sg`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | M3 secondary-side pressure/inventory, turbine/dump flows, gross electric power, and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
+| `P_steam`, `level_sg`, `level_margin_low`, `boil_off_time_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin, estimated boil-off time if feedwater stopped, turbine/dump flows, gross electric power, and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
 
@@ -209,6 +209,7 @@ checked against these limits (`src/fission_sim/physics/domain.py`):
 | Hot-leg water stays below its boiling point, `T_hot < T_sat(P)` | The loop equations describe liquid water only; boiling and steam voids are not modeled. |
 | The pressurizer holds both steam and water (steam quality strictly between 0 and 1) | At 0 it has filled solid with water, at 1 it has boiled dry. Its pressure comes from the steam bubble. |
 | Steam pressure stays between the feedwater-flash floor and 12 MPa | The shell energy balance assumes liquid feedwater at 500 K. The default floor is a 3.00 MPa simulation guard band, above `P_fw_flash = P_sat(500 K) ≈ 2.64 MPa`; lower pressure approaches the configured feedwater flashing boundary. The 12 MPa ceiling is also a simulation validity limit, not a plant protection setpoint. |
+| Steam-generator collapsed liquid fraction stays between 30 % and 95 % | These are conservative surrogate model limits, not plant elevations. Below 30 %, the constant-`UA` tube heat-transfer picture no longer applies; above 95 %, the steam space is nearly gone and liquid carryover into steam lines is outside the model. |
 | `sg_dry`: shell quality stays below 1 | At quality 1 no liquid remains on the SG shell side, so the boiling heat-transfer picture no longer applies. This is a simulation validity limit, not a plant protection setpoint. |
 | `sg_solid`: shell quality stays above 0 | At quality 0 the steam space is gone; pressure would be set by compressing liquid water, which this saturated-shell model does not include. This is a simulation validity limit, not a plant protection setpoint. |
 | Primary pressure between 1 and 21 MPa | Below, far outside pressurized-water-reactor operation; above, close to water's critical point (22.064 MPa), where liquid and steam stop being distinct. |

@@ -73,8 +73,10 @@ def test_subcooling_message_reports_values_for_a_learner():
         {"P_steam": P_STEAM_MAX},
         {"x_sg": 1e-6},
         {"x_sg": 1.0 - 1e-6},
+        {"level_sg": 0.30},
+        {"level_sg": 0.95},
     ],
-    ids=["design", "P_min", "P_max", "nearly_solid", "nearly_dry"],
+    ids=["design", "P_min", "P_max", "nearly_solid", "nearly_dry", "low_level_edge", "high_level_edge"],
 )
 def test_secondary_states_inside_domain_pass(overrides):
     p = SGSecondaryParams()
@@ -89,8 +91,10 @@ def test_secondary_states_inside_domain_pass(overrides):
         ({"P_steam": P_STEAM_MAX + 1.0}, "steam_pressure", "above the model's 12 MPa ceiling"),
         ({"x_sg": 0.0}, "sg_solid", "filled solid"),
         ({"x_sg": 1.0}, "sg_dry", "boiled dry"),
+        ({"level_sg": 0.29}, "sg_tubes_uncovered", "top of the tube bundle"),
+        ({"level_sg": 0.96}, "sg_overfill", "carry over into the steam lines"),
     ],
-    ids=["non_finite", "below_P_min", "above_P_max", "solid", "dry"],
+    ids=["non_finite", "below_P_min", "above_P_max", "solid", "dry", "tubes_uncovered", "overfill"],
 )
 def test_secondary_states_outside_domain_raise_named_limit(overrides, limit, message):
     p = SGSecondaryParams()
@@ -125,6 +129,14 @@ def test_snapshot_with_secondary_dry_raises_sg_dry():
     with pytest.raises(ModelDomainError) as exc_info:
         check_snapshot(snap)
     assert exc_info.value.limit == "sg_dry"
+
+
+def test_snapshot_with_low_sg_level_raises_tube_uncovering():
+    snap = build_standard_plant().snapshot()
+    snap["sg_sec"]["level_sg"] = 0.29
+    with pytest.raises(ModelDomainError) as exc_info:
+        check_snapshot(snap)
+    assert exc_info.value.limit == "sg_tubes_uncovered"
 
 
 def test_snapshot_without_secondary_still_checks_primary_domain():
