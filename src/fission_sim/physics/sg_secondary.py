@@ -160,6 +160,35 @@ def _solve_u_for_pressure(M_sec: float, U_closed_form: float, V_sec: float, P_re
     )
 
 
+def feedwater_enthalpy(P: float, T_fw: float) -> float:
+    """Return feedwater specific enthalpy at shell pressure and temperature.
+
+    Parameters
+    ----------
+    P : float
+        Shell/steam pressure [Pa].
+    T_fw : float
+        Feedwater temperature at the shell inlet [K].
+
+    Returns
+    -------
+    float
+        Specific enthalpy of feedwater at ``P`` and ``T_fw`` [J/kg].
+
+    Notes
+    -----
+    Equation:
+
+        h_fw(P, T_fw) = h(P, T_fw)
+
+    CoolProp evaluates the compressed-liquid enthalpy. The plant domain
+    check keeps ``P`` high enough that hot feedwater is liquid rather than
+    flashing to steam, so this helper stays a property lookup rather than a
+    separate two-phase model.
+    """
+    return coolprop.enthalpy_PT(P=P, T=T_fw)
+
+
 @dataclass(frozen=True)
 class SGSecondaryParams:
     """Parameters for the saturated steam-generator shell side.
@@ -298,7 +327,7 @@ class SGSecondaryParams:
 
         if self.m_steam_design is None:
             h_g = coolprop.sat_vapor_enthalpy(P=P_ref)
-            h_fw = coolprop.enthalpy_PT(P=P_ref, T=self.T_fw)
+            h_fw = feedwater_enthalpy(P=P_ref, T_fw=self.T_fw)
             object.__setattr__(self, "m_steam_design", self.Q_design / (h_g - h_fw))
 
 
@@ -391,7 +420,7 @@ class SGSecondary:
         domain check keeps ``P`` high enough that 500 K feedwater is liquid
         instead of flashing to steam.
         """
-        return coolprop.enthalpy_PT(P=P, T=self.params.T_fw)
+        return feedwater_enthalpy(P=P, T_fw=self.params.T_fw)
 
     def derivatives(self, state: np.ndarray, inputs: dict[str, float]) -> np.ndarray:
         """Return mass and internal-energy rates for the shell.
