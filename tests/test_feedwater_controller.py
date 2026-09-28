@@ -76,6 +76,8 @@ def test_layout_and_derived_gains():
     assert c.outputs_require_inputs is True
     assert p.K_i == pytest.approx(p.K_p / 300.0)
     assert p.antiwindup_tracking_time == pytest.approx(30.0)
+    assert p.manual_tracking_time == pytest.approx(1.0)
+    assert p.manual_tracking_time < TOY_TAU_FW
     assert c.initial_state()[0] == 0.0
 
 
@@ -108,7 +110,7 @@ def test_manual_override_scales_max_flow_and_tracks_integral():
 
     out = c.outputs(state, inputs=controller_inputs)
     raw_auto = _raw_automatic_demand(c, state, controller_inputs)
-    expected = (0.5 * m_max - raw_auto) / (p.K_i * p.antiwindup_tracking_time)
+    expected = (0.5 * m_max - raw_auto) / (p.K_i * p.manual_tracking_time)
 
     assert out["m_fw_demand"] == pytest.approx(0.5 * m_max)
     assert c.derivatives(state, controller_inputs)[0] == pytest.approx(expected)
@@ -121,19 +123,15 @@ def test_manual_tracking_uses_clipped_physical_demand():
     state = np.array([2.0])
 
     high_inputs = inputs(feedwater_manual=2.0)
-    high_expected = (m_max - _raw_automatic_demand(c, state, high_inputs)) / (
-        p.K_i * p.antiwindup_tracking_time
-    )
+    high_expected = (m_max - _raw_automatic_demand(c, state, high_inputs)) / (p.K_i * p.manual_tracking_time)
     assert c.derivatives(state, high_inputs)[0] == pytest.approx(high_expected)
 
     low_inputs = inputs(feedwater_manual=-1.0)
-    low_expected = (0.0 - _raw_automatic_demand(c, state, low_inputs)) / (
-        p.K_i * p.antiwindup_tracking_time
-    )
+    low_expected = (0.0 - _raw_automatic_demand(c, state, low_inputs)) / (p.K_i * p.manual_tracking_time)
     assert c.derivatives(state, low_inputs)[0] == pytest.approx(low_expected)
 
 
-def test_manual_tracking_makes_auto_demand_match_manual_after_tracking_times():
+def test_manual_tracking_makes_auto_demand_match_manual_after_a_few_seconds():
     c = FeedwaterController(FeedwaterControllerParams())
     p = c.params
     m_max = p.m_fw_max_frac * p.sg_params.m_steam_design
@@ -144,7 +142,7 @@ def test_manual_tracking_makes_auto_demand_match_manual_after_tracking_times():
 
     sol = solve_ivp(
         rhs,
-        (0.0, 5.0 * p.antiwindup_tracking_time),
+        (0.0, 5.0 * p.manual_tracking_time),
         [0.0],
         method="BDF",
         rtol=1.0e-8,
@@ -157,8 +155,55 @@ def test_manual_tracking_makes_auto_demand_match_manual_after_tracking_times():
     assert abs(raw_auto - 0.9 * m_max) < 0.01 * m_max
 
 
-def test_standard_plant_manual_to_auto_feedwater_transfer_is_bumpless():
-    """Sustained manual operation tracks the automatic PI state before transfer."""
+def test_manual_tracking_steady_inputs_have_small_five_second_lag():
+    c = FeedwaterController(FeedwaterControllerParams())
+    p = c.params
+    controller_inputs = inputs(feedwater_manual=0.0)
+    initial_raw_auto = _raw_automatic_demand(c, np.array([0.0]), controller_inputs)
+
+    def rhs(_t: float, y: np.ndarray) -> list[float]:
+        return [c.derivatives(y, controller_inputs)[0]]
+
+    sol = solve_ivp(
+        rhs,
+        (0.0, 5.0),
+        [0.0],
+        method="BDF",
+        rtol=1.0e-8,
+        atol=1.0e-10,
+    )
+
+    assert sol.success, sol.message
+    residual = _raw_automatic_demand(c, np.array([sol.y[0, -1]]), controller_inputs)
+    expected = initial_raw_auto * math.exp(-5.0 / p.manual_tracking_time)
+    assert residual == pytest.approx(expected, rel=5.0e-3)
+    assert residual < 15.0
+
+
+def _manual_to_auto_demand_step(feedwater_manual: float, transfer_time: float) -> tuple[float, float, float]:
+    eng = build_standard_plant()
+    eng.run(10.0, max_step=0.5)
+    manual_snap = eng.run(
+        transfer_time,
+        scenario_fn=lambda _t: {"feedwater_manual": feedwater_manual},
+        max_step=0.5,
+    )
+    manual_demand = manual_snap["fw_ctrl"]["m_fw_demand"]
+    auto_demand = eng.snapshot()["fw_ctrl"]["m_fw_demand"]
+    return auto_demand - manual_demand, manual_demand, auto_demand
+
+
+def test_standard_plant_five_second_manual_zero_transfer_is_effectively_bumpless():
+    """Fast manual tracking removes the previous 1,444 kg/s AUTO demand step."""
+    step, manual_demand, auto_demand = _manual_to_auto_demand_step(feedwater_manual=0.0, transfer_time=15.0)
+
+    assert manual_demand == 0.0
+    assert auto_demand > 0.0
+    assert abs(step) < 25.0
+
+
+def test_standard_plant_manual_to_auto_feedwater_transfer_is_effectively_bumpless():
+    """Moving plant inputs leave only a small residual manual-to-AUTO demand step."""
     eng = build_standard_plant()
     manual_snap = eng.run(
         100.0,
@@ -170,7 +215,7 @@ def test_standard_plant_manual_to_auto_feedwater_transfer_is_bumpless():
     auto_snap = eng.snapshot()
     auto_demand = auto_snap["fw_ctrl"]["m_fw_demand"]
 
-    assert abs(auto_demand - manual_demand) < 50.0
+    assert abs(auto_demand - manual_demand) < 10.0
 
 
 def test_manual_override_clips_fraction_to_physical_range():
@@ -272,6 +317,8 @@ def test_nonfinite_manual_input_raises_value_error():
         {"m_fw_max_frac": 0.0},
         {"antiwindup_tracking_time": math.nan},
         {"antiwindup_tracking_time": 0.0},
+        {"manual_tracking_time": math.nan},
+        {"manual_tracking_time": 0.0},
     ],
 )
 def test_invalid_params_raise_value_error(kwargs):

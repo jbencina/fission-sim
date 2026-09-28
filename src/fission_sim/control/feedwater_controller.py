@@ -33,9 +33,10 @@ deliver.
 
 Manual mode uses the same tracking idea for bumpless transfer. While an
 operator-specified manual demand is active, the stored PI state tracks the
-manual output instead of freezing. After a few tracking times the automatic
-PI law would ask for essentially the same flow, so returning to AUTO does not
-create a demand step.
+manual output instead of freezing. The manual tracking time is deliberately
+shorter than the feedwater actuator lag, so after a few seconds the automatic
+PI law asks for essentially the same flow and returning to AUTO creates only
+a small residual demand step.
 
 # SIMPLIFICATION: no shrink/swell compensation is modeled. Real indicated
 steam-generator level changes when steam voids expand or collapse after a
@@ -104,6 +105,10 @@ class FeedwaterControllerParams:
     antiwindup_tracking_time : float or None, optional
         Back-calculation tracking time ``T_t`` [s]. If None, derived as one
         tenth of the PI reset time ``K_p / K_i``.
+    manual_tracking_time : float, optional
+        Manual-output tracking time ``T_track,manual`` [s]. This is separate
+        from the slower saturation anti-windup time so mode transfers can be
+        effectively bumpless on the actuator timescale.
 
     Raises
     ------
@@ -115,7 +120,7 @@ class FeedwaterControllerParams:
     -----
     Frozen dataclass; ``__post_init__`` derives ``K_i`` and
     ``antiwindup_tracking_time`` with ``object.__setattr__`` when they are
-    omitted.
+    omitted and validates ``manual_tracking_time``.
     """
 
     # Design shell parameters. Provenance: the controller must use the same
@@ -148,6 +153,12 @@ class FeedwaterControllerParams:
     # artificially faster mode than the 5 s feedwater actuator.
     antiwindup_tracking_time: float | None = None  # [s]
 
+    # Manual-output tracking time. Provenance: M4.7.1 review fix using
+    # Åström & Murray §11.4 "Manual Control and Tracking": 1 s is well below
+    # the 5 s feedwater actuator lag, so the automatic PI state converges
+    # before the physical feedwater flow can move far after a mode transfer.
+    manual_tracking_time: float = 1.0  # [s]
+
     def __post_init__(self) -> None:
         """Validate parameters and derive omitted integral settings.
 
@@ -173,12 +184,17 @@ class FeedwaterControllerParams:
 
             T_i = K_p / K_i
             T_t = T_i / 10
+            T_track,manual = 1 s (default)
 
         ``T_i`` is the reset time: after a sustained error, the integral term
         catches up to the proportional term over about ``T_i`` seconds.
         ``T_t`` is the anti-windup tracking time from Åström & Murray §11.4:
         while the actuator is clipped, the stored integral is pulled toward
         the clipped demand over about ``T_t`` seconds.
+        ``T_track,manual`` is the separate manual-mode tracking time from the
+        same section's manual-control tracking pattern. It is intentionally
+        faster than the actuator lag because it synchronizes an internal
+        controller state, not a physical valve.
         """
         K_p = float(self.K_p)
         if not math.isfinite(K_p) or K_p <= 0.0:
@@ -214,11 +230,16 @@ class FeedwaterControllerParams:
         if not math.isfinite(antiwindup_tracking_time) or antiwindup_tracking_time <= 0.0:
             raise ValueError("antiwindup_tracking_time must be finite and > 0 [s].")
 
+        manual_tracking_time = float(self.manual_tracking_time)
+        if not math.isfinite(manual_tracking_time) or manual_tracking_time <= 0.0:
+            raise ValueError("manual_tracking_time must be finite and > 0 [s].")
+
         object.__setattr__(self, "K_p", K_p)
         object.__setattr__(self, "K_i", K_i)
         object.__setattr__(self, "level_setpoint_default", level_setpoint_default)
         object.__setattr__(self, "m_fw_max_frac", m_fw_max_frac)
         object.__setattr__(self, "antiwindup_tracking_time", antiwindup_tracking_time)
+        object.__setattr__(self, "manual_tracking_time", manual_tracking_time)
 
 
 @dataclass(frozen=True)
@@ -405,9 +426,9 @@ class FeedwaterController:
         integrator to step through.
 
         Manual-output tracking (Åström & Murray §11.4 "Manual Control and
-        Tracking") uses the same state and tracking time:
+        Tracking") uses the same state and the faster manual tracking time:
 
-            dI/dt = (u_manual − u_raw,auto) / (K_i · T_t)
+            dI/dt = (u_manual − u_raw,auto) / (K_i · T_track,manual)
 
         ``u_manual`` is the clipped physical manual demand sent to the
         actuator. The tracked PI state therefore approaches the value that
@@ -415,8 +436,8 @@ class FeedwaterController:
         """
         terms = self._demand_terms(state, inputs)
         p = self.params
-        tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
         if terms.mode == "manual":
+            tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.manual_tracking_time)
             return np.array([tracking], dtype=float)
 
         # Back-calculation anti-windup (Åström & Murray §11.4): compare the
@@ -424,6 +445,7 @@ class FeedwaterController:
         # that mismatch back into the integrator through the tracking time.
         # This is continuous at the actuator limit because u_clipped and
         # u_raw are equal as the controller leaves saturation.
+        tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
         return np.array([terms.level_error + tracking], dtype=float)
 
     def outputs(self, state: np.ndarray, *, inputs: dict[str, Any]) -> dict[str, float]:
