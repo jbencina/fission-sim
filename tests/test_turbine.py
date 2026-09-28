@@ -38,6 +38,29 @@ def test_design_point_flows():
     assert out["T_ref"] == pytest.approx(583.0)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"P_dump_full": 7.0e6}, "P_dump_full must be greater than P_dump_set"),
+        ({"P_dump_full": 7.6e6}, "P_dump_full must be greater than P_dump_set"),
+        ({"P_dump_set": np.nan}, "P_dump_set must be finite"),
+        ({"P_dump_full": np.inf}, "P_dump_full must be finite"),
+        ({"tau_gov": 0.0}, "tau_gov must be finite and > 0"),
+        ({"tau_trip": -0.5}, "tau_trip must be finite and > 0"),
+        ({"ramp_rate": np.nan}, "ramp_rate must be finite and > 0"),
+        ({"ramp_rate": -1.0e-3}, "ramp_rate must be finite and > 0"),
+        ({"eta": 0.0}, "eta must be finite and in"),
+        ({"eta": 1.2}, "eta must be finite and in"),
+        ({"load_initial": -0.1}, "load_initial must be finite and in"),
+        ({"load_initial": 1.1}, "load_initial must be finite and in"),
+        ({"k_valve": -1.0}, "k_valve must be finite and > 0"),
+    ],
+)
+def test_invalid_turbine_params_raise_learner_readable_value_error(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        TurbineParams(**kwargs)
+
+
 def test_steam_flow_scales_with_load_and_pressure():
     t, sg = make()
     half = np.array([0.5])

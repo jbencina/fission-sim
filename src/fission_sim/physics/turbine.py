@@ -155,7 +155,7 @@ class TurbineParams:
     k_valve: float | None = None  # [kg/(s·Pa)]
 
     def __post_init__(self) -> None:
-        """Derive the linear turbine-admission valve coefficient.
+        """Validate parameters and derive the turbine-admission coefficient.
 
         Parameters
         ----------
@@ -167,6 +167,12 @@ class TurbineParams:
         None
             ``k_valve`` is written to the frozen dataclass when omitted.
 
+        Raises
+        ------
+        ValueError
+            If a control or thermodynamic parameter is non-finite or outside
+            its physical range.
+
         Notes
         -----
         Governing calibration equation (Kearton, turbine governing):
@@ -176,8 +182,32 @@ class TurbineParams:
         With ``load = 1`` and ``P_steam = P_ref``, the turbine removes the
         design steam flow produced by ``SGSecondaryParams``.
         """
+        for name in ("ramp_rate", "tau_gov", "tau_trip"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and > 0 so the turbine load derivative is well defined.")
+
+        if not math.isfinite(float(self.P_dump_set)):
+            raise ValueError("P_dump_set must be finite [Pa] so the steam-dump opening pressure is defined.")
+        if not math.isfinite(float(self.P_dump_full)):
+            raise ValueError("P_dump_full must be finite [Pa] so the steam-dump full-open pressure is defined.")
+        if self.P_dump_full <= self.P_dump_set:
+            raise ValueError("P_dump_full must be greater than P_dump_set so dump flow increases with pressure.")
+
+        eta = float(self.eta)
+        if not math.isfinite(eta) or not (0.0 < eta <= 1.0):
+            raise ValueError("eta must be finite and in (0, 1]; it is a gross electrical efficiency.")
+
+        load_initial = float(self.load_initial)
+        if not math.isfinite(load_initial) or not (0.0 <= load_initial <= 1.0):
+            raise ValueError("load_initial must be finite and in [0, 1] because turbine admission is a fraction.")
+
         if self.k_valve is None:
             object.__setattr__(self, "k_valve", self.sg_params.m_steam_design / self.sg_params.P_ref)
+        else:
+            k_valve = float(self.k_valve)
+            if not math.isfinite(k_valve) or k_valve <= 0.0:
+                raise ValueError("k_valve must be finite and > 0 so turbine steam flow cannot reverse sign.")
 
 
 class Turbine:
