@@ -342,15 +342,15 @@ Layer rules:
 - `fission_sim.plant` is the one place that knows which components make up
   the standard plant and how they connect. It sits outside the API layer so
   the command-line examples can use it without importing FastAPI.
-- The standard M3 plant modules are `rod`, `core`, `loop`, `sg`, `sg_sec`,
-  `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. The older
-  `SecondarySink` remains available for M1/M2 regression plants but is not
-  in the standard wiring.
+- The standard M4 plant modules are `rod`, `core`, `loop`, `sg`, `sg_sec`,
+  `turbine`, `feedwater`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`.
+  The older `SecondarySink` remains available for M1/M2 regression plants
+  but is not in the standard wiring.
 - The standard module classes are `RodController`, `PointKineticsCore`,
   `PrimaryLoop`, `SteamGenerator`, `SGSecondary`, `Turbine`,
-  `FeedwaterController`, `TavgController`, `Pressurizer`, and
-  `PressurizerController`. There is no `sink` module key in a standard M3
-  snapshot.
+  `FeedwaterSystem`, `FeedwaterController`, `TavgController`, `Pressurizer`,
+  and `PressurizerController`. There is no `sink` module key in a standard
+  M4 snapshot.
 - `fission_sim.api` is the only package that knows about asyncio, HTTP, or
   WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
 - The Vite frontend is a separate process. During development, the Vite proxy
@@ -725,7 +725,7 @@ appears only in deliberately hand-wired M1/M2 regression plants.
     "sg": {"Q_sg": 3.0e9, "T_avg": 583.0, "T_secondary": 558.0, "delta_T": 25.0},
     "sg_sec": {
         "P_steam": 6.899e6, "T_secondary": 558.0, "level_sg": 0.5,
-        "x": 0.0462, "M_l": 222458.1, "M_v": 10781.0,
+        "level_margin_low": 0.2, "x": 0.0462, "M_l": 222458.1, "M_v": 10781.0,
         "M_sec": 233239.1, "U_sec": 3.06608e11,
         "h_g": 2.77387e6, "h_fw": 9.76402e5, "P_fw_flash": 2.6389e6,
         "Q_sg": 3.0e9,

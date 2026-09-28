@@ -121,11 +121,13 @@ The shortest mental model is:
    represent the sealed water loop carrying heat from the core to the steam
    generator. The loop is heated by the heat that crosses from the fuel into
    the water, which during a transient differs from the fission power.
-4. **The steam generator and secondary side remove heat.** The primary-to-
-   secondary heat exchanger boils a saturated shell inventory. Steam leaves
-   through the turbine or dump path and feedwater replaces that mass. If core
-   heat, steam-generator heat transfer, and steam removal do not match,
-   temperatures and steam pressure move.
+4. **The steam generator and secondary side remove heat and control level.**
+   The primary-to-secondary heat exchanger boils a saturated shell inventory.
+   Steam leaves through the turbine or dump path. A three-element feedwater
+   controller feed-forwards that steam outflow, trims collapsed SG level back
+   to its setpoint, and sends demand through a lagged feedwater actuator. If
+   core heat, SG heat transfer, steam removal, and feedwater addition do not
+   match, steam pressure and SG level move.
 5. **The pressurizer holds pressure.** A simplified pressurizer/controller pair
    uses heater and spray behavior to move primary pressure back toward setpoint
    during transients.
@@ -135,7 +137,7 @@ The shortest mental model is:
 | Layer | Code | Role |
 |---|---|---|
 | Dashboard/API | `web/`, `src/fission_sim/api/` | Browser UI, WebSocket telemetry, operator commands |
-| Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the M3 primary/secondary modules into a ready-to-run engine |
+| Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the M4 primary/secondary modules into a ready-to-run engine |
 | Engine | `src/fission_sim/engine/` | Wires components, owns the state vector, advances time |
 | Control | `src/fission_sim/control/` | Pressurizer pressure control, three-element feedwater level control, and automatic Tavg rod-control logic |
 | Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, SG shell, feedwater actuator, turbine, pressurizer |
@@ -167,9 +169,9 @@ externals are `rod_command`, `scram`, `P_setpoint`, `heater_manual`,
 `level_setpoint`, and `feedwater_manual`. `SecondarySink` remains in the
 package for older M1/M2 examples/tests, but it is no longer in the standard
 plant. `sg_sec` telemetry includes `P_steam`, `T_secondary`, `level_sg`,
-shell quality `x`, inventory/energy, steam/feedwater flows, `P_fw_flash`
-(the feedwater-temperature saturation pressure used by domain checks), and
-`boil_off_time_s`.
+`level_margin_low`, shell quality `x`, inventory/energy, steam/feedwater
+flows, `P_fw_flash` (the feedwater-temperature saturation pressure used by
+domain checks), and `boil_off_time_s`.
 
 ### What To Watch
 
@@ -182,7 +184,7 @@ shell quality `x`, inventory/energy, steam/feedwater flows, `P_fw_flash`
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
 | `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
 | `P_steam`, `level_sg`, `level_margin_low`, `boil_off_time_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin, estimated boil-off time if feedwater stopped, turbine/dump flows, gross electric power, and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
-| `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual` | Actual feedwater actuator flow, controller demand, operator level setpoint, and optional manual feedwater override. |
+| `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual`, `fw_ctrl.mode`, `fw_ctrl.saturated` | Actual feedwater actuator flow, controller demand, operator level setpoint, optional manual feedwater override, and whether the controller is automatic/manual or clipped at a flow limit. Watch `m_fw_demand − m_fw` during fast transients: the actuator lags the controller by `tau_fw = 5 s`. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
 
@@ -191,17 +193,21 @@ admission reduction at 5 points/min with rods manual is only about a 3 % power
 reduction because steam pressure rises and preserves steam flow. With rods
 automatic, `T_avg` returns to the new admission-based `T_ref`. An
 **unprotected turbine trip** (automatic reactor protection omitted) settles
-near 94 % fission power because ideal feedwater and the combined dump/relief
+near 94 % fission power because the feedwater train and combined dump/relief
 path remain available; in representative protected Westinghouse plants, a
 turbine trip above the applicable P-9/P-7 threshold normally trips the
 reactor. M3 models only the P-4 direction: reactor trip → turbine trip.
+With M4 level control, a 10 percentage-point automatic admission reduction
+moves collapsed SG level by only about 0.18 percentage-points and returns it
+to setpoint. The number is for collapsed liquid fraction only; because shrink
+and swell are not modeled, it is not a real narrow-range level trace.
 
 The component guide below explains each model in more depth.
 
 ### Model Limits
 
 The simulator models a liquid-filled primary loop, a pressurizer that holds a
-steam bubble over water, and an M3 steam-generator shell that holds saturated
+steam bubble over water, and an M4 steam-generator shell that holds saturated
 water under saturated steam. Its equations cannot tell by themselves when a
 transient leaves those pictures, so the state after every accepted step is
 checked against these limits (`src/fission_sim/physics/domain.py`):
@@ -211,7 +217,8 @@ checked against these limits (`src/fission_sim/physics/domain.py`):
 | Hot-leg water stays below its boiling point, `T_hot < T_sat(P)` | The loop equations describe liquid water only; boiling and steam voids are not modeled. |
 | The pressurizer holds both steam and water (steam quality strictly between 0 and 1) | At 0 it has filled solid with water, at 1 it has boiled dry. Its pressure comes from the steam bubble. |
 | Steam pressure stays between the feedwater-flash floor and 12 MPa | The shell energy balance assumes liquid feedwater at 500 K. The default floor is a 3.00 MPa simulation guard band, above `P_fw_flash = P_sat(500 K) ≈ 2.64 MPa`; lower pressure approaches the configured feedwater flashing boundary. The 12 MPa ceiling is also a simulation validity limit, not a plant protection setpoint. |
-| Steam-generator collapsed liquid fraction stays between 30 % and 95 % | These are conservative surrogate model limits, not plant elevations. Below 30 %, the constant-`UA` tube heat-transfer picture no longer applies; above 95 %, the steam space is nearly gone and liquid carryover into steam lines is outside the model. |
+| `sg_tubes_uncovered`: steam-generator collapsed liquid fraction stays at or above 30 % | `0.30` is a conservative surrogate model limit, not a plant elevation or protection setpoint. Below it, the constant-`UA` tube heat-transfer picture no longer applies because the model treats the tube bundle as uncovered. A real plant would normally trip and start auxiliary feedwater before this educational validity edge. |
+| `sg_overfill`: steam-generator collapsed liquid fraction stays at or below 95 % | `0.95` is a conservative surrogate model limit, not a plant elevation or protection setpoint. Above it, the steam space is nearly gone and liquid carryover into steam lines is outside the saturated-shell model. |
 | `sg_dry`: shell quality stays below 1 | At quality 1 no liquid remains on the SG shell side, so the boiling heat-transfer picture no longer applies. This is a simulation validity limit, not a plant protection setpoint. |
 | `sg_solid`: shell quality stays above 0 | At quality 0 the steam space is gone; pressure would be set by compressing liquid water, which this saturated-shell model does not include. This is a simulation validity limit, not a plant protection setpoint. |
 | Primary pressure between 1 and 21 MPa | Below, far outside pressurized-water-reactor operation; above, close to water's critical point (22.064 MPa), where liquid and steam stop being distinct. |
@@ -245,9 +252,9 @@ Other simplifications to keep in mind (these do not stop the simulation):
   pressure changes is ignored.
 - The steam generator still uses one constant `UA`; there is no tube-metal
   heat capacity. The shell level is a collapsed liquid volume fraction for
-  four SGs lumped into one volume, without indicated-level shrink/swell;
-  feedwater temperature is fixed at 500 K, feedwater flow exactly matches
-  steam outflow in M3, turbine admission is a linear valve, and steam dump /
+  four SGs lumped into one volume, without indicated-level shrink/swell.
+  Feedwater temperature is fixed at 500 K, feedwater flow follows one
+  first-order actuator, turbine admission is a linear valve, and steam dump /
   relief / safety hardware is one proportional path that starts opening at
   7.6 MPa and reaches full design flow at 8.2 MPa.
 - After a SCRAM, the model cools toward about 564.6 K because that is
@@ -1069,9 +1076,9 @@ The domain check keeps `P_steam` above 3.0 MPa, and also above
         State-derived: depends only on M_sec and U_sec.
 
     telemetry(state, inputs=None) -> outputs() ∪ {
-        "x", "M_l", "M_v", "M_sec", "U_sec", "h_g", "h_fw",
-        "P_fw_flash", "Q_sg", "m_steam", "m_dump", "m_fw",
-        "Q_steam_net", "boil_off_time_s",
+        "x", "level_margin_low", "M_l", "M_v", "M_sec", "U_sec",
+        "h_g", "h_fw", "P_fw_flash", "Q_sg", "m_steam", "m_dump",
+        "m_fw", "Q_steam_net", "boil_off_time_s",
     }
         Flow-dependent keys are None when inputs is omitted.
 
@@ -1205,7 +1212,7 @@ T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
   endpoint is `n ≈ 0.972`, `T_avg ≈ 587.8 K`, and `P_steam ≈ 7.48 MPa`, not
   90 % reactor power.
 - An unprotected turbine trip without SCRAM settles near `n ≈ 0.941`, `T_avg ≈ 593.2 K`,
-  and `P_steam ≈ 8.17 MPa`, because ideal feedwater and the one combined
+  and `P_steam ≈ 8.17 MPa`, because the feedwater train and the one combined
   dump/relief path remain available. This is an unprotected experiment:
   automatic reactor protection on turbine trip is omitted, and the result is
   not a normal protected turbine-trip endpoint or a validated ATWS case.
@@ -1287,11 +1294,13 @@ anti-windup.
 
 **What it represents**
 
-Real PWR steam-generator level control uses measured level, steam flow, and
-feedwater flow. This L1 controller keeps the same operational idea but uses
-collapsed liquid fraction as the level signal and delegates feedwater-flow
-actuation to `FeedwaterSystem`. Steam outflow is feed-forward; proportional
-and integral trim restore the collapsed level setpoint.
+Real PWR steam-generator level control compares measured level, steam flow,
+and feedwater flow. This L1 controller keeps the same operational idea but
+uses collapsed liquid fraction as the level signal, steam-plus-dump outflow as
+feed-forward, and delegates feedwater-flow actuation to `FeedwaterSystem`.
+The actual actuator flow is visible in telemetry, but there is no separate
+feedwater-flow transmitter feedback loop at L1. Proportional and integral
+trim restore the collapsed level setpoint.
 
 **Equations used**
 
@@ -1493,8 +1502,8 @@ controller and physical bank aligned at startup.
 ### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
 
 M1/M2 constant-secondary stand-in retained for regression and comparison plants.
-The standard M3 plant does **not** use it; it uses `SGSecondary`, `Turbine`,
-and `FeedwaterController` instead.
+The standard M4 plant does **not** use it; it uses `SGSecondary`, `Turbine`,
+`FeedwaterSystem`, and `FeedwaterController` instead.
 
 **What it represents**
 
@@ -1510,7 +1519,7 @@ T_secondary = constant
 ```
 
 With no state and no inputs, it can absorb any `Q_sg` without changing pressure,
-flow, level, or feedwater. In M3 it is useful mainly as the reference plant for
+flow, level, or feedwater. It remains useful mainly as the reference plant for
 the huge-shell regression: an enormous `SGSecondary` volume behaves like this
 constant-temperature stand-in.
 
@@ -1690,10 +1699,31 @@ worths, and the design/critical position.
 - **Primary loop / secondary side.** Primary loop water actually touches the fuel; the secondary side gets heat (via the steam generator) and drives the turbine. Mathematically separate; never mix.
 - **Steam dump.** A bypass/relief path that sends steam somewhere other than the turbine when pressure is high. M3 lumps condenser steam dump, SG power-operated relief, and safety valves into one proportional path from 7.6 to 8.2 MPa; this is a simulation closure, not a plant protection setting.
 - **T_ref program.** A turbine-power-dependent reference for average primary temperature. The reference Westinghouse signal uses first-stage turbine impulse pressure; M3 uses admission as an L1 proxy and draws a straight line from 565 K at no-load turbine admission to 583 K at full admission.
-- **Collapsed level.** Liquid volume fraction after imagining all bubbles collapsed out of the mixture. `level_sg` is collapsed liquid fraction for four SGs lumped into one volume, not an indicated level with swell and shrink.
+- **Collapsed vs. indicated SG level.** Collapsed level is the liquid volume
+  fraction after imagining all bubbles collapsed out of the mixture.
+  `level_sg` is the collapsed liquid fraction for four SGs lumped into one
+  volume. A real indicated narrow-range or wide-range SG level includes
+  instrument geometry and two-phase void effects, so it is not the same
+  signal.
+- **Shrink and swell.** Real SG indicated level can initially move opposite
+  the inventory trend when steam bubbles collapse after a load decrease
+  (shrink) or expand after a load increase (swell). M4 does **not** model
+  shrink/swell; `level_sg` is collapsed liquid fraction only.
 - **P-4 interlock.** Westinghouse trip logic in which a reactor trip also trips the turbine. In this model, `scram=True` closes the turbine through the turbine component's `scram` input. The reverse turbine-trip→reactor-trip path (P-9/P-7 in representative plants) is not modeled.
 - **Admission.** Turbine valve opening fraction. `turbine_load` is admission demand, so a 10 percentage-point admission reduction is not the same as demanding 90 % electric power.
-- **Three-element control placeholder.** Real feedwater control usually compares level, steam flow, and feedwater flow. M3 has only the placeholder `m_fw = m_steam + m_dump`; M4 is the planned real level-control step.
+- **Three-element feedwater control.** Real SG feedwater control uses level,
+  steam flow, and feedwater flow. The M4 L1 controller uses level plus
+  steam/dump outflow feed-forward and sends its demand to a feedwater
+  actuator; the separate feedwater-flow transmitter loop is omitted as an L1
+  simplification.
+- **Back-calculation anti-windup.** A PI-controller protection for actuator
+  saturation. When feedwater demand is clipped at zero or maximum flow, the
+  integral state is pulled back toward the value that would have produced the
+  clipped demand instead of accumulating an impossible correction.
+- **Boil-off time.** `boil_off_time_s` is `M_l / (m_steam + m_dump)` at the
+  current snapshot: a rough "if feedwater stopped now, how long would the
+  liquid inventory last?" cue. It is not a plant trip setpoint or a validated
+  safety margin.
 - **Hot leg / cold leg.** Primary water leaving the core (hot, 597.7 K at design) vs returning (cold, 568.3 K). Their difference is ΔT = 29.5 K and their mean is T_avg = 583.0 K. The model's parameters are generic Westinghouse 4-loop values, with the design power rounded to 3,000 MWth.
 - **Steady state.** Power, temperatures, and reactivity all constant; ρ_total = 0; energy in = energy out.
 - **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 40 µs; the fuel and loop thermal time constants are ~5 s; the longest-lived precursor group decays over ~80 s (1/λ₁). Total span ~10⁶. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
@@ -1718,8 +1748,14 @@ worths, and the design/critical position.
 | `P_steam` | Steam-generator shell / main steam pressure | Pa |
 | `M_sec`, `U_sec` | SG shell total mass / internal energy | kg, J |
 | `level_sg` | SG shell collapsed liquid level, `V_l / V_sec` | — |
+| `level_margin_low` | Margin from collapsed SG level to the `sg_tubes_uncovered` surrogate limit | — |
+| `level_setpoint` | Requested collapsed SG level for the feedwater controller | — |
 | `P_fw_flash` | Feedwater saturation pressure at `T_fw`; pressure-floor reference | Pa |
-| `m_steam`, `m_dump`, `m_fw` | Turbine steam / dump steam / feedwater mass flow | kg/s |
+| `m_steam`, `m_dump`, `m_fw`, `m_fw_demand`, `m_fw_max` | Turbine steam / dump steam / actual feedwater / demanded feedwater / maximum feedwater mass flow | kg/s |
+| `feedwater_manual` | Manual feedwater demand fraction; `None` selects automatic control | — |
+| `K_p`, `K_i`, `I`, `T_t` | Feedwater level proportional gain, integral gain, level-error integral, anti-windup tracking time | kg/s, kg/s², s, s |
+| `τ_fw` | Feedwater actuator time constant | s |
+| `boil_off_time_s` | Estimated time to consume current SG liquid inventory if feedwater stopped | s |
 | `load`, `load_demand` | Turbine admission state / demand | — |
 | `P_electric` | Gross turbine-generator electric power | W |
 | `T_ref` | Average primary-temperature reference from turbine-admission proxy | K |
@@ -1778,8 +1814,9 @@ The source files retain the textbook citations used while developing the model. 
 | Turbine admission flow scaling | Approximate pressure-scaled admission flow used in `m_steam = k_valve·load·P_steam` | [NASA Glenn Mass Flow Rate Equations, Eq. 10 and choking condition Eq. 19](https://www.grc.nasa.gov/www/k-12/airplane/mflchk.html) |
 | Steam dump and relief context | Representative condenser steam-dump modes/capacity and main-steam PORV/safety-valve examples used to label the M3 aggregate path | [NRC Westinghouse Technology Systems Manual §11.2, Steam Dump Control System, printed pp. 11.2-1-5 (PDF pp. 5-9)](https://www.nrc.gov/docs/ML1122/ML11223A294.pdf); [§7.1 Main and Auxiliary Steam Systems, §7.1.3.3 p. 7.1-5 and §7.1.3.4 p. 7.1-6 (PDF pp. 7-8)](https://www.nrc.gov/docs/ML1122/ML11223A244.pdf) |
 | Tavg rod-control context | First-stage impulse-pressure `T_ref` program, deadband, lock-up, speed program, and omitted power-mismatch anticipation | [NRC Westinghouse Technology Systems Manual §8.1, Rod Control System, §8.1.4.2-5, pp. 8.1-6-8 (PDF pp. 10-12), Fig. 8.1-4](https://www.nrc.gov/docs/ML1122/ML11223A252.pdf) |
-| Reactor/turbine trip context | P-4 reactor-trip→turbine-trip logic and representative P-9/P-7 turbine-trip→reactor-trip context not modeled in M3 | [NRC Westinghouse Technology Systems Manual §12.2, Reactor Protection System, §12.2.3.16 p. 12.2-7 and §12.2.4 pp. 12.2-10-11 (PDF pp. 11, 14-15)](https://www.nrc.gov/docs/ML1122/ML11223A301.pdf) |
-| SG water-level context | Real level/flow control, narrow-range instruments, shrink/swell; M3 collapsed fraction does not model these indications | [NRC Westinghouse Technology Systems Manual §11.1, Steam Generator Water Level Control System, pp. 11.1-2-3 (PDF pp. 4-5), Fig. 11.1-2](https://www.nrc.gov/docs/ML1122/ML11223A293.pdf) |
+| Reactor/turbine trip context | P-4 reactor-trip→turbine-trip logic and representative P-9/P-7 turbine-trip→reactor-trip context deferred to the RPS milestone | [NRC Westinghouse Technology Systems Manual §12.2, Reactor Protection System, §12.2.3.16 p. 12.2-7 and §12.2.4 pp. 12.2-10-11 (PDF pp. 11, 14-15)](https://www.nrc.gov/docs/ML1122/ML11223A301.pdf) |
+| SG water-level context | Real level/flow control, narrow-range instruments, shrink/swell; M4 collapsed fraction does not model indicated-level shrink/swell | [NRC Westinghouse Technology Systems Manual §11.1, Steam Generator Water Level Control System, pp. 11.1-2-3 (PDF pp. 4-5), Fig. 11.1-2](https://www.nrc.gov/docs/ML1122/ML11223A293.pdf) |
+| PI anti-windup context | Back-calculation/tracking correction used in `dI/dt = e + (u_clipped − u_raw)/(K_i·T_t)` | [Åström and Murray, *Feedback Systems*, 2nd ed., §11.3](https://fbswiki.org/wiki/index.php/Feedback_Systems:_An_Introduction_for_Scientists_and_Engineers) |
 | Rod scram timing | Rapid rod insertion / fall into the core for PWR scram timing; this model's constant-velocity drop inserts 99 % of travel within about 2 s | [Nuclear-power.com, "SCRAM - Reactor Trip"](https://www.nuclear-power.com/nuclear-power/reactor-physics/reactor-dynamics/scram-reactor-trip/) |
 
 ## Equations
@@ -1982,7 +2019,7 @@ dload/dt = −load / tau_trip
 
 `tau_trip = 0.5 s` is an L1 time constant. The `scram` branch is the P-4
 reactor-trip→turbine-trip interlock; turbine-trip→reactor-trip logic is not
-modeled in M3.
+modeled until the RPS milestone.
 
 **Steam and dump flows:**
 
@@ -2007,18 +2044,63 @@ T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
 an admission-based proxy for the reference first-stage impulse-pressure
 program.
 
-### Feedwater flow match — `feedwater_controller.py`
+### Feedwater actuator and level control — `feedwater.py`, `feedwater_controller.py`
 
-M3 has no feedwater actuator and no level controller state. It closes the shell
-mass balance with one algebraic output:
+State: `m_fw` in the feedwater actuator and `I = ∫(level_setpoint − level_sg)dt`
+in the controller. Public cross-checks: Yan §5.2 for mass conservation, NRC
+Westinghouse Technology Systems Manual §11.1 for three-element SG water-level
+control signals, and Åström/Murray §11.3 for back-calculation anti-windup.
+The gains and limits below are M4 L1 tuning choices, not plant-specific
+settings.
+
+**Feedwater actuator lag** (one pump/valve train with a hard capacity limit):
 
 ```
-m_fw = m_steam + m_dump
+dm_fw/dt = (clip(m_fw,demand, 0, m_fw,max) − m_fw) / tau_fw
 ```
 
-This is the M3 placeholder for M4's three-element controller and feedwater
-actuator; it is ideal mass-inventory matching, not a plant feedwater control
-setpoint.
+`tau_fw = 5 s`; `m_fw,max = 1.2 · m_steam_design ≈ 2,003 kg/s`.
+
+**Automatic three-element demand law** (steam-flow feed-forward plus level PI
+trim):
+
+```
+e = level_setpoint − level_sg
+u_raw = m_steam + m_dump + K_p · e + K_i · I
+m_fw,demand = clip(u_raw, 0, m_fw,max)
+```
+
+`K_p = 3.34e3 kg/s per unit level`, and `K_i = K_p / 300 s`. A 5 %
+collapsed-level error therefore asks for about 10 % of design steam flow
+before the integral term acts.
+
+**Manual feedwater demand** (operator fraction of capacity):
+
+```
+m_fw,demand = clip(feedwater_manual, 0, 1) · m_fw,max
+```
+
+**Back-calculation anti-windup** (automatic mode only):
+
+```
+dI/dt = e + (m_fw,demand − u_raw) / (K_i · T_t)
+```
+
+`T_t = 30 s` by default. When the actuator is not saturated,
+`m_fw,demand = u_raw`, so the correction vanishes and `dI/dt = e`. In manual
+mode the controller freezes `I`.
+
+**Level validity limits** (checked after each accepted step):
+
+```
+sg_tubes_uncovered if level_sg < 0.30
+sg_overfill        if level_sg > 0.95
+```
+
+The 0.30 and 0.95 thresholds are conservative surrogate model limits, not
+plant elevations or plant-protection setpoints. The level signal is collapsed
+liquid fraction for four SGs lumped into one volume; indicated-level shrink
+and swell are not modeled.
 
 ### Average-temperature rod program — `tavg_controller.py`
 
@@ -2069,7 +2151,7 @@ auto state, or held `rod_position` during suspended automatic action.
 
 ### Secondary sink — `secondary_sink.py`
 
-M1/M2 regression stand-in only; not part of the standard M3 plant. No state,
+M1/M2 regression stand-in only; not part of the standard M4 plant. No state,
 no inputs. Public cross-check: NRC PWR Systems for secondary-side/steam-
 generator context.
 
@@ -2115,7 +2197,7 @@ bank for bumpless manual/automatic transfers.
 
 The coupled-plant tests are executable acceptance criteria, not just examples.
 They live in `tests/test_primary_plant.py`, `tests/test_pressurizer_plant.py`,
-and `tests/test_secondary_plant.py`.
+`tests/test_secondary_plant.py`, and `tests/test_sg_level_plant.py`.
 
 **M1 primary/core checks**
 
@@ -2136,15 +2218,17 @@ subcooled, and model-limit halts at the pressurizer/primary-loop domain edge.
 
 **M3 secondary/turbine/Tavg checks**
 
-`tests/test_secondary_plant.py` samples dense BDF solutions every 1.0 s and
-checks the implemented secondary side:
+`tests/test_secondary_plant.py` samples dense BDF solutions every 1.0 s. The
+file is the M3 acceptance suite, but it now runs against the M4 standard plant,
+so its conservation checks use actual `feedwater.m_fw` instead of the old M3
+flow-matching placeholder:
 
 1. **Design steady state, 600 s** — `n = 1`, `T_avg = 583 K`, `P_steam = 6.899 MPa`, `level_sg = 0.5`, and turbine `load = 1` remain at design.
 2. **Steady equilibrium heat-rate mismatch** — `Q_sg + m_fw·h_fw − (m_steam + m_dump)·h_g` is within 0.5 % of `Q_sg`.
-3. **Flow-matching feedwater mass balance** — shell mass drift stays below 1 kg during an admission-change transient.
+3. **Shell mass conservation with actual feedwater flow** — `ΔM_sec` matches `∫(m_fw − m_steam − m_dump)dt` within 0.1 % of shell mass during an admission-change transient, and the transient changes inventory by more than 100 kg.
 4. **10 percentage-point admission reduction at 5 points/min, rods manual** — settles in the measured A6 bands: `n = 0.96..0.98`, `T_avg = 586..590 K`, `P_steam = 7.35..7.65 MPa`, with final equilibrium heat-rate mismatch below 1 % and transient shell-energy accumulation matching stored `ΔU_sec` within 0.1 %. `level_sg` is SG collapsed liquid fraction for four SGs lumped, with no indicated-level shrink/swell.
 5. **10 percentage-point admission reduction at 5 points/min, rods automatic** — `T_avg` returns to within 1.0 K of admission-proxy `T_ref = 581.2 K`, rods insert, and `n = 0.88..0.95`.
-6. **Unprotected turbine trip: automatic reactor protection omitted** — pressure stays below 8.5 MPa, dump flow opens, turbine admission goes to zero, and the plant settles in measured bands near `n = 0.941`, `T_avg = 593.2 K`, `P_steam = 8.17 MPa` because ideal feedwater and the combined dump/relief path are available.
+6. **Unprotected turbine trip: automatic reactor protection omitted** — pressure stays below 8.5 MPa, dump flow opens, turbine admission goes to zero, and the plant settles in measured bands near `n = 0.941`, `T_avg = 593.2 K`, `P_steam = 8.17 MPa` because the feedwater train and combined dump/relief path are available.
 7. **SCRAM alone** — the P-4 reactor-trip→turbine-trip interlock trips the turbine, pressure stays below 8.5 MPa, and final fission power is below 1 %. The ~564.6 K endpoint is `T_sat` at the 7.6 MPa pressure-controlled dump anchor, not active `T_avg` regulation; decay heat is omitted.
 8. **Turbine trip with SCRAM** — final fission power is below 1 %, and the primary loop remains subcooled through the cooldown. This is the protected-response illustration until P-7/P-9 RPS logic is implemented.
 9. **Huge shell regression** — with `V_sec = 6.0e7 m³`, M3 reproduces the old M2 constant-secondary plant within 0.5 K in `T_avg`.
@@ -2152,6 +2236,24 @@ checks the implemented secondary side:
 The same file also checks the static secondary-domain limits (`steam_pressure`,
 `sg_dry`, `sg_solid`), finite/clipped turbine-admission defaults, and that M2-style
 snapshots without `sg_sec` still pass the primary domain checker.
+
+**M4 steam-generator level/feedwater checks**
+
+`tests/test_sg_level_plant.py` and `scripts/validate_secondary.py --milestone
+m4` check the level dynamics added by M4. Validation measured on this branch:
+
+1. **Steady state, 600 s** — max collapsed-level error `1.44e-15`; final feed/steam mismatch `7.90e-15` of outflow.
+2. **Integrated shell balances during a 100 % → 80 % admission ramp** — mass-accumulation residual `4.19e-6` of shell mass, nonzero `ΔM_sec = 3,149.6 kg`, and shell-energy accumulation residual `3.04e-4`.
+3. **10 percentage-point admission reduction at 5 points/min, rods automatic** — max collapsed-level excursion `0.00180`; final residual from the 0.50 setpoint `1.99e-6`.
+4. **Collapsed-level setpoint step 0.50 → 0.55 at t = 10 s** — final residual `9.84e-5`; maximum level `0.559884` (< 0.57).
+5. **Loss of feedwater at t = 10 s** — manual feedwater at 0 reaches `sg_tubes_uncovered` at about `t = 64 s` (30..600 s acceptance band). In a real plant, low-low SG level would trip the reactor and start auxiliary feedwater before this model validity limit; M5 adds that protection behavior.
+6. **Manual feedwater held at maximum after t = 10 s** — reaches `sg_overfill` at about `t = 543 s` (200..2000 s acceptance band).
+7. **Turbine trip plus SCRAM under automatic feedwater control** — collapsed level stays between `0.500` and `0.520867`; final residual from setpoint is `0.0163898` (< 0.02).
+
+Factory regressions also check that non-default `SGSecondaryParams` derive
+matching feedwater-controller and actuator defaults, that an explicit
+actuator flow ceiling is shared with the controller, and that inconsistent
+explicit feedwater parameter objects are rejected.
 
 ## Roadmap
 
@@ -2179,30 +2281,51 @@ halts.
   steam pressure, collapsed level, and feedwater flash-pressure domain data
 - `src/fission_sim/physics/turbine.py` — turbine admission, steam dump,
   gross electric power, `T_ref`, and the SCRAM→turbine-trip P-4 interlock
-- `src/fission_sim/control/feedwater_controller.py` — M3 ideal feedwater
-  mass-flow matching
+- first-pass ideal feedwater mass-flow matching, replaced by M4's dynamic
+  feedwater actuator and level controller
 - `src/fission_sim/control/tavg_controller.py` — automatic average-
   temperature rod-demand program with bumpless tracking
 - `src/fission_sim/validation/secondary_acceptance.py` and
   `scripts/validate_secondary.py` — shared M3 acceptance scenarios and CLI
-- `build_standard_plant()` now wires the ten-module M3 plant; `SecondarySink`
+- `build_standard_plant()` switched away from `SecondarySink`, which now
   remains only for M1/M2-style test plants.
 
-**Milestone 4 — Steam-Generator Level and Feedwater Dynamics** — next. Planned
-scope: feedwater actuator, three-element level-control logic, level setpoint
-and manual feedwater externals, and domain limits for tube uncovering and
-overfill.
+**Milestone 4 — Steam-Generator Level and Feedwater Dynamics** — complete.
+Added:
 
-**Planned after M4.** Items are planned, not built:
+- `src/fission_sim/physics/feedwater.py` — capacity-limited first-order
+  feedwater actuator (`tau_fw = 5 s`, `m_fw,max = 1.2 · m_steam_design`)
+- rewritten `src/fission_sim/control/feedwater_controller.py` — simplified
+  three-element feedwater control with steam/dump feed-forward, collapsed-level
+  PI trim, and back-calculation anti-windup
+- `level_setpoint` and `feedwater_manual` standard-plant externals
+- `sg_tubes_uncovered` (`level_sg < 0.30`) and `sg_overfill`
+  (`level_sg > 0.95`) model-limit halts, both conservative surrogate validity
+  limits rather than plant elevations or protection setpoints
+- `tests/test_sg_level_plant.py` and `scripts/validate_secondary.py
+  --milestone m4`, including measured loss-of-feedwater halt near 64 s and
+  manual-overfill halt near 543 s
+
+Loss of feedwater now ends at the tube-uncovering model limit. A real plant
+would normally trip the reactor and start auxiliary feedwater before that
+point; modeling that response is M5's job.
+
+**Milestone 5 — Reactor Protection and Auxiliary Feedwater** — next. Planned
+scope: reactor-protection logic around trips and low-low SG level, trip
+latching/reset behavior, and an auxiliary-feedwater heat-removal path that can
+respond before M4's SG level validity limits.
+
+**Planned after M5.** Items are planned, not built:
 
 - MW or steam-flow governor mode with a turbine-power `T_ref` signal, replacing
   the current admission-based proxy when a scenario claims an MW demand.
 - Separate condenser steam dump (~40 % example capacity), atmospheric SG PORVs
   (~10 % total for four SGs), and main steam safety valves instead of one
   aggregate dump/relief path.
-- Reactor protection including turbine-trip→reactor-trip logic via the
-  applicable P-7/P-9 permissive, trip latches, and a turbine-trip latch/reset
-  and re-admission sequence.
+- Plant-specific protection refinements beyond the generic M5 slice, including
+  P-7/P-9 variants and detailed turbine-trip reset/re-admission sequencing.
+- L2 SG level indication with shrink/swell and geometry/instrument mapping, so
+  collapsed fraction is no longer mistaken for narrow-range indicated level.
 - Rod-control fidelity: lock-up hysteresis, discrete step quantization, and
   nuclear-power/turbine-power mismatch anticipation.
 - Decay heat and post-trip secondary cooling, including residual-heat removal
