@@ -11,26 +11,28 @@ from fission_sim.plant import build_standard_plant
 from fission_sim.validation.secondary_acceptance import (
     AUTO_N_BAND,
     AUTO_TAVG_TREF_TOL,
-    ENERGY_BALANCE_FRAC,
     HUGE_SHELL_TAVG_TOL,
+    LOAD_HEAT_RATE_MISMATCH_FRAC,
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
     MASS_DRIFT_LIMIT,
     SCRAM_N_MAX,
+    STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
     STEADY_LOAD_TOL,
     STEADY_N_TOL,
     STEADY_P_STEAM_TOL,
     STEADY_TAVG_TOL,
     STEAM_PRESSURE_MAX_ON_TRIP,
-    TRANSIENT_ENERGY_BALANCE_FRAC,
+    TRANSIENT_ENERGY_ACCUMULATION_FRAC,
     TRIP_N_BAND,
     TRIP_P_STEAM_BAND,
     TRIP_TAVG_BAND,
+    equilibrium_heat_rate_mismatch_fraction,
     ramp_to,
     run_dense,
-    secondary_energy_fraction,
+    secondary_energy_accumulation_fraction,
     series,
 )
 from fission_sim.validation.secondary_acceptance import (
@@ -59,10 +61,19 @@ def test_design_steady_state_holds_600s():
     assert abs(series(snaps, "turbine", "load")[-1] - 1.0) < STEADY_LOAD_TOL
 
 
-def test_secondary_energy_balance_closes_at_steady_state():
+def test_equilibrium_heat_rate_mismatch_closes_at_steady_state():
     eng = build_standard_plant()
     snap = run(eng, 60.0, lambda t: {})[-1]
-    assert secondary_energy_fraction(snap) < ENERGY_BALANCE_FRAC
+    assert equilibrium_heat_rate_mismatch_fraction(snap) < STEADY_HEAT_RATE_MISMATCH_FRAC
+
+
+def test_equilibrium_heat_rate_mismatch_uses_shell_telemetry():
+    """Custom shell telemetry, not default feedwater parameters, supplies h_fw and m_fw."""
+    snap = {
+        "sg_sec": {"Q_sg": 100.0, "h_g": 10.0, "h_fw": 2.0, "m_fw": 20.0},
+        "turbine": {"m_steam": 14.0, "m_dump": 0.0},
+    }
+    assert equilibrium_heat_rate_mismatch_fraction(snap) == pytest.approx(0.0)
 
 
 def test_shell_mass_is_conserved_when_feedwater_matches_steam():
@@ -73,11 +84,14 @@ def test_shell_mass_is_conserved_when_feedwater_matches_steam():
 
 
 def test_load_reduction_rods_manual_reactor_follows_turbine():
-    """A 10 % admission cut settles near measured A6 values.
+    """A 10 % admission cut settles near A6 values and changes stored shell energy.
 
     ``turbine_load`` is valve admission, not fixed MW demand: when admission
     falls, steam pressure rises, so the actual steam flow and core power fall
     by only a few percent in this L1 model.
+
+    The 1 s dense-output sample spacing keeps trapezoid integration error
+    about two orders of magnitude below the 0.1 % ΔU tolerance.
     """
     eng = build_standard_plant()
     snaps = run(eng, 1500.0, ramp_to(0.9))
@@ -89,7 +103,10 @@ def test_load_reduction_rods_manual_reactor_follows_turbine():
     _assert_between(P_steam[-1], MANUAL_P_STEAM_BAND)
     assert T_avg[-1] > 583.5
     assert P_steam[-1] > P_steam[0] + 1e5
-    assert secondary_energy_fraction(snaps[-1]) < TRANSIENT_ENERGY_BALANCE_FRAC
+    assert equilibrium_heat_rate_mismatch_fraction(snaps[-1]) < LOAD_HEAT_RATE_MISMATCH_FRAC
+    U = series(snaps, "sg_sec", "U_sec")
+    assert abs(U[-1] - U[0]) > 1.0e9
+    assert secondary_energy_accumulation_fraction(snaps) < TRANSIENT_ENERGY_ACCUMULATION_FRAC
 
 
 def test_load_reduction_rods_auto_returns_to_program():

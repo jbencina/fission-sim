@@ -12,9 +12,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from fission_sim.physics import coolprop
 from fission_sim.physics.domain import check_snapshot
-from fission_sim.physics.sg_secondary import SGSecondaryParams
 
 ScenarioFn = Callable[[float], dict[str, Any]]
 
@@ -41,8 +39,17 @@ STEADY_TAVG_TOL: float = 0.05  # [K]
 STEADY_P_STEAM_TOL: float = 5.0e3  # [Pa]
 STEADY_LEVEL_TOL: float = 1.0e-3
 STEADY_LOAD_TOL: float = 1.0e-9
-ENERGY_BALANCE_FRAC: float = 5.0e-3
-TRANSIENT_ENERGY_BALANCE_FRAC: float = 1.0e-2
+STEADY_HEAT_RATE_MISMATCH_FRAC: float = 5.0e-3
+LOAD_HEAT_RATE_MISMATCH_FRAC: float = 1.0e-2
+# The accumulation check normalizes the largest trapezoid-vs-state error to
+# the largest observed |ΔU_sec|. With DT = 1 s, the manual-load scenario's
+# measured numerical quadrature error is roughly 3e-5 of ΔU, so 1e-3 leaves
+# room for solver/library roundoff while still detecting a wrong first-law term.
+TRANSIENT_ENERGY_ACCUMULATION_FRAC: float = 1.0e-3
+# Legacy names retained for scripts written before M3.9.2; the quantities are
+# equilibrium heat-rate mismatches, not transient energy balances.
+ENERGY_BALANCE_FRAC: float = STEADY_HEAT_RATE_MISMATCH_FRAC
+TRANSIENT_ENERGY_BALANCE_FRAC: float = LOAD_HEAT_RATE_MISMATCH_FRAC
 MASS_DRIFT_LIMIT: float = 1.0  # [kg]
 AUTO_TAVG_TREF_TOL: float = 1.0  # [K]
 STEAM_PRESSURE_MAX_ON_TRIP: float = 8.5e6  # [Pa]
@@ -91,11 +98,32 @@ def result(criterion: str, measured: float | str, limit: str, passed: bool) -> C
     CriterionResult
         Markdown-ready validation row.
     """
+    criterion = _renamed_criterion(criterion)
     if isinstance(measured, str):
         measured_text = measured
     else:
         measured_text = f"{measured:.6g}"
     return CriterionResult(criterion=criterion, measured=measured_text, limit=limit, passed=bool(passed))
+
+
+def _renamed_criterion(criterion: str) -> str:
+    """Return current names for criterion labels printed by older callers.
+
+    Parameters
+    ----------
+    criterion : str
+        Candidate criterion label.
+
+    Returns
+    -------
+    str
+        Updated criterion label.
+    """
+    renames = {
+        "energy balance: secondary energy residual": "equilibrium: heat-rate mismatch",
+        "load manual: secondary energy residual": "load manual: equilibrium heat-rate mismatch",
+    }
+    return renames.get(criterion, criterion)
 
 
 def run_dense(engine, t_end: float, scenario: ScenarioFn, *, check: bool = True) -> list[dict[str, Any]]:
@@ -176,25 +204,109 @@ def ramp_to(load_end: float, t0: float = 10.0, rate: float = 8.33e-4) -> Scenari
     return scenario
 
 
-def secondary_energy_fraction(snap: dict[str, Any]) -> float:
-    """Return the absolute secondary energy-balance residual fraction.
+def _secondary_shell_energy_rate(snap: dict[str, Any]) -> float:
+    """Return the shell's net internal-energy accumulation rate.
 
     Parameters
     ----------
     snap : dict
-        Engine snapshot with ``sg``, ``sg_sec`` and ``turbine`` modules.
+        Engine snapshot with ``sg_sec`` and ``turbine`` telemetry.
 
     Returns
     -------
     float
-        ``abs(Q_sg - m_out * (h_g - h_fw)) / abs(Q_sg)`` [-].
+        ``Q_sg + m_fw*h_fw - (m_steam + m_dump)*h_g`` [W].
     """
-    Q_sg = snap["sg"]["Q_sg"]
-    m_out = snap["turbine"]["m_steam"] + snap["turbine"]["m_dump"]
-    P = snap["sg_sec"]["P_steam"]
-    h_g = coolprop.sat_vapor_enthalpy(P=P)
-    h_fw = coolprop.enthalpy_PT(P=P, T=SGSecondaryParams().T_fw)
-    return abs(Q_sg - m_out * (h_g - h_fw)) / abs(Q_sg)
+    sg_sec = snap["sg_sec"]
+    turbine = snap["turbine"]
+    Q_sg = sg_sec["Q_sg"]
+    h_g = sg_sec["h_g"]
+    h_fw = sg_sec["h_fw"]
+    m_fw = sg_sec["m_fw"]
+    m_out = turbine["m_steam"] + turbine["m_dump"]
+    return Q_sg + m_fw * h_fw - m_out * h_g
+
+
+def equilibrium_heat_rate_mismatch_fraction(snap: dict[str, Any]) -> float:
+    """Return the final-equilibrium shell heat-rate mismatch fraction.
+
+    Parameters
+    ----------
+    snap : dict
+        Engine snapshot with ``sg_sec`` telemetry keys ``Q_sg`` [W],
+        ``h_g`` [J/kg], ``h_fw`` [J/kg], and ``m_fw`` [kg/s], plus turbine
+        telemetry keys ``m_steam`` [kg/s] and ``m_dump`` [kg/s].
+
+    Returns
+    -------
+    float
+        ``abs(Q_sg + m_fw*h_fw - (m_steam + m_dump)*h_g) / abs(Q_sg)`` [-].
+
+    Notes
+    -----
+    This is an equilibrium heat-rate mismatch, not a transient conservation
+    check. During real transients the same numerator is ``dU_sec/dt`` and need
+    not be zero.
+    """
+    Q_sg = snap["sg_sec"]["Q_sg"]
+    return abs(_secondary_shell_energy_rate(snap)) / max(abs(Q_sg), 1.0)
+
+
+def secondary_energy_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
+    """Compare integrated shell energy rate with stored internal-energy change.
+
+    Parameters
+    ----------
+    snaps : list of dict
+        Uniformly sampled engine snapshots from one transient run. Each
+        snapshot must include ``t`` [s], ``sg_sec.U_sec`` [J], ``sg_sec.Q_sg``
+        [W], ``sg_sec.h_g`` [J/kg], ``sg_sec.h_fw`` [J/kg],
+        ``sg_sec.m_fw`` [kg/s], and turbine steam/dump flows [kg/s].
+
+    Returns
+    -------
+    float
+        ``max(|ΔU_sec - ∫dU_sec/dt dt|) / max(|ΔU_sec|)`` [-], using the
+        trapezoid rule over the supplied samples. Returns 0 for fewer than two
+        samples.
+
+    Notes
+    -----
+    The integrand is the rigid control-volume first law:
+
+    ``dU_sec/dt = Q_sg + m_fw*h_fw - (m_steam + m_dump)*h_g``
+
+    All terms are taken from the same run's telemetry so custom feedwater
+    temperature or non-matching feedwater flow remains covered.
+    """
+    if len(snaps) < 2:
+        return 0.0
+
+    t = np.array([snap["t"] for snap in snaps], dtype=float)
+    U = np.array([snap["sg_sec"]["U_sec"] for snap in snaps], dtype=float)
+    rates = np.array([_secondary_shell_energy_rate(snap) for snap in snaps], dtype=float)
+    dt = np.diff(t)
+    integral = np.zeros_like(rates)
+    integral[1:] = np.cumsum(0.5 * (rates[:-1] + rates[1:]) * dt)
+    dU = U - U[0]
+    scale = max(float(np.max(np.abs(dU))), 1.0)
+    return float(np.max(np.abs(dU - integral)) / scale)
+
+
+def secondary_energy_fraction(snap: dict[str, Any]) -> float:
+    """Legacy alias for :func:`equilibrium_heat_rate_mismatch_fraction`.
+
+    Parameters
+    ----------
+    snap : dict
+        Engine snapshot.
+
+    Returns
+    -------
+    float
+        Equilibrium heat-rate mismatch fraction [-].
+    """
+    return equilibrium_heat_rate_mismatch_fraction(snap)
 
 
 __all__ = [
@@ -202,6 +314,7 @@ __all__ = [
     "AUTO_N_BAND",
     "CriterionResult",
     "DT",
+    "LOAD_HEAT_RATE_MISMATCH_FRAC",
     "ENERGY_BALANCE_FRAC",
     "HUGE_SHELL_TAVG_TOL",
     "MANUAL_N_BAND",
@@ -214,14 +327,18 @@ __all__ = [
     "STEADY_N_TOL",
     "STEADY_P_STEAM_TOL",
     "STEADY_TAVG_TOL",
+    "STEADY_HEAT_RATE_MISMATCH_FRAC",
     "STEAM_PRESSURE_MAX_ON_TRIP",
+    "TRANSIENT_ENERGY_ACCUMULATION_FRAC",
     "TRANSIENT_ENERGY_BALANCE_FRAC",
     "TRIP_N_BAND",
     "TRIP_P_STEAM_BAND",
     "TRIP_TAVG_BAND",
+    "equilibrium_heat_rate_mismatch_fraction",
     "ramp_to",
     "result",
     "run_dense",
+    "secondary_energy_accumulation_fraction",
     "secondary_energy_fraction",
     "series",
 ]

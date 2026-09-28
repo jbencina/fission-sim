@@ -1998,9 +1998,9 @@ subcooled, and model-limit halts at the pressurizer/primary-loop domain edge.
 checks the implemented secondary side:
 
 1. **Design steady state, 600 s** — `n = 1`, `T_avg = 583 K`, `P_steam = 6.899 MPa`, `level_sg = 0.5`, and turbine `load = 1` remain at design.
-2. **Steady secondary energy balance** — `Q_sg` matches steam heat export within 0.5 %.
+2. **Steady equilibrium heat-rate mismatch** — `Q_sg + m_fw·h_fw − (m_steam + m_dump)·h_g` is within 0.5 % of `Q_sg`.
 3. **Flow-matching feedwater mass balance** — shell mass drift stays below 1 kg during a load-change transient.
-4. **100 % → 90 % admission, rods manual** — settles in the measured A6 bands: `n = 0.96..0.98`, `T_avg = 586..590 K`, `P_steam = 7.35..7.65 MPa`, with secondary energy residual below 1 %.
+4. **100 % → 90 % admission, rods manual** — settles in the measured A6 bands: `n = 0.96..0.98`, `T_avg = 586..590 K`, `P_steam = 7.35..7.65 MPa`, with final equilibrium heat-rate mismatch below 1 % and transient shell-energy accumulation matching stored `ΔU_sec` within 0.1 %.
 5. **100 % → 90 % admission, rods automatic** — `T_avg` returns to within 1.0 K of `T_ref = 581.2 K`, rods insert, and `n = 0.88..0.95`.
 6. **Turbine trip without SCRAM** — pressure stays below 8.5 MPa, dump flow opens, turbine load goes to zero, and the plant settles in measured bands near `n = 0.941`, `T_avg = 593.2 K`, `P_steam = 8.17 MPa`.
 7. **SCRAM alone** — the P-4 interlock trips the turbine, pressure stays below 8.5 MPa, and final fission power is below 1 %.
