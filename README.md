@@ -135,7 +135,7 @@ The shortest mental model is:
 | Dashboard/API | `web/`, `src/fission_sim/api/` | Browser UI, WebSocket telemetry, operator commands |
 | Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the seven components into a ready-to-run engine |
 | Engine | `src/fission_sim/engine/` | Wires components, owns the state vector, advances time |
-| Control | `src/fission_sim/control/` | Pressurizer control logic |
+| Control | `src/fission_sim/control/` | Pressurizer and automatic rod-control logic |
 | Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, pressurizer |
 | Examples | `examples/` | CLI/report/plot drivers for common scenarios |
 
@@ -1094,13 +1094,14 @@ worths, and the design/critical position.
                  "scram":       bool}
 
     outputs(state, inputs=None) -> {
-        "rho_rod": float [dimensionless],   # rho_control + rho_shutdown
+        "rho_rod":      float [dimensionless],   # rho_control + rho_shutdown
+        "rod_position": float [dimensionless],   # actual control-bank position
     }
         State-derived: depends on the bank positions only.
 
     telemetry(state, inputs=None) -> outputs() ∪ {
-        "rod_position", "shutdown_position", "rho_control", "rho_shutdown",
-        "rod_command", "scram", "rod_command_effective",
+        "shutdown_position", "rho_control", "rho_shutdown", "rod_command",
+        "scram", "rod_command_effective",
     }
         Positions and bank reactivities are computable from state alone.
         rod_command, scram, and rod_command_effective (0 if scram, else
@@ -1393,6 +1394,10 @@ Large errors → constant velocity at the cap. Small errors → smooth exponenti
 ```
 
 `rod_position_critical` is set to `rod_position_design` (= 0.5 by default) so the rods produce exactly zero reactivity at the design steady state. With `ρ_control_worth = 0.012` (1,200 pcm) and `ρ_shutdown_worth = 0.064` (6,400 pcm), a scram from design gives −7,000 pcm, while the operator's control bank alone spans only ±600 pcm about design, below prompt critical (650.2 pcm).
+
+The component also publishes `rod_position` as a state-derived output signal so
+the automatic average-temperature rod controller can track the physical control
+bank for bumpless manual/automatic transfers.
 
 ### Coupled-plant acceptance checks
 

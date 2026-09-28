@@ -82,10 +82,10 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     # 3. Wire outputs to inputs. Calling a module connects its input ports;
     #    ``module.<port>`` is a handle to one of its outputs. The order of
     #    these calls does not matter: finalize() sorts the evaluation order.
-    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    core(rho_rod=rod.rho_rod, T_cool=loop.T_cool)
     pzr(
         Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg_sig,

@@ -268,6 +268,10 @@ class RodController:
             Total rod reactivity, control bank + shutdown bank. Zero at
             design; positive when the control bank is withdrawn beyond
             design, negative when either bank is inserted.
+        rod_position : float [dimensionless, 0–1]
+            Actual control-bank position. Exposed as a signal so automatic
+            rod controllers can track the physical bank for bumpless mode
+            transfers.
 
     State vector (length ``state_size`` = 2, names in ``state_labels``):
         index 0 : rod_position      — control-bank position [0–1 withdrawn]
@@ -289,7 +293,7 @@ class RodController:
     state_size: int = 2
     state_labels: tuple[str, ...] = ("rod_position", "shutdown_position")
     input_ports: tuple[str, ...] = ("rod_command", "scram")
-    output_ports: tuple[str, ...] = ("rho_rod",)
+    output_ports: tuple[str, ...] = ("rho_rod", "rod_position")
 
     # A shutdown bank within this distance of fully withdrawn (1.0) counts
     # as never released; see ``derivatives``. [fraction of travel]
@@ -438,7 +442,7 @@ class RodController:
         return rho_control, rho_shutdown
 
     def outputs(self, state: np.ndarray, inputs: dict | None = None) -> dict:
-        """Return rho_rod from the two bank positions via linear worth.
+        """Return rod reactivity and actual control-bank position.
 
         Parameters
         ----------
@@ -451,10 +455,10 @@ class RodController:
         Returns
         -------
         dict
-            ``{"rho_rod": float [dimensionless]}``
+            ``{"rho_rod": float [dimensionless], "rod_position": float [dimensionless]}``.
         """
         rho_control, rho_shutdown = self._bank_reactivities(state)
-        return {"rho_rod": rho_control + rho_shutdown}
+        return {"rho_rod": rho_control + rho_shutdown, "rod_position": state[0]}
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
         """Return a rich diagnostic dict for logging and visualization.

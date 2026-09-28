@@ -183,6 +183,13 @@ def test_rho_rod_at_critical():
     assert out["rho_rod"] == pytest.approx(0.0)
 
 
+def test_rod_position_is_an_output_port():
+    rod = RodController(RodParams())
+    out = rod.outputs(rod.initial_state())
+    assert "rod_position" in rod.output_ports
+    assert out["rod_position"] == pytest.approx(0.5)
+
+
 def test_rho_rod_negative_below_critical():
     """rod_position below critical → negative reactivity (rods more inserted)."""
     p = default_params()

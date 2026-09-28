@@ -570,11 +570,12 @@ spray_manual = engine.input("spray_manual", default=None)
 
 # 3. Wire by calling. Every output port is also an attribute (loop.T_avg,
 #    core.Q_fuel_to_coolant); a module with exactly one output port returns
-#    it from the call (Q_sg = sg(...)). Wiring order does not matter.
-rho_rod = rod(rod_command=rod_cmd, scram=scram)
+#    it from the call (Q_sg = sg(...)). The rod controller has two outputs,
+#    so its rho_rod signal is read as rod.rho_rod. Wiring order does not matter.
+rod(rod_command=rod_cmd, scram=scram)
 T_sec = sink()
 Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-core(rho_rod=rho_rod, T_cool=loop.T_cool)
+core(rho_rod=rod.rho_rod, T_cool=loop.T_cool)
 pzr(
     Q_fuel_to_coolant=core.Q_fuel_to_coolant,
     Q_sg=Q_sg,
@@ -632,8 +633,9 @@ above after `step(dt=5.0)` at the design steady state, values rounded:
     "signals": {
         "rod_command": 0.5, "scram": False, "P_setpoint": 15500000.0,
         "heater_manual": None, "spray_manual": None,
-        "rho_rod": 0.0, "T_hot": 597.742, "T_cold": 568.258,
-        "T_avg": 583.0, "T_cool": 583.0, "T_secondary": 558.0,
+        "rho_rod": 0.0, "rod_position": 0.5,
+        "T_hot": 597.742, "T_cold": 568.258, "T_avg": 583.0,
+        "T_cool": 583.0, "T_secondary": 558.0,
         "P": 15499345.2, "Q_fuel_to_coolant": 3.0e9,
         "Q_heater": 0.0, "m_dot_spray": 0.0, "Q_sg": 3.0e9,
     },

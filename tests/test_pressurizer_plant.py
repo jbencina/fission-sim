@@ -55,10 +55,10 @@ def build_m2_plant() -> SimEngine:
     heater_manual = engine.input("heater_manual", default=None)
     spray_manual = engine.input("spray_manual", default=None)
 
-    rho_rod = rod(rod_command=rod_cmd, scram=scram)
+    rod(rod_command=rod_cmd, scram=scram)
     T_sec = sink()
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
-    core(rho_rod=rho_rod, T_cool=loop.T_cool)
+    core(rho_rod=rod.rho_rod, T_cool=loop.T_cool)
     pzr(
         Q_fuel_to_coolant=core.Q_fuel_to_coolant,
         Q_sg=Q_sg_sig,
