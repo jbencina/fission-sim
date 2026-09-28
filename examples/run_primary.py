@@ -26,10 +26,12 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 
+from fission_sim.control.feedwater_controller import FeedwaterController, FeedwaterControllerParams
 from fission_sim.control.pressurizer_controller import (
     PressurizerController,
     PressurizerControllerParams,
 )
+from fission_sim.control.tavg_controller import TavgController, TavgControllerParams
 from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
@@ -37,8 +39,9 @@ from fission_sim.physics.domain import check_snapshot
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
-from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
+from fission_sim.physics.sg_secondary import SGSecondary, SGSecondaryParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
+from fission_sim.physics.turbine import Turbine, TurbineParams
 
 
 def scenario(t: float) -> dict:
@@ -56,18 +59,32 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     Same topology as ``fission_sim.plant.build_standard_plant()``.
     """
     loop_params = LoopParams()
+    rod_params = RodParams()
+    sg_params = SGParams()
+    sg_sec_params = SGSecondaryParams()
+    turbine_params = TurbineParams(sg_params=sg_sec_params)
+    fw_params = FeedwaterControllerParams()
+    tavg_params = TavgControllerParams()
     # The pressurizer computes surge flow from the loop's thermal expansion,
     # so it shares the loop's parameter object.
     pzr_params = PressurizerParams(loop_params=loop_params)
     ctrl_params = PressurizerControllerParams()
+    rod_position_initial = (
+        rod_params.rod_position_design
+        if rod_params.rod_position_initial is None
+        else rod_params.rod_position_initial
+    )
 
     # 1. Register the components. The names become the snapshot keys.
     engine = SimEngine()
-    rod = engine.module(RodController(RodParams()), name="rod")
+    rod = engine.module(RodController(rod_params), name="rod")
     core = engine.module(PointKineticsCore(core_params), name="core")
     loop = engine.module(PrimaryLoop(loop_params), name="loop")
-    sg = engine.module(SteamGenerator(SGParams()), name="sg")
-    sink = engine.module(SecondarySink(SinkParams()), name="sink")
+    sg = engine.module(SteamGenerator(sg_params), name="sg")
+    sg_sec = engine.module(SGSecondary(sg_sec_params), name="sg_sec")
+    turbine = engine.module(Turbine(turbine_params), name="turbine")
+    fw_ctrl = engine.module(FeedwaterController(fw_params), name="fw_ctrl")
+    tavg_ctrl = engine.module(TavgController(tavg_params, rod_position_initial=rod_position_initial), name="tavg_ctrl")
     pzr = engine.module(Pressurizer(pzr_params), name="pzr")
     pzr_ctrl = engine.module(PressurizerController(ctrl_params), name="pzr_ctrl")
 
@@ -78,13 +95,27 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     P_setpoint = engine.input("P_setpoint", default=ctrl_params.P_setpoint_default)
     heater_manual = engine.input("heater_manual", default=None)
     spray_manual = engine.input("spray_manual", default=None)
+    load_demand = engine.input("turbine_load", default=turbine_params.load_initial)
+    trip = engine.input("turbine_trip", default=False)
+    auto = engine.input("rod_auto", default=False)
 
     # 3. Wire outputs to inputs. Calling a module connects its input ports;
     #    ``module.<port>`` is a handle to one of its outputs. The order of
     #    these calls does not matter: finalize() sorts the evaluation order.
-    rod(rod_command=rod_cmd, scram=scram)
-    T_sec = sink()
-    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+    rod(rod_command=tavg_ctrl.rod_demand, scram=scram)
+    Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=sg_sec.T_secondary)
+    turbine(P_steam=sg_sec.P_steam, load_demand=load_demand, turbine_trip=trip, scram=scram)
+    m_fw = fw_ctrl(m_steam=turbine.m_steam, m_dump=turbine.m_dump)
+    sg_sec(Q_sg=Q_sg_sig, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=m_fw)
+    tavg_ctrl(
+        T_avg=loop.T_avg,
+        T_ref=turbine.T_ref,
+        rod_position=rod.rod_position,
+        rod_command=rod_cmd,
+        rod_auto=auto,
+        scram=scram,
+        turbine_trip=trip,
+    )
     core(rho_rod=rod.rho_rod, T_cool=loop.T_cool)
     pzr(
         Q_fuel_to_coolant=core.Q_fuel_to_coolant,

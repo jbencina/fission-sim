@@ -21,6 +21,10 @@ Commands:
     y auto          return spray to automatic control
     p <MPa>         set pressure setpoint in MPa  (e.g. "p 15.6")
     p reset         restore default pressure setpoint (15.5 MPa)
+    turbine_load <0-1>
+                    set turbine valve-admission demand (1 = full load)
+    trip / untrip   trip or reset the turbine stop-valve demand
+    auto / manual   enable/disable automatic Tavg rod control
     q               quit (also: Ctrl-C)
 
 Implementation notes:
@@ -117,18 +121,33 @@ def header_lines(speed: float) -> list[str]:
 
 def status_line(state: dict) -> str:
     scram_str = "ON " if state["scram"] else "OFF"
+    trip_str = "ON " if state["turbine_trip"] else "OFF"
+    mode_str = "auto" if state["rod_auto"] else "manual"
     htr = state.get("heater_manual")
     htr_str = f"{htr:.2f}" if htr is not None else "auto"
     spr = state.get("spray_manual")
     spr_str = f"{spr:.2f}" if spr is not None else "auto"
     P_set_MPa = state.get("P_setpoint", P_SETPOINT_DEFAULT) / 1e6
+    snap = state["last_snap"]
+    P_steam = snap["sg_sec"]["P_steam"] / 1e6
+    level_sg = snap["sg_sec"]["level_sg"] * 100.0
+    load = snap["turbine"]["load"]
+    P_electric = snap["turbine"]["P_electric"] / 1e6
+    T_ref = snap["turbine"]["T_ref"]
     return (
         f"   sim_t = {state['sim_t']:7.1f} s    "
         f"rod = {state['rod_command']:.4f}    "
+        f"rods = {mode_str}    "
         f"scram = {scram_str}    "
+        f"trip = {trip_str}    "
         f"htr = {htr_str}    "
         f"spr = {spr_str}    "
         f"P_set = {P_set_MPa:.2f} MPa    "
+        f"P_steam = {P_steam:.3f} MPa    "
+        f"level_sg = {level_sg:5.1f}%    "
+        f"load = {load:.3f}    "
+        f"P_e = {P_electric:.0f} MW    "
+        f"T_ref = {T_ref:.2f} K    "
         f"{state.get('msg', '')}"
     )
 
@@ -150,8 +169,9 @@ def render(state: dict) -> None:
     lines.append("")
     lines.append(
         "   Commands:  <num>=rod  s=scram  r=release"
-        "  h <0-1>/auto=heater  y <0-1>/auto=spray  p <MPa>/reset=setpoint  q=quit"
+        "  h <0-1>/auto=heater  y <0-1>/auto=spray  p <MPa>/reset=setpoint"
     )
+    lines.append("              turbine_load <0-1>  trip/untrip  auto/manual rods  q=quit")
     lines.append(f"   > {state['input']}")
 
     # ANSI: \033[H = move cursor to (0, 0); \033[K = clear to end of line;
@@ -176,6 +196,26 @@ def process_command(state: dict, cmd: str) -> bool:
     if cmd == "r" or cmd == "release":
         state["scram"] = False
         state["msg"] = "Scram released."
+        return True
+    if cmd == "trip":
+        state["turbine_trip"] = True
+        state["msg"] = "Turbine trip demanded."
+        return True
+    if cmd == "untrip":
+        state["turbine_trip"] = False
+        state["msg"] = "Turbine trip reset."
+        return True
+    if cmd == "auto":
+        state["rod_auto"] = True
+        state["msg"] = "Automatic Tavg rod control enabled."
+        return True
+    if cmd == "manual":
+        state["rod_auto"] = False
+        # Bumpless transfer: manual mode passes rod_command directly to the
+        # actuator, so align the operator's command with the actual bank
+        # before taking automatic control out of service.
+        state["rod_command"] = state["last_snap"]["rod"]["rod_position"]
+        state["msg"] = f"Manual rods; command synced to actual position {state['rod_command']:.4f}."
         return True
     if cmd == "":
         return True
@@ -238,6 +278,21 @@ def process_command(state: dict, cmd: str) -> bool:
             state["msg"] = f"Pressure setpoint set to {val_mpa:.3f} MPa"
         return True
 
+    # --- turbine load: "turbine_load <0-1>" ---
+    if cmd.startswith("turbine_load ") or cmd == "turbine_load":
+        arg = cmd[len("turbine_load") :].strip()
+        try:
+            val = float(arg)
+        except ValueError:
+            state["msg"] = f"ERROR: 'turbine_load' expects a number in [0,1], got {arg!r}"
+            return True
+        if not (0.0 <= val <= 1.0):
+            state["msg"] = "ERROR: turbine_load must be in [0, 1]"
+            return True
+        state["turbine_load"] = val
+        state["msg"] = f"turbine_load set to {val:.3f}"
+        return True
+
     # --- numeric rod command ---
     try:
         val = float(cmd)
@@ -284,12 +339,16 @@ def main() -> None:
         "input": "",
         "buffer": deque(maxlen=BUFFER_LEN),
         "speed": args.speed,
+        "last_snap": engine.snapshot(),
         # Pressurizer operator controls — None means auto (controller decides).
         "heater_manual": None,   # fraction [0, 1] or None
         "spray_manual": None,    # fraction [0, 1] or None
         "P_setpoint": P_SETPOINT_DEFAULT,  # [Pa] default 15.5 MPa
+        "turbine_load": 1.0,
+        "turbine_trip": False,
+        "rod_auto": False,
     }
-    state["buffer"].append(engine.snapshot())
+    state["buffer"].append(state["last_snap"])
 
     fd = sys.stdin.fileno()
     old_attrs = termios.tcgetattr(fd)
@@ -333,11 +392,15 @@ def main() -> None:
                     P_setpoint=state["P_setpoint"],
                     heater_manual=state["heater_manual"],
                     spray_manual=state["spray_manual"],
+                    turbine_load=state["turbine_load"],
+                    turbine_trip=state["turbine_trip"],
+                    rod_auto=state["rod_auto"],
                 )
                 # Stop, as the web runtime does, once the state leaves the
                 # model's liquid-loop / saturated-pressurizer domain.
                 check_snapshot(snap)
                 state["buffer"].append(snap)
+                state["last_snap"] = snap
                 state["sim_t"] = engine.t
                 next_step_time += WALL_TICK_S
                 # Don't drift forward forever if integration runs slow.

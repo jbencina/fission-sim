@@ -183,6 +183,25 @@ def main() -> None:
         )
     print()
 
+    print("  SECONDARY")
+    print("  ---------")
+    print(
+        f"    {'t[s]':>6}  {'P_stm[MPa]':>10}  {'level_sg':>8}  {'m_stm':>8}"
+        f"  {'m_dump':>8}  {'P_e[MW]':>8}  {'Tavg-Tref':>9}"
+    )
+    for ti in sample_t:
+        snap = dense.at(float(ti))
+        T_avg = snap["loop"]["T_avg"]
+        print(
+            f"    {ti:6.1f}  {snap['sg_sec']['P_steam'] / 1e6:10.3f}"
+            f"  {snap['sg_sec']['level_sg']:8.4f}"
+            f"  {snap['turbine']['m_steam']:8.1f}"
+            f"  {snap['turbine']['m_dump']:8.1f}"
+            f"  {snap['turbine']['P_electric'] / 1e6:8.1f}"
+            f"  {T_avg - snap['turbine']['T_ref']:9.3f}"
+        )
+    print()
+
     print("  What this shows:")
     print("    * Steady state holds at n=1 with rod at design (0.5).")
     print("    * After the 0.5 → 0.675 rod_command step: the control bank (1,200 pcm over")

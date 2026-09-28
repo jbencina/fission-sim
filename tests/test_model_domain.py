@@ -7,7 +7,19 @@ tests/api/test_runtime_model_limit.py.
 
 import pytest
 
-from fission_sim.physics.domain import P_MAX, P_MIN, ModelDomainError, check_primary_domain
+from fission_sim.physics import coolprop
+from fission_sim.physics.domain import (
+    P_MAX,
+    P_MIN,
+    P_STEAM_MAX,
+    P_STEAM_MIN,
+    ModelDomainError,
+    check_primary_domain,
+    check_secondary_domain,
+    check_snapshot,
+)
+from fission_sim.physics.sg_secondary import SGSecondaryParams
+from fission_sim.plant import build_standard_plant
 
 # Design-point values, as the engine snapshot reports them.
 DESIGN = dict(P=15.5e6, T_sat=617.9, T_hot=597.7, M_loop=123_400.0, x_pzr=0.146)
@@ -51,3 +63,62 @@ def test_states_outside_domain_raise_named_limit(overrides, limit, message):
 def test_subcooling_message_reports_values_for_a_learner():
     with pytest.raises(ModelDomainError, match=r"T_hot = 620\.0 K.*617\.9 K at 15\.50 MPa"):
         check_primary_domain(**{**DESIGN, "T_hot": 620.0})
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"P_steam": P_STEAM_MIN},
+        {"P_steam": P_STEAM_MAX},
+        {"x_sg": 1e-6},
+        {"x_sg": 1.0 - 1e-6},
+    ],
+    ids=["design", "P_min", "P_max", "nearly_solid", "nearly_dry"],
+)
+def test_secondary_states_inside_domain_pass(overrides):
+    p = SGSecondaryParams()
+    check_secondary_domain(**{**{"P_steam": p.P_ref, "x_sg": 0.05}, **overrides})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "limit", "message"),
+    [
+        ({"P_steam": float("nan")}, "non_finite", "non-numeric value for P_steam"),
+        ({"P_steam": P_STEAM_MIN - 1.0}, "steam_pressure", "feedwater would flash to steam"),
+        ({"P_steam": P_STEAM_MAX + 1.0}, "steam_pressure", "above the model's 12 MPa ceiling"),
+        ({"x_sg": 0.0}, "sg_solid", "filled solid"),
+        ({"x_sg": 1.0}, "sg_dry", "boiled dry"),
+    ],
+    ids=["non_finite", "below_P_min", "above_P_max", "solid", "dry"],
+)
+def test_secondary_states_outside_domain_raise_named_limit(overrides, limit, message):
+    p = SGSecondaryParams()
+    with pytest.raises(ModelDomainError, match=message) as exc_info:
+        check_secondary_domain(**{**{"P_steam": p.P_ref, "x_sg": 0.05}, **overrides})
+    assert exc_info.value.limit == limit
+
+
+def test_steam_pressure_floor_keeps_feedwater_liquid():
+    assert P_STEAM_MIN > coolprop.P_sat(T=SGSecondaryParams().T_fw)
+
+
+def test_standard_plant_snapshot_is_inside_domain():
+    check_snapshot(build_standard_plant().snapshot())
+
+
+def test_snapshot_with_secondary_dry_raises_sg_dry():
+    snap = build_standard_plant().snapshot()
+    snap["sg_sec"]["x"] = 1.0
+    with pytest.raises(ModelDomainError) as exc_info:
+        check_snapshot(snap)
+    assert exc_info.value.limit == "sg_dry"
+
+
+def test_snapshot_without_secondary_still_checks_primary_domain():
+    check_snapshot(
+        {
+            "loop": {"T_hot": DESIGN["T_hot"], "M_loop": DESIGN["M_loop"]},
+            "pzr": {"P": DESIGN["P"], "T_sat": DESIGN["T_sat"], "x": DESIGN["x_pzr"]},
+        }
+    )

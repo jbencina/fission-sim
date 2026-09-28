@@ -70,6 +70,15 @@ def scenario(t: float) -> dict:
     return {"rod_command": rod_command, "scram": False}
 
 
+def load_follow_scenario(t: float) -> dict:
+    """100 % → 90 % turbine-load ramp with rods in automatic."""
+    if t <= 10.0:
+        load = 1.0
+    else:
+        load = max(0.9, 1.0 - 8.33e-4 * (t - 10.0))
+    return {"turbine_load": load, "rod_auto": True, "scram": False}
+
+
 def main() -> None:
     print_disclaimer()
     # Standard plant at design defaults: n = 1, temperatures at their
@@ -157,6 +166,56 @@ def main() -> None:
     print("      still below setpoint, so spray never opens. Proportional control with a")
     print("      deadband has no integral action, so this small offset remains.")
     print("    * Throughout: |P − 15.5 MPa| stays under 0.2 MPa (inside the 0.5 MPa bound).")
+    print()
+
+    print("=" * 100)
+    print("  Turbine Load-Follow Demo  —  100% → 90% admission ramp with rods automatic")
+    print("=" * 100)
+    print()
+    print("  Scenario:")
+    print("    t =   0..10 s    hold at full turbine admission, rods in automatic")
+    print("    t =  10..130 s   ramp turbine_load 1.000 → 0.900 at 5 %/min")
+    print("    t = 130..1800 s   hold 90 % admission; Tavg controller tracks T_ref")
+    print()
+
+    load_engine = build_standard_plant(rod_auto=True)
+    _load_final, load_dense = load_engine.run(
+        t_end=1800.0,
+        scenario_fn=load_follow_scenario,
+        dense=True,
+        max_step=0.5,
+    )
+    load_sample_t = np.array([0.0, 10.0, 60.0, 130.0, 300.0, 900.0, 1500.0, 1800.0])
+
+    print("  Time-series at key points:")
+    header = "    " + "-" * 95
+    print(header)
+    print(
+        f"    {'t[s]':>6}  {'load':>6}  {'n':>9}  {'T_avg':>7}  {'T_ref':>7}"
+        f"  {'rod_pos':>7}  {'P_stm':>7}  {'P_e':>7}  {'T_err':>7}"
+    )
+    print(
+        f"    {'':>6}  {'':>6}  {'':>9}  {'[K]':>7}  {'[K]':>7}"
+        f"  {'':>7}  {'[MPa]':>7}  {'[MW]':>7}  {'[K]':>7}"
+    )
+    print(header)
+    for ti in load_sample_t:
+        snap = load_dense.at(float(ti))
+        check_snapshot(snap)
+        print(
+            f"    {ti:6.1f}  {snap['turbine']['load']:6.3f}  {snap['core']['n']:9.3e}"
+            f"  {snap['loop']['T_avg']:7.2f}  {snap['turbine']['T_ref']:7.2f}"
+            f"  {snap['rod']['rod_position']:7.4f}  {snap['sg_sec']['P_steam'] / 1e6:7.3f}"
+            f"  {snap['turbine']['P_electric'] / 1e6:7.1f}"
+            f"  {snap['tavg_ctrl']['T_err']:7.3f}"
+        )
+    print(header)
+    print()
+    print("  What this shows:")
+    print("    * The turbine T_ref program drops from 583 K to 581.2 K as admission reaches 90%.")
+    print("    * With rods automatic, the control bank inserts enough to pull T_avg back")
+    print("      toward that lower reference instead of letting moderator feedback alone")
+    print("      settle the plant warm.")
     print()
 
 

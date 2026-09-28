@@ -342,6 +342,10 @@ Layer rules:
 - `fission_sim.plant` is the one place that knows which components make up
   the standard plant and how they connect. It sits outside the API layer so
   the command-line examples can use it without importing FastAPI.
+- The standard M3 plant modules are `rod`, `core`, `loop`, `sg`, `sg_sec`,
+  `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. The older
+  `SecondarySink` remains available for M1/M2 regression plants but is not
+  in the standard wiring.
 - `fission_sim.api` is the only package that knows about asyncio, HTTP, or
   WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
 - The Vite frontend is a separate process. During development, the Vite proxy
@@ -520,9 +524,9 @@ engine = build_standard_plant()  # finalized, at the design steady state
 
 Keyword arguments replace one component's parameters, for example
 `build_standard_plant(core_params=CoreParams(alpha_m=-2e-4))`, or set the
-defaults of the `rod_command` and `P_setpoint` externals. The module names
-(the snapshot keys) are `rod`, `core`, `loop`, `sg`, `sink`, `pzr`, and
-`pzr_ctrl`.
+defaults of the `rod_command`, `P_setpoint`, `turbine_load`, and `rod_auto`
+externals. The module names (the snapshot keys) are `rod`, `core`, `loop`,
+`sg`, `sg_sec`, `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`.
 
 The web runtime and the `report_primary.py`, `power_maneuver.py`,
 `console.py`, and `dump_state.py` examples use it. The tutorial below builds
@@ -537,25 +541,46 @@ from fission_sim.control.pressurizer_controller import (
     PressurizerController,
     PressurizerControllerParams,
 )
+from fission_sim.control.feedwater_controller import FeedwaterController, FeedwaterControllerParams
+from fission_sim.control.tavg_controller import TavgController, TavgControllerParams
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.domain import check_snapshot
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
-from fission_sim.physics.secondary_sink import SecondarySink, SinkParams
+from fission_sim.physics.sg_secondary import SGSecondary, SGSecondaryParams
 from fission_sim.physics.steam_generator import SGParams, SteamGenerator
+from fission_sim.physics.turbine import Turbine, TurbineParams
 
 engine = SimEngine()
 
 # 1. Register components. The name is the module's key in snapshots; it
 #    defaults to the snake_case class name ("point_kinetics_core").
 loop_params = LoopParams()
-rod = engine.module(RodController(RodParams()), name="rod")
+rod_params = RodParams()
+sg_params = SGParams()
+sg_sec_params = SGSecondaryParams()
+turbine_params = TurbineParams(sg_params=sg_sec_params)
+fw_params = FeedwaterControllerParams()
+tavg_params = TavgControllerParams()
+rod_position_initial = (
+    rod_params.rod_position_design
+    if rod_params.rod_position_initial is None
+    else rod_params.rod_position_initial
+)
+
+rod = engine.module(RodController(rod_params), name="rod")
 core = engine.module(PointKineticsCore(CoreParams()), name="core")
 loop = engine.module(PrimaryLoop(loop_params), name="loop")
-sg = engine.module(SteamGenerator(SGParams()), name="sg")
-sink = engine.module(SecondarySink(SinkParams()), name="sink")
+sg = engine.module(SteamGenerator(sg_params), name="sg")
+sg_sec = engine.module(SGSecondary(sg_sec_params), name="sg_sec")
+turbine = engine.module(Turbine(turbine_params), name="turbine")
+fw_ctrl = engine.module(FeedwaterController(fw_params), name="fw_ctrl")
+tavg_ctrl = engine.module(
+    TavgController(tavg_params, rod_position_initial=rod_position_initial),
+    name="tavg_ctrl",
+)
 # The pressurizer computes surge flow from the loop's thermal expansion, so
 # it gets the same LoopParams as the loop.
 pzr = engine.module(Pressurizer(PressurizerParams(loop_params=loop_params)), name="pzr")
@@ -567,14 +592,28 @@ scram = engine.input("scram", default=False)
 P_set = engine.input("P_setpoint", default=15.5e6)  # [Pa]
 heater_manual = engine.input("heater_manual", default=None)  # None = automatic
 spray_manual = engine.input("spray_manual", default=None)
+load_demand = engine.input("turbine_load", default=turbine_params.load_initial)
+trip = engine.input("turbine_trip", default=False)
+auto = engine.input("rod_auto", default=False)
 
 # 3. Wire by calling. Every output port is also an attribute (loop.T_avg,
 #    core.Q_fuel_to_coolant); a module with exactly one output port returns
 #    it from the call (Q_sg = sg(...)). The rod controller has two outputs,
 #    so its rho_rod signal is read as rod.rho_rod. Wiring order does not matter.
-rod(rod_command=rod_cmd, scram=scram)
-T_sec = sink()
-Q_sg = sg(T_avg=loop.T_avg, T_secondary=T_sec)
+rod(rod_command=tavg_ctrl.rod_demand, scram=scram)
+Q_sg = sg(T_avg=loop.T_avg, T_secondary=sg_sec.T_secondary)
+turbine(P_steam=sg_sec.P_steam, load_demand=load_demand, turbine_trip=trip, scram=scram)
+m_fw = fw_ctrl(m_steam=turbine.m_steam, m_dump=turbine.m_dump)
+sg_sec(Q_sg=Q_sg, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=m_fw)
+tavg_ctrl(
+    T_avg=loop.T_avg,
+    T_ref=turbine.T_ref,
+    rod_position=rod.rod_position,
+    rod_command=rod_cmd,
+    rod_auto=auto,
+    scram=scram,
+    turbine_trip=trip,
+)
 core(rho_rod=rod.rho_rod, T_cool=loop.T_cool)
 pzr(
     Q_fuel_to_coolant=core.Q_fuel_to_coolant,
@@ -633,11 +672,14 @@ above after `step(dt=5.0)` at the design steady state, values rounded:
     "signals": {
         "rod_command": 0.5, "scram": False, "P_setpoint": 15500000.0,
         "heater_manual": None, "spray_manual": None,
+        "turbine_load": 1.0, "turbine_trip": False, "rod_auto": False,
         "rho_rod": 0.0, "rod_position": 0.5,
         "T_hot": 597.742, "T_cold": 568.258, "T_avg": 583.0,
         "T_cool": 583.0, "T_secondary": 558.0,
-        "P": 15499345.2, "Q_fuel_to_coolant": 3.0e9,
+        "P_steam": 6.899e6, "P": 15499345.2, "Q_fuel_to_coolant": 3.0e9,
         "Q_heater": 0.0, "m_dot_spray": 0.0, "Q_sg": 3.0e9,
+        "m_steam": 1669.0, "m_dump": 0.0, "T_ref": 583.0,
+        "m_fw": 1669.0, "rod_demand": 0.5,
     },
     "rod": {
         "rod_position": 0.5, "shutdown_position": 1.0,
@@ -657,7 +699,21 @@ above after `step(dt=5.0)` at the design steady state, values rounded:
         "Q_fuel_to_coolant": 3.0e9, "Q_sg": 3.0e9,
     },
     "sg": {"Q_sg": 3.0e9, "T_avg": 583.0, "T_secondary": 558.0, "delta_T": 25.0},
-    "sink": {"T_secondary": 558.0},
+    "sg_sec": {
+        "P_steam": 6.899e6, "T_secondary": 558.0, "level_sg": 0.5,
+        "x": 0.0462, "M_sec": 233239.1, "U_sec": 3.06608e11,
+        "m_steam": 1669.0, "m_dump": 0.0, "m_fw": 1669.0,
+        "Q_steam_net": 3.0e9,
+    },
+    "turbine": {
+        "load": 1.0, "m_steam": 1669.0, "m_dump": 0.0,
+        "P_electric": 9.9e8, "T_ref": 583.0, "trip_active": False,
+    },
+    "fw_ctrl": {"m_fw": 1669.0, "m_steam": 1669.0, "m_dump": 0.0},
+    "tavg_ctrl": {
+        "rod_demand_auto": 0.5, "rod_demand": 0.5,
+        "T_err": 0.0, "rod_auto": False, "acting": False,
+    },
     "pzr": {
         "P": 15499345.2, "level": 0.49999, "T_sat": 617.938,
         "x": 0.14638, "M_l": 15156.3, "M_v": 2598.9,

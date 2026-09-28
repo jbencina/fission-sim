@@ -1,6 +1,6 @@
 """The physical domain the lumped primary-plant equations are valid in.
 
-Every model is built on assumptions. This one assumes two things that the
+Every model is built on assumptions. This one assumes three things that the
 equations cannot check for themselves:
 
 1. **The primary loop is liquid water.** ``PrimaryLoop`` and the surge
@@ -14,6 +14,12 @@ equations cannot check for themselves:
    means something while both phases are present, i.e. while the steam
    quality (vapor mass fraction) x is strictly between 0 and 1. At x = 0
    the vessel has filled "solid" with water; at x = 1 it has boiled dry.
+3. **The steam-generator shell is saturated water under its own steam.**
+   ``SGSecondary`` uses the same lever-rule closure for the secondary side.
+   Its steam pressure must stay in the range where the 500 K feedwater is
+   still liquid when it enters; below that, a CoolProp ``(P, T_fw)`` lookup
+   would quietly describe vapor feedwater rather than the liquid feedwater
+   assumed by the energy balance.
 
 Outside these limits the code does not fail on its own. The property
 library happily returns a steam density for water that is past saturation,
@@ -21,7 +27,8 @@ and the lever rule returns a negative "quality" for a water-solid vessel,
 so the simulation would keep running and plot numbers that describe no real
 plant. :func:`check_primary_domain` turns those silent failures into a
 :class:`ModelDomainError` that names the broken assumption, so a front end
-can stop and explain instead.
+can stop and explain instead. :func:`check_secondary_domain` does the same
+for the M3 steam-generator shell side.
 
 When to check
 -------------
@@ -77,6 +84,17 @@ P_MIN: float = 1.0e6
 # liquid is inside the domain, and the saturation line is the boundary.
 MIN_SUBCOOLING: float = 0.0
 
+# Lowest secondary steam pressure accepted [Pa]. This is deliberately above
+# P_sat(500 K) ≈ 2.64 MPa because the SGSecondary feedwater enters at
+# T_fw = 500 K; below saturation at that temperature, CoolProp would return a
+# vapor enthalpy for h(P, T_fw), i.e. the feedwater would flash to steam.
+P_STEAM_MIN: float = 3.0e6
+
+# Highest secondary steam pressure accepted [Pa]. SG safety valves lift near
+# 8.3 MPa in the model's references; 12 MPa is a numerical/domain ceiling, not
+# modeled protection.
+P_STEAM_MAX: float = 12.0e6
+
 
 class ModelDomainError(ValueError):
     """The simulated state has left the region the model's equations describe.
@@ -97,7 +115,8 @@ class ModelDomainError(ValueError):
         Short machine-readable name of the violated limit: one of
         ``"non_finite"``, ``"loop_inventory"``, ``"pressure"``,
         ``"pressurizer_solid"``, ``"pressurizer_dry"``,
-        ``"hot_leg_subcooling"``, ``"property_lookup"``.
+        ``"hot_leg_subcooling"``, ``"steam_pressure"``, ``"sg_dry"``,
+        ``"sg_solid"``, ``"property_lookup"``.
     """
 
     def __init__(self, message: str, *, limit: str) -> None:
@@ -199,14 +218,73 @@ def check_primary_domain(
         )
 
 
+def check_secondary_domain(*, P_steam: float, x_sg: float) -> None:
+    """Raise ``ModelDomainError`` if the SG shell is outside the M3 domain.
+
+    Parameters
+    ----------
+    P_steam : float
+        Saturated steam-generator shell pressure [Pa].
+    x_sg : float
+        Steam-generator shell quality (vapor mass fraction) [-].
+
+    Raises
+    ------
+    ModelDomainError
+        With a learner-readable message for the first violated secondary
+        limit, checked in this order: finite numbers, pressure, shell
+        quality.
+    """
+    values = {"P_steam": P_steam, "x_sg": x_sg}
+    bad = [name for name, value in values.items() if not math.isfinite(value)]
+    if bad:
+        raise ModelDomainError(
+            f"The steam generator produced a non-numeric value for {', '.join(bad)}. "
+            "The shell-side equations have been pushed somewhere they cannot be evaluated.",
+            limit="non_finite",
+        )
+
+    if P_steam < P_STEAM_MIN:
+        raise ModelDomainError(
+            f"Steam pressure fell to {P_steam / 1e6:.2f} MPa, below the model's "
+            f"{P_STEAM_MIN / 1e6:.1f} MPa floor. At lower pressure the 500 K "
+            "feedwater would flash to steam, but the M3 shell energy balance "
+            "assumes liquid feedwater entering saturated water under its own steam.",
+            limit="steam_pressure",
+        )
+    if P_steam > P_STEAM_MAX:
+        raise ModelDomainError(
+            f"Steam pressure rose to {P_steam / 1e6:.2f} MPa, above the model's "
+            f"{P_STEAM_MAX / 1e6:.0f} MPa ceiling. Real steam generators open "
+            "relief and safety valves near the main-steam pressure range; this "
+            "simplified lumped shell has only the modeled dump path.",
+            limit="steam_pressure",
+        )
+    if x_sg >= 1.0:
+        raise ModelDomainError(
+            "The steam generator has boiled dry: no liquid is left on the shell "
+            "side, so there is nothing to boil and the heat-transfer picture no "
+            "longer applies.",
+            limit="sg_dry",
+        )
+    if x_sg <= 0.0:
+        raise ModelDomainError(
+            "The steam generator shell has filled solid with water: the steam "
+            "space is gone and pressure can no longer come from a steam bubble.",
+            limit="sg_solid",
+        )
+
+
 def check_snapshot(snap: dict) -> None:
-    """Run :func:`check_primary_domain` on a ``SimEngine`` snapshot.
+    """Run model-domain checks on a ``SimEngine`` snapshot.
 
     Call it after every ``engine.step`` (the accepted state), not inside the
     solver. Expects the module names of the standard wiring,
     ``fission_sim.plant.build_standard_plant()``: a ``PrimaryLoop``
-    registered as ``"loop"`` and a ``Pressurizer`` as ``"pzr"``. Plants without a
-    pressurizer have no pressure state and cannot be checked this way.
+    registered as ``"loop"`` and a ``Pressurizer`` as ``"pzr"``. If the
+    snapshot also has an ``SGSecondary`` registered as ``"sg_sec"``, its
+    shell-side domain is checked too. Plants without a pressurizer have no
+    pressure state and cannot be checked this way.
 
     Parameters
     ----------
@@ -227,6 +305,9 @@ def check_snapshot(snap: dict) -> None:
         M_loop=loop["M_loop"],
         x_pzr=pzr["x"],
     )
+    if "sg_sec" in snap:
+        sg_sec = snap["sg_sec"]
+        check_secondary_domain(P_steam=sg_sec["P_steam"], x_sg=sg_sec["x"])
 
 
 __all__ = [
@@ -234,7 +315,10 @@ __all__ = [
     "P_CRITICAL",
     "P_MAX",
     "P_MIN",
+    "P_STEAM_MAX",
+    "P_STEAM_MIN",
     "ModelDomainError",
     "check_primary_domain",
+    "check_secondary_domain",
     "check_snapshot",
 ]

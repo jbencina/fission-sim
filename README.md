@@ -121,9 +121,11 @@ The shortest mental model is:
    represent the sealed water loop carrying heat from the core to the steam
    generator. The loop is heated by the heat that crosses from the fuel into
    the water, which during a transient differs from the fission power.
-4. **The steam generator removes heat.** In this model it is a simplified heat
-   sink. If core heat and steam-generator heat removal do not match, primary
-   temperatures move.
+4. **The steam generator and secondary side remove heat.** The primary-to-
+   secondary heat exchanger boils a saturated shell inventory. Steam leaves
+   through the turbine or dump path and feedwater replaces that mass. If core
+   heat, steam-generator heat transfer, and steam removal do not match,
+   temperatures and steam pressure move.
 5. **The pressurizer holds pressure.** A simplified pressurizer/controller pair
    uses heater and spray behavior to move primary pressure back toward setpoint
    during transients.
@@ -133,10 +135,10 @@ The shortest mental model is:
 | Layer | Code | Role |
 |---|---|---|
 | Dashboard/API | `web/`, `src/fission_sim/api/` | Browser UI, WebSocket telemetry, operator commands |
-| Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the seven components into a ready-to-run engine |
+| Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the M3 primary/secondary modules into a ready-to-run engine |
 | Engine | `src/fission_sim/engine/` | Wires components, owns the state vector, advances time |
-| Control | `src/fission_sim/control/` | Pressurizer and automatic rod-control logic |
-| Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, pressurizer |
+| Control | `src/fission_sim/control/` | Pressurizer pressure control, flow-matching feedwater, and automatic Tavg rod-control logic |
+| Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, SG shell, turbine, pressurizer |
 | Examples | `examples/` | CLI/report/plot drivers for common scenarios |
 
 Each physics component owns its parameters and equations, but not its evolving
@@ -145,6 +147,25 @@ state. State lives in one numpy vector owned by `SimEngine`. Components expose
 The engine wires outputs into inputs, then integrates the coupled ODE system
 with SciPy's BDF solver. The exact rules a component must follow are in
 [DEVELOPMENT.md → Component Contract](DEVELOPMENT.md#component-contract).
+
+Current standard-plant factory:
+
+```python
+build_standard_plant(
+    *,
+    core_params=None, loop_params=None, sg_params=None, rod_params=None,
+    pzr_params=None, ctrl_params=None, sg_sec_params=None, turbine_params=None,
+    fw_params=None, tavg_params=None,
+    rod_command=None, P_setpoint=None, turbine_load=None, rod_auto=False,
+)
+```
+
+Its snapshot module keys are `rod`, `core`, `loop`, `sg`, `sg_sec`,
+`turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. Its externals are
+`rod_command`, `scram`, `P_setpoint`, `heater_manual`, `spray_manual`,
+`turbine_load`, `turbine_trip`, and `rod_auto`. `SecondarySink` remains in
+the package for older fixed-secondary examples/tests, but it is no longer in
+the standard plant.
 
 ### What To Watch
 
@@ -155,6 +176,7 @@ with SciPy's BDF solver. The exact rules a component must follow are in
 | `rho_rod`, `rho_doppler`, `rho_moderator` | The three visible reactivity contributions. |
 | `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
+| `P_steam`, `level_sg`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | M3 secondary-side pressure/inventory, turbine/dump flows, gross electric power, and rod-control temperature reference. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
 
@@ -171,6 +193,7 @@ against these limits (`src/fission_sim/physics/domain.py`):
 |---|---|
 | Hot-leg water stays below its boiling point, `T_hot < T_sat(P)` | The loop equations describe liquid water only; boiling and steam voids are not modeled. |
 | The pressurizer holds both steam and water (steam quality strictly between 0 and 1) | At 0 it has filled solid with water, at 1 it has boiled dry. Its pressure comes from the steam bubble. |
+| The steam-generator shell holds both water and steam, with steam pressure between 3 and 12 MPa | The M3 shell model assumes saturated water under its own steam and liquid 500 K feedwater; below 3 MPa that feedwater would flash to steam. |
 | Primary pressure between 1 and 21 MPa | Below, far outside pressurized-water-reactor operation; above, close to water's critical point (22.064 MPa), where liquid and steam stop being distinct. |
 | Positive loop inventory, finite numbers, and water-property lookups that succeed | Otherwise the equations cannot be evaluated at all. |
 
@@ -199,8 +222,10 @@ Other simplifications to keep in mind (these do not stop the simulation):
 - Surge comes from thermal expansion only: the loop's water inventory is not
   checked against its fixed volume, so the compressibility of water as
   pressure changes is ignored.
-- The steam generator has a fixed `UA`, and the secondary side is a
-  fixed-temperature reservoir: no secondary inventory, turbine, or feedwater.
+- The steam generator has a fixed `UA`, and the M3 secondary side is still
+  simplified: one saturated shell inventory, one turbine/dump path, ideal
+  feedwater flow matching, no condenser, no tube-metal heat capacity, and no
+  indicated-level swell/shrink model.
 - After a SCRAM only a full reset returns the plant to power (see
   [RodController](#rodcontroller-srcfission_simphysicsrod_controllerpy)).
 
@@ -937,11 +962,14 @@ duty, and derived `UA`.
 | Field             | Units | Default                                    | Source / note                  |
 |-------------------|-------|--------------------------------------------|--------------------------------|
 | `T_primary_ref`   | K     | 583                                        | Match loop's T_avg_ref         |
-| `T_secondary_ref` | K     | 558                                        | Match sink's T_secondary       |
+| `T_secondary_ref` | K     | 558                                        | Match SGSecondary T_sec_ref    |
 | `Q_design`        | W     | 3.0e9                                      | Match core's P_design          |
 | `UA`              | W/K   | derived: Q_design / (T_p_ref − T_s_ref)    | = 1.2e8; closes design steady   |
 
 ### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
+
+Retained for M1/M2 fixed-secondary regression plants. The standard plant now
+uses `SGSecondary`, `Turbine`, and `FeedwaterController` instead.
 
 L1 stand-in for the entire secondary side (turbine + condenser + feedwater).
 Constant `T_secondary`; no state, no inputs.

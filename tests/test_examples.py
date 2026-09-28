@@ -10,6 +10,7 @@ core drivers must start in equilibrium.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -22,12 +23,22 @@ from fission_sim.plant import build_standard_plant
 from .topology import plant_topology
 
 EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples"
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 
 
 def _load_example(name: str) -> ModuleType:
     """Import ``examples/<name>.py`` as a module without running ``main()``."""
     spec = importlib.util.spec_from_file_location(f"example_{name}", EXAMPLES_DIR / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_script(name: str) -> ModuleType:
+    """Import ``scripts/<name>.py`` as a module without running ``main()``."""
+    spec = importlib.util.spec_from_file_location(f"script_{name}", SCRIPTS_DIR / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -62,8 +73,14 @@ def test_dump_state_runs_and_dumps_every_module(capsys):
     _load_example("dump_state").main()
 
     out = capsys.readouterr().out
-    for module_name in ("rod", "core", "loop", "sg", "sink", "pzr", "pzr_ctrl"):
+    for module_name in ("rod", "core", "loop", "sg", "sg_sec", "turbine", "fw_ctrl", "tavg_ctrl", "pzr", "pzr_ctrl"):
         assert f"    {module_name}:\n" in out
+
+
+def test_validate_secondary_script_imports():
+    """The M3 validation CLI imports without running scenarios."""
+    module = _load_script("validate_secondary")
+    assert module.parse_args is not None
 
 
 @pytest.mark.parametrize("name", ["run_core", "report_core"])

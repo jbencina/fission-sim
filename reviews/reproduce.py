@@ -19,18 +19,15 @@ import asyncio
 
 from scipy.integrate import solve_ivp
 
-from fission_sim.api.runtime import (
-    PressurizerControllerParams,
-    PressurizerParams,
-    SimRuntime,
-    SinkParams,
-    _build_engine,
-)
+from fission_sim.api.runtime import SimRuntime
+from fission_sim.control.pressurizer_controller import PressurizerControllerParams
 from fission_sim.physics import coolprop
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.pressurizer import PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
 from fission_sim.physics.steam_generator import SGParams
+from fission_sim.plant import build_standard_plant
 
 
 def energy_balance() -> None:
@@ -39,15 +36,15 @@ def energy_balance() -> None:
     core, loop = PointKineticsCore(p), PrimaryLoop(lp)
     state = core.initial_state()
     state[0] = 0.1  # Fission falls before stored fuel heat has dissipated.
-    power = core.outputs(state)["power_thermal"]
+    out = core.outputs(state, inputs={"T_cool": lp.T_avg_ref})
     fuel_d = core.derivatives(state, {"rho_rod": -0.07, "T_cool": lp.T_avg_ref})
     loop_d = loop.derivatives(loop.initial_state(), {
-        "power_thermal": power, "Q_sg": p.P_design,
+        "Q_fuel_to_coolant": out["Q_fuel_to_coolant"], "Q_sg": p.P_design,
         "m_dot_spray": 0.0, "P_primary": lp.P_ref,
     })
     stored = p.M_fuel * p.c_p_fuel * fuel_d[7]
     stored += lp.c_p * (lp.M_hot * loop_d[0] + lp.M_cold * loop_d[1])
-    expected = power - p.P_design
+    expected = out["power_thermal"] - p.P_design
     print("A1: combined fuel/loop storage =", stored / 1e6, "MW;")
     print("    external fission minus SG =", expected / 1e6, "MW;")
     print("    residual =", (stored - expected) / 1e6, "MW")
@@ -83,7 +80,7 @@ def parameters_and_rods() -> None:
     state = asymmetric.initial_state()
     state[0] += 1
     d = asymmetric.derivatives(state, {
-        "power_thermal": 3e9, "Q_sg": 3e9,
+        "Q_fuel_to_coolant": 3e9, "Q_sg": 3e9,
         "m_dot_spray": 0.0, "P_primary": 15.5e6,
     })
     print("A7: unequal masses: dT_avg/dt =", (d[0] + d[1]) / 2,
@@ -152,12 +149,12 @@ def transients() -> None:
     # but the hot leg boils and density_PT silently returns vapor density.
     half = LoopParams().M_loop_initial / 2
     lp = LoopParams(M_hot=half, M_cold=half)
-    engine = _build_engine(
+    engine = build_standard_plant(
         core_params=CoreParams(), loop_params=lp, sg_params=SGParams(),
-        sink_params=SinkParams(), rod_params=RodParams(),
+        rod_params=RodParams(),
         pzr_params=PressurizerParams(loop_params=lp),
         ctrl_params=PressurizerControllerParams(),
-        rod_command_default=0.5, P_setpoint_default=1.55e7,
+        rod_command=0.5, P_setpoint=1.55e7,
     )
     crossed = None
     for _ in range(600):
