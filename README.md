@@ -1269,8 +1269,10 @@ The speed schedule is:
 
 ```text
 speed(|err|) = 0                                      if |err| ≤ deadband
+             = v_min                                  if deadband < |err| ≤ err_plateau
              = v_min + (v_max − v_min) ·
-               (|err| − deadband) / (err_max − deadband)   between
+               (|err| − err_plateau) / (err_max − err_plateau)
+                                                        if err_plateau < |err| < err_max
              = v_max                                  if |err| ≥ err_max
 ```
 
@@ -1333,13 +1335,20 @@ controller and physical bank aligned at startup.
 | Field | Units | Default | Source / note |
 |---|---:|---:|---|
 | `deadband` | K | 0.8 | About 1.5 °F Tavg deadband |
-| `err_max` | K | 2.8 | About 5 °F full-speed error |
+| `err_plateau` | K | 1.667 | 3.0 °F end of the 8 steps/min plateau |
+| `err_max` | K | 2.778 | 5.0 °F full-speed error |
 | `v_min` | 1/s | 5.8e-4 | ≈ 8 steps/min of a 228-step bank |
 | `v_max` | 1/s | 5.3e-3 | ≈ 72 steps/min of a 228-step bank |
 | `tau_track` | s | 1.0 | Tracking lag for bumpless mode transfers |
 
 **Simplifications / what to watch**
 
+- No 0.5 °F lock-up hysteresis: this L1 controller uses one deadband instead
+  of separate start/stop thresholds.
+- Rod demand is a continuous fraction withdrawn, not discrete 228-step bank
+  motion or bank sequencing.
+- The nuclear-power/turbine-power mismatch anticipation signal is omitted;
+  automatic rods are temperature-only feedback here.
 - No auctioneered loop Tavg, rod-bank overlap logic, axial offset control,
   boron letdown, or operator rod-stop alarms.
 - The controller's manual→auto transfer is bumpless because the internal
@@ -1883,12 +1892,15 @@ err = T_avg − T_ref
 
 ```
 speed(|err|) = 0                                             if |err| ≤ 0.8 K
-             = v_min + (v_max − v_min) · (|err| − 0.8) / 2.0  for 0.8..2.8 K
-             = v_max                                         if |err| ≥ 2.8 K
+             = v_min                                         for 0.8..1.667 K
+             = v_min + (v_max − v_min) ·
+               (|err| − 1.667) / (2.778 − 1.667)             for 1.667..2.778 K
+             = v_max                                         if |err| ≥ 2.778 K
 ```
 
 `v_min = 5.8e-4 1/s` and `v_max = 5.3e-3 1/s`, about 8 to 72 steps/min of a
-228-step bank.
+228-step bank. The 1.667 K and 2.778 K breakpoints are 3 °F and 5 °F
+temperature errors, respectively.
 
 **Active automatic rod demand:**
 

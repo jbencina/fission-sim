@@ -25,6 +25,12 @@ def test_layout():
     assert c.output_ports == ("rod_demand",)
     assert c.outputs_require_inputs is True
     assert c.initial_state()[0] == pytest.approx(0.5)
+    assert c.params.deadband < c.params.err_plateau < c.params.err_max
+
+
+def test_speed_breakpoints_must_be_ordered():
+    with pytest.raises(ValueError, match="deadband < err_plateau < err_max"):
+        TavgControllerParams(deadband=0.8, err_plateau=0.7, err_max=2.8)
 
 
 def test_initial_auto_state_can_match_initial_rod_position():
@@ -60,7 +66,8 @@ def test_speed_curve():
     p = c.params
     assert c.speed(0.5) == 0.0
     assert c.speed(p.deadband) == 0.0
-    assert c.speed(0.5 * (p.deadband + p.err_max)) == pytest.approx(0.5 * (p.v_min + p.v_max))
+    assert c.speed(1.2) == pytest.approx(p.v_min)
+    assert c.speed(0.5 * (p.err_plateau + p.err_max)) == pytest.approx(0.5 * (p.v_min + p.v_max))
     assert c.speed(10.0) == p.v_max
 
 

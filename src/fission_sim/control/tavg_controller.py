@@ -5,14 +5,20 @@ function used in many Westinghouse-style pressurized-water reactors: compare
 the measured (in real plants, auctioneered highest-loop) average primary
 temperature ``T_avg`` with the turbine-load reference temperature ``T_ref``,
 then move the control bank inward or outward using a deadband and speed
-program. The default program uses an approximately 1.5 °F deadband and ramps
-from 8 to 72 steps/min for a 228-step bank. At L1, one state variable is the
-automatic rod-demand position; the physical rod actuator is still the separate
-``RodController``.
+program. The default program uses an approximately 1.5 °F deadband, holds
+8 steps/min through about 3 °F error, then ramps to 72 steps/min at about
+5 °F error for a 228-step bank. At L1, one state variable is the automatic
+rod-demand position; the physical rod actuator is still the separate
+``RodController``. The standard plant wires this controller between the
+turbine reference-temperature program and the rod actuator.
 
-The controller is intentionally not wired into the standard plant yet. M3.6
-adds the turbine/secondary-side signals that supply ``T_ref`` and connect
-``rod_demand`` to the rod controller.
+# SIMPLIFICATION: the reference Westinghouse controller has lock-up hysteresis
+with separate start/stop thresholds; this L1 model keeps only a single
+temperature deadband and no hysteresis state.
+# SIMPLIFICATION: the rod demand is a continuous fraction withdrawn, not
+integer bank steps or per-bank sequencing.
+# SIMPLIFICATION: the anticipatory nuclear-power/turbine-power mismatch signal
+is omitted, so this is a temperature-only feedback controller.
 
 References
 ----------
@@ -27,6 +33,11 @@ Public reference:
   control rods and the primary/secondary power balance that motivates a
   programmed average-temperature reference:
   https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §8.1, "Rod Control System", §8.1.4.2–5 and Fig. 8.1-4, documents
+  the Tavg/Tref program, 1.5 °F deadband, 3–5 °F speed-program ramp, 0.5 °F
+  lock-up hysteresis, and nuclear/turbine-power mismatch anticipation:
+  https://www.nrc.gov/docs/ML1122/ML11223A252.pdf
 """
 
 from __future__ import annotations
@@ -45,9 +56,12 @@ class TavgControllerParams:
     deadband : float
         Symmetric temperature-error deadband [K]. Default 0.8 K ≈ 1.44 °F,
         representing the Westinghouse-style 1.5 °F rod-control deadband.
+    err_plateau : float
+        Absolute temperature error [K] where the constant ``v_min`` speed
+        plateau ends and the linear ramp begins. Default 1.667 K = 3.0 °F.
     err_max : float
         Absolute temperature error [K] where the speed program reaches
-        ``v_max``. Default 2.8 K ≈ 5.0 °F.
+        ``v_max``. Default 2.778 K = 5.0 °F.
     v_min : float
         Minimum rod-demand speed outside the deadband [1/s]. Default
         5.8e-4 is 8 steps/min of a 228-step bank.
@@ -64,9 +78,13 @@ class TavgControllerParams:
     # deadband is usually described as about 1.5 °F. [K]
     deadband: float = 0.8
 
-    # Full-speed point: 2.8 K × 9/5 = 5.04 °F, matching the 5 °F speed-program
-    # span described for Westinghouse Tavg control. [K]
-    err_max: float = 2.8
+    # Plateau endpoint: 3.0 °F × 5/9 = 1.667 K, where the Westinghouse speed
+    # program leaves the 8 steps/min minimum-speed plateau. [K]
+    err_plateau: float = 5.0 / 3.0
+
+    # Full-speed point: 5.0 °F × 5/9 = 2.778 K, matching the 5 °F endpoint of
+    # the Westinghouse Tavg speed-program ramp. [K]
+    err_max: float = 25.0 / 9.0
 
     # 8 steps/min over a 228-step bank:
     #     8 step/min ÷ 228 step ÷ 60 s/min = 5.85e-4 1/s.
@@ -82,6 +100,17 @@ class TavgControllerParams:
     # shorter than operator-visible load-following transients but nonzero, so
     # the ODE remains continuous when action is suspended. [s]
     tau_track: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Validate that the speed-program breakpoints are ordered.
+
+        Raises
+        ------
+        ValueError
+            If ``deadband < err_plateau < err_max`` is not true.
+        """
+        if not self.deadband < self.err_plateau < self.err_max:
+            raise ValueError("TavgControllerParams requires deadband < err_plateau < err_max")
 
 
 class TavgController:
@@ -179,9 +208,10 @@ class TavgController:
         The speed program is the L1 approximation of the Westinghouse
         rod-control schedule:
 
-        ``0`` inside the deadband, a linear ramp from ``v_min`` to ``v_max``
-        between ``deadband`` and ``err_max``, and ``v_max`` beyond
-        ``err_max``.
+        ``0`` inside the deadband, a constant ``v_min`` plateau between the
+        deadband and ``err_plateau``, a linear ramp from ``v_min`` to
+        ``v_max`` between ``err_plateau`` and ``err_max``, and ``v_max``
+        beyond ``err_max``.
 
         Parameters
         ----------
@@ -196,14 +226,16 @@ class TavgController:
         p = self.params
         if abs_err <= p.deadband:
             return 0.0
+        if abs_err <= p.err_plateau:
+            return p.v_min
         if abs_err >= p.err_max:
             return p.v_max
 
-        # Westinghouse speed-program approximation (NRC Reactor Concepts
-        # Manual for rod-control context; Todreas & Kazimi Ch. 7 for PWR
-        # temperature/load programs):
-        #     v = v_min + (v_max − v_min) · (|err| − deadband) / (err_max − deadband)
-        return p.v_min + (p.v_max - p.v_min) * (abs_err - p.deadband) / (p.err_max - p.deadband)
+        # Westinghouse Tavg speed program (NRC Westinghouse Technology Systems
+        # Manual §8.1.4, Fig. 8.1-4), with hysteresis omitted at L1:
+        #     v = v_min + (v_max − v_min) ·
+        #         (|err| − err_plateau) / (err_max − err_plateau)
+        return p.v_min + (p.v_max - p.v_min) * (abs_err - p.err_plateau) / (p.err_max - p.err_plateau)
 
     def _acting(self, inputs: dict) -> bool:
         """Return True when automatic rod action is allowed."""
