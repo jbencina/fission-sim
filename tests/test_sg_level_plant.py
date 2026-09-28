@@ -109,9 +109,30 @@ def test_factory_derives_feedwater_defaults_from_nondefault_shell_params():
     assert snap["signals"]["level_setpoint"] == pytest.approx(0.5)
 
 
+def test_factory_derives_controller_ceiling_from_reduced_actuator_capacity():
+    feedwater_params = FeedwaterParams(m_fw_max_frac=1.0)
+    eng = build_standard_plant(feedwater_params=feedwater_params)
+    snap = eng.step(60.0, level_setpoint=0.55)
+    assert snap["feedwater"]["m_fw_max"] == pytest.approx(feedwater_params.m_fw_max)
+    assert snap["fw_ctrl"]["m_fw_demand"] == pytest.approx(feedwater_params.m_fw_max)
+    assert snap["fw_ctrl"]["saturated"] is True
+
+
+def test_factory_derives_controller_ceiling_from_increased_actuator_capacity():
+    feedwater_params = FeedwaterParams(m_fw_max_frac=1.5)
+    snap = build_standard_plant(feedwater_params=feedwater_params).step(1.0, feedwater_manual=1.0)
+    assert snap["feedwater"]["m_fw_max"] == pytest.approx(feedwater_params.m_fw_max)
+    assert snap["fw_ctrl"]["m_fw_demand"] == pytest.approx(feedwater_params.m_fw_max)
+
+
 def test_factory_rejects_inconsistent_explicit_feedwater_params():
     shell = SGSecondaryParams(V_sec=6.0e7)
     with pytest.raises(ValueError, match="fw_params.sg_params"):
         build_standard_plant(sg_sec_params=shell, fw_params=FeedwaterControllerParams())
     with pytest.raises(ValueError, match="feedwater_params.sg_params"):
         build_standard_plant(sg_sec_params=shell, feedwater_params=FeedwaterParams())
+    with pytest.raises(ValueError, match="flow ceiling"):
+        build_standard_plant(
+            fw_params=FeedwaterControllerParams(m_fw_max_frac=1.2),
+            feedwater_params=FeedwaterParams(m_fw_max_frac=1.0),
+        )

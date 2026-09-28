@@ -140,10 +140,14 @@ def build_standard_plant(
         flow are derived from the shell design point.
     fw_params : FeedwaterControllerParams, optional
         M4 three-element feedwater-controller parameters. ``None`` builds
-        ``FeedwaterControllerParams(sg_params=sg_sec_params)``.
+        ``FeedwaterControllerParams(sg_params=sg_sec_params)``. If only
+        ``feedwater_params`` is supplied, this derives the same flow ceiling
+        so the controller and actuator agree.
     feedwater_params : FeedwaterParams, optional
         Feedwater actuator parameters. ``None`` builds
-        ``FeedwaterParams(sg_params=sg_sec_params)``.
+        ``FeedwaterParams(sg_params=sg_sec_params)``. If only ``fw_params``
+        is supplied, this derives the same flow ceiling. If both are
+        supplied, their feedwater ceilings must agree.
     tavg_params : TavgControllerParams, optional
         Automatic Tavg rod-controller parameters.
     rod_command : float, optional
@@ -189,10 +193,6 @@ def build_standard_plant(
         sg_sec_params = SGSecondaryParams()
     if turbine_params is None:
         turbine_params = TurbineParams(sg_params=sg_sec_params)
-    if fw_params is None:
-        fw_params = FeedwaterControllerParams(sg_params=sg_sec_params)
-    if feedwater_params is None:
-        feedwater_params = FeedwaterParams(sg_params=sg_sec_params)
     if tavg_params is None:
         tavg_params = TavgControllerParams()
     if pzr_params.loop_params != loop_params:
@@ -205,16 +205,31 @@ def build_standard_plant(
             "turbine_params.sg_params must match sg_sec_params: the turbine's "
             "valve constant and design steam flow come from the shell side's design point"
         )
-    if fw_params.sg_params != sg_sec_params:
+    if fw_params is not None and fw_params.sg_params != sg_sec_params:
         raise ValueError(
             "fw_params.sg_params must match sg_sec_params: the feedwater controller's design flow "
             "comes from the shell side's design point"
         )
-    if feedwater_params.sg_params != sg_sec_params:
+    if feedwater_params is not None and feedwater_params.sg_params != sg_sec_params:
         raise ValueError(
             "feedwater_params.sg_params must match sg_sec_params: the feedwater actuator's design flow "
             "comes from the shell side's design point"
         )
+    if fw_params is None and feedwater_params is None:
+        fw_params = FeedwaterControllerParams(sg_params=sg_sec_params)
+        feedwater_params = FeedwaterParams(sg_params=sg_sec_params)
+    elif fw_params is None:
+        feedwater_ceiling_frac = feedwater_params.m_fw_max / sg_sec_params.m_steam_design
+        fw_params = FeedwaterControllerParams(sg_params=sg_sec_params, m_fw_max_frac=feedwater_ceiling_frac)
+    elif feedwater_params is None:
+        feedwater_params = FeedwaterParams(sg_params=sg_sec_params, m_fw_max_frac=fw_params.m_fw_max_frac)
+    else:
+        feedwater_ceiling_frac = feedwater_params.m_fw_max / sg_sec_params.m_steam_design
+        if abs(fw_params.m_fw_max_frac - feedwater_ceiling_frac) > 1.0e-9:
+            raise ValueError(
+                "fw_params.m_fw_max_frac must match the feedwater actuator flow ceiling "
+                "(feedwater_params.m_fw_max / sg_sec_params.m_steam_design)"
+            )
     if abs(sg_params.T_secondary_ref - sg_sec_params.T_sec_ref) > 1e-9:
         raise ValueError(
             "sg_params.T_secondary_ref must equal sg_sec_params.T_sec_ref so the plant starts at steady state"
