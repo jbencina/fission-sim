@@ -1337,24 +1337,35 @@ m_fw,demand = feedwater_manual · m_fw,max
 Back-calculation anti-windup in automatic mode:
 
 ```text
-dI/dt = e + (clip(m_fw,demand, 0, m_fw,max) − m_fw,demand) / (K_i · T_t)
+A = integral_authority_frac · m_steam_design
+I_flow = clip(K_i · I, −A, A)
+m_fw,demand = clip(m_steam + m_dump + K_p · e + I_flow, 0, m_fw,max)
+
+dI/dt = e
+        + (m_fw,demand − (m_steam + m_dump + K_p · e + I_flow)) / (K_i · T_t)
+        + (I_flow − K_i · I) / (K_i · T_t)
 ```
 
 Manual mode sends the operator's clipped demand to the actuator and tracks the
-automatic PI state toward that demand:
+automatic PI state toward that demand, but only inside the same integral
+authority band:
 
 ```text
 m_fw,demand = feedwater_manual · m_fw,max
-dI/dt = (m_fw,demand − (m_steam + m_dump + K_p · e + K_i · I)) / (K_i · T_track,manual)
+I_target = clip(m_fw,demand − m_steam − m_dump − K_p · e, −A, A) / K_i
+dI/dt = (I_target − I) / T_track,manual
 ```
 
 Back-calculation pulls the stored integral back toward the realizable clipped
 demand smoothly when the actuator saturates, using the 30 s
 `antiwindup_tracking_time`. Manual tracking uses a separate 1 s
-`manual_tracking_time`, well below the 5 s feedwater actuator lag, so transfer
-is effectively bumpless after a few seconds in manual. In the review transfer
-checks, manual 0.0 for 5 s leaves a ≈21 kg/s AUTO demand step (previously
-≈1,444 kg/s), and manual 0.9 for 90 s leaves ≈1.2 kg/s.
+`manual_tracking_time`, well below the 5 s feedwater actuator lag. Transfers
+are effectively bumpless when manual demand is within ±`A` of what AUTO's
+feed-forward plus proportional terms ask for; farther away, AUTO immediately
+steps demand back to within ±20 % of design flow around steam flow. In the
+review transfer checks, manual 0.0 for 5 s leaves a large deliberate
+≈1,371 kg/s AUTO step back toward feed-forward, while manual 0.9 for 90 s
+leaves only a ≈1.2 kg/s step.
 
 **API**
 
@@ -1401,6 +1412,7 @@ checks, manual 0.0 for 5 s leaves a ≈21 kg/s AUTO demand step (previously
 | `m_fw_max_frac` | — | 1.2 | Matches `FeedwaterParams` default maximum |
 | `antiwindup_tracking_time` | s | None → `(K_p / K_i) / 10` = 30 | M4 L1 tuning for back-calculation tracking |
 | `manual_tracking_time` | s | 1.0 | Fast manual-output tracking from Åström/Murray §11.4; below the 5 s feedwater actuator lag |
+| `integral_authority_frac` | — | 0.2 | Integral trim authority `A = 0.2 · m_steam_design ≈ 334 kg/s`; keeps level integral from cancelling steam-flow feed-forward |
 
 **Simplifications / what to watch**
 
@@ -1414,7 +1426,10 @@ checks, manual 0.0 for 5 s leaves a ≈21 kg/s AUTO demand step (previously
 - `level_error_integral` is the tracked PI integral state. It is the literal
   accumulated level error only during unsaturated automatic control; saturation
   and manual-output tracking also move it. The manual tracking time is 1 s,
-  while the saturation anti-windup tracking time remains 30 s.
+  while the saturation anti-windup tracking time remains 30 s. Its flow
+  contribution is bounded to ±20 % of design steam flow, so an operator should
+  match manual demand near the automatic demand before transferring if a fully
+  bumpless transfer is desired.
 - Feedwater is one-way. At zero demand the controller can stop adding water
   but cannot drain the shell. The measured turbine-trip-plus-SCRAM case
   therefore leaves a persistent collapsed-level offset of `0.0163898` above
@@ -1803,7 +1818,7 @@ worths, and the design/critical position.
 | `P_fw_flash` | Feedwater saturation pressure at `T_fw`; pressure-floor reference | Pa |
 | `m_steam`, `m_dump`, `m_fw`, `m_fw_demand`, `m_fw_max` | Turbine steam / dump steam / actual feedwater / demanded feedwater / maximum feedwater mass flow | kg/s |
 | `feedwater_manual` | Manual feedwater demand fraction; `None` selects automatic control | — |
-| `K_p`, `K_i`, `I`, `T_t`, `T_track,manual` | Feedwater level proportional gain, integral gain, tracked PI integral state, anti-windup tracking time, manual tracking time | kg/s, kg/s², s, s, s |
+| `K_p`, `K_i`, `I`, `T_t`, `T_track,manual`, `A` | Feedwater level proportional gain, integral gain, tracked PI integral state, anti-windup tracking time, manual tracking time, integral-flow authority | kg/s, kg/s², s, s, s, kg/s |
 | `τ_fw` | Feedwater actuator time constant | s |
 | `boil_off_time_s` | Total SG liquid inventory divided by present turbine-plus-dump steam outflow; not time to the lower model limit | s |
 | `time_to_level_floor_s` | Frozen-property estimate of time to the 0.30 collapsed-level floor at present net outflow; `None` when not draining | s or None |

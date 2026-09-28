@@ -31,12 +31,13 @@ that smoothly by comparing the raw PI demand with the clipped demand and
 bleeding the integral back toward a value the feedwater system can actually
 deliver.
 
-Manual mode uses the same tracking idea for bumpless transfer. While an
+Manual mode uses the same tracking idea for transfer. While an
 operator-specified manual demand is active, the stored PI state tracks the
-manual output instead of freezing. The manual tracking time is deliberately
-shorter than the feedwater actuator lag, so after a few seconds the automatic
-PI law asks for essentially the same flow and returning to AUTO creates only
-a small residual demand step.
+manual output instead of freezing, but the integral term has bounded flow
+authority around the steam-flow feed-forward signal. Returning to AUTO is
+effectively bumpless only when the manual demand is already near the automatic
+feed-forward-plus-proportional demand; farther away, the controller steps back
+toward steam-flow replacement to preserve shell inventory.
 
 # SIMPLIFICATION: no shrink/swell compensation is modeled. Real indicated
 steam-generator level changes when steam voids expand or collapse after a
@@ -109,6 +110,10 @@ class FeedwaterControllerParams:
         Manual-output tracking time ``T_track,manual`` [s]. This is separate
         from the slower saturation anti-windup time so mode transfers can be
         effectively bumpless on the actuator timescale.
+    integral_authority_frac : float, optional
+        Magnitude of integral-flow authority as a fraction of design steam
+        flow [-]. The default 0.2 means ``K_i · I`` contributes at most
+        ±20 % of design flow around feed-forward plus proportional trim.
 
     Raises
     ------
@@ -120,7 +125,8 @@ class FeedwaterControllerParams:
     -----
     Frozen dataclass; ``__post_init__`` derives ``K_i`` and
     ``antiwindup_tracking_time`` with ``object.__setattr__`` when they are
-    omitted and validates ``manual_tracking_time``.
+    omitted and validates ``manual_tracking_time`` and
+    ``integral_authority_frac``.
     """
 
     # Design shell parameters. Provenance: the controller must use the same
@@ -159,6 +165,14 @@ class FeedwaterControllerParams:
     # before the physical feedwater flow can move far after a mode transfer.
     manual_tracking_time: float = 1.0  # [s]
 
+    # Integral authority. Provenance: restores the M4 plan's I_max idea in
+    # flow units, A = 0.2 · m_steam_design ≈ 334 kg/s, so integral trim has
+    # limited authority around the steam-flow feed-forward signal. NRC WTSM
+    # §11.1 motivates three-element control where steam/feed flow terms carry
+    # the main load-change response and level integral is a trim, not a way to
+    # cancel the feed-forward term.
+    integral_authority_frac: float = 0.2  # [-]
+
     def __post_init__(self) -> None:
         """Validate parameters and derive omitted integral settings.
 
@@ -185,6 +199,7 @@ class FeedwaterControllerParams:
             T_i = K_p / K_i
             T_t = T_i / 10
             T_track,manual = 1 s (default)
+            A = integral_authority_frac · m_steam_design
 
         ``T_i`` is the reset time: after a sustained error, the integral term
         catches up to the proportional term over about ``T_i`` seconds.
@@ -195,6 +210,9 @@ class FeedwaterControllerParams:
         same section's manual-control tracking pattern. It is intentionally
         faster than the actuator lag because it synchronizes an internal
         controller state, not a physical valve.
+        ``A`` is the maximum positive or negative flow authority carried by
+        the integral term. The state itself tracks smoothly by back-
+        calculation; the demand uses ``clip(K_i · I, −A, A)``.
         """
         K_p = float(self.K_p)
         if not math.isfinite(K_p) or K_p <= 0.0:
@@ -234,20 +252,33 @@ class FeedwaterControllerParams:
         if not math.isfinite(manual_tracking_time) or manual_tracking_time <= 0.0:
             raise ValueError("manual_tracking_time must be finite and > 0 [s].")
 
+        integral_authority_frac = float(self.integral_authority_frac)
+        if (
+            not math.isfinite(integral_authority_frac)
+            or integral_authority_frac <= 0.0
+            or integral_authority_frac > m_fw_max_frac
+        ):
+            raise ValueError("integral_authority_frac must be finite and inside (0, m_fw_max_frac].")
+
         object.__setattr__(self, "K_p", K_p)
         object.__setattr__(self, "K_i", K_i)
         object.__setattr__(self, "level_setpoint_default", level_setpoint_default)
         object.__setattr__(self, "m_fw_max_frac", m_fw_max_frac)
         object.__setattr__(self, "antiwindup_tracking_time", antiwindup_tracking_time)
         object.__setattr__(self, "manual_tracking_time", manual_tracking_time)
+        object.__setattr__(self, "integral_authority_frac", integral_authority_frac)
 
 
 @dataclass(frozen=True)
 class _DemandTerms:
     demand: float
     raw_demand: float
+    feedforward: float
     level_error: float
     level_error_integral: float
+    integral_flow_raw: float
+    integral_flow_limited: float
+    integral_authority: float
     m_fw_max: float
     feedwater_manual: float | None
     mode: str
@@ -335,6 +366,9 @@ class FeedwaterController:
     def _m_fw_max(self) -> float:
         return self.params.m_fw_max_frac * self.params.sg_params.m_steam_design
 
+    def _integral_authority(self) -> float:
+        return self.params.integral_authority_frac * self.params.sg_params.m_steam_design
+
     def _demand_terms(self, state: np.ndarray, inputs: dict[str, Any]) -> _DemandTerms:
         p = self.params
         integral = self._finite_input("level_error_integral", state[0])
@@ -344,17 +378,21 @@ class FeedwaterController:
         m_dump = self._finite_input("m_dump", inputs["m_dump"])
         m_fw_max = self._m_fw_max()
         level_error = level_setpoint - level_sg
+        feedforward = m_steam + m_dump
+        integral_flow_raw = p.K_i * integral
+        integral_authority = self._integral_authority()
+        integral_flow_limited = float(np.clip(integral_flow_raw, -integral_authority, integral_authority))
 
         # Governing automatic three-element demand equation (NRC WTSM §11.1
         # real SG level/steam/feedwater signals; Åström & Murray §11.4 for
         # PI/back-calculation/tracking structure):
         #
         #     e = level_setpoint − level_sg
-        #     u_raw,auto = m_steam + m_dump + K_p · e + K_i · I
+        #     u_raw,auto = m_steam + m_dump + K_p · e + clip(K_i · I, −A, A)
         #
         # The first two terms are steam-flow feed-forward; the last two terms
         # are the level PI trim that removes long-term inventory drift.
-        raw_auto_demand = m_steam + m_dump + p.K_p * level_error + p.K_i * integral
+        raw_auto_demand = feedforward + p.K_p * level_error + integral_flow_limited
 
         if inputs["feedwater_manual"] is not None:
             manual_fraction = self._manual_fraction(inputs["feedwater_manual"])
@@ -363,8 +401,12 @@ class FeedwaterController:
             return _DemandTerms(
                 demand=demand,
                 raw_demand=raw_auto_demand,
+                feedforward=feedforward,
                 level_error=level_error,
                 level_error_integral=integral,
+                integral_flow_raw=integral_flow_raw,
+                integral_flow_limited=integral_flow_limited,
+                integral_authority=integral_authority,
                 m_fw_max=m_fw_max,
                 feedwater_manual=manual_fraction,
                 mode="manual",
@@ -375,8 +417,12 @@ class FeedwaterController:
         return _DemandTerms(
             demand=demand,
             raw_demand=raw_auto_demand,
+            feedforward=feedforward,
             level_error=level_error,
             level_error_integral=integral,
+            integral_flow_raw=integral_flow_raw,
+            integral_flow_limited=integral_flow_limited,
+            integral_authority=integral_authority,
             m_fw_max=m_fw_max,
             feedwater_manual=None,
             mode="auto",
@@ -425,19 +471,36 @@ class FeedwaterController:
         on/off derivative at the limit, which is difficult for a stiff BDF
         integrator to step through.
 
-        Manual-output tracking (Åström & Murray §11.4 "Manual Control and
-        Tracking") uses the same state and the faster manual tracking time:
+        The integral authority limit is another back-calculation term:
 
-            dI/dt = (u_manual − u_raw,auto) / (K_i · T_track,manual)
+            dI/dt = e + (u_clipped − u_raw) / (K_i · T_t)
+                    + (clip(K_i · I, −A, A) − K_i · I) / (K_i · T_t)
+
+        ``A`` is ``integral_authority_frac · m_steam_design`` [kg/s].
+        Manual-output tracking (Åström & Murray §11.4 "Manual Control and
+        Tracking") uses the same state and the faster manual tracking time
+        with a bounded target:
+
+            I_target = clip(u_manual − feedforward − K_p · e, −A, A) / K_i
+            dI/dt = (I_target − I) / T_track,manual
 
         ``u_manual`` is the clipped physical manual demand sent to the
-        actuator. The tracked PI state therefore approaches the value that
-        would make the automatic law produce the current manual output.
+        actuator. The tracked PI state therefore approaches the manual demand
+        only when that demand is inside the integral authority band around
+        feed-forward plus proportional trim.
         """
         terms = self._demand_terms(state, inputs)
         p = self.params
         if terms.mode == "manual":
-            tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.manual_tracking_time)
+            target_flow = float(
+                np.clip(
+                    terms.demand - terms.feedforward - p.K_p * terms.level_error,
+                    -terms.integral_authority,
+                    terms.integral_authority,
+                )
+            )
+            target_integral = target_flow / p.K_i
+            tracking = (target_integral - terms.level_error_integral) / p.manual_tracking_time
             return np.array([tracking], dtype=float)
 
         # Back-calculation anti-windup (Åström & Murray §11.4): compare the
@@ -445,8 +508,11 @@ class FeedwaterController:
         # that mismatch back into the integrator through the tracking time.
         # This is continuous at the actuator limit because u_clipped and
         # u_raw are equal as the controller leaves saturation.
-        tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
-        return np.array([terms.level_error + tracking], dtype=float)
+        actuator_tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
+        authority_tracking = (terms.integral_flow_limited - terms.integral_flow_raw) / (
+            p.K_i * p.antiwindup_tracking_time
+        )
+        return np.array([terms.level_error + actuator_tracking + authority_tracking], dtype=float)
 
     def outputs(self, state: np.ndarray, *, inputs: dict[str, Any]) -> dict[str, float]:
         """Return the feedwater-demand output port.

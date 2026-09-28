@@ -5,6 +5,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from fission_sim.control.feedwater_controller import FeedwaterController, FeedwaterControllerParams
+from fission_sim.physics.domain import check_snapshot
 from fission_sim.plant import build_standard_plant
 
 TOY_RHO_L = 741.5  # [kg/m^3], saturated-liquid density from the independent review reproducer
@@ -27,6 +28,14 @@ def inputs(**over):
 def _raw_automatic_demand(c: FeedwaterController, state: np.ndarray, controller_inputs: dict) -> float:
     p = c.params
     e = controller_inputs["level_setpoint"] - controller_inputs["level_sg"]
+    integral_authority = p.integral_authority_frac * p.sg_params.m_steam_design
+    integral_flow = float(np.clip(p.K_i * state[0], -integral_authority, integral_authority))
+    return controller_inputs["m_steam"] + controller_inputs["m_dump"] + p.K_p * e + integral_flow
+
+
+def _unbounded_automatic_demand(c: FeedwaterController, state: np.ndarray, controller_inputs: dict) -> float:
+    p = c.params
+    e = controller_inputs["level_setpoint"] - controller_inputs["level_sg"]
     return controller_inputs["m_steam"] + controller_inputs["m_dump"] + p.K_p * e + p.K_i * state[0]
 
 
@@ -39,7 +48,11 @@ def _expected_back_calculation_derivative(
     raw = _raw_automatic_demand(c, state, controller_inputs)
     clipped = c.outputs(state, inputs=controller_inputs)["m_fw_demand"]
     e = controller_inputs["level_setpoint"] - controller_inputs["level_sg"]
-    return e + (clipped - raw) / (p.K_i * p.antiwindup_tracking_time)
+    integral_authority = p.integral_authority_frac * p.sg_params.m_steam_design
+    integral_flow_raw = p.K_i * state[0]
+    integral_flow = float(np.clip(integral_flow_raw, -integral_authority, integral_authority))
+    authority_tracking = (integral_flow - integral_flow_raw) / (p.K_i * p.antiwindup_tracking_time)
+    return e + (clipped - raw) / (p.K_i * p.antiwindup_tracking_time) + authority_tracking
 
 
 def _solve_toy_level_loop(level_setpoint: float, m_steam: float):
@@ -78,6 +91,8 @@ def test_layout_and_derived_gains():
     assert p.antiwindup_tracking_time == pytest.approx(30.0)
     assert p.manual_tracking_time == pytest.approx(1.0)
     assert p.manual_tracking_time < TOY_TAU_FW
+    assert p.integral_authority_frac == pytest.approx(0.2)
+    assert p.integral_authority_frac * p.sg_params.m_steam_design == pytest.approx(0.2 * p.sg_params.m_steam_design)
     assert c.initial_state()[0] == 0.0
 
 
@@ -109,8 +124,12 @@ def test_manual_override_scales_max_flow_and_tracks_integral():
     controller_inputs = inputs(feedwater_manual=0.5, level_sg=0.3)
 
     out = c.outputs(state, inputs=controller_inputs)
-    raw_auto = _raw_automatic_demand(c, state, controller_inputs)
-    expected = (0.5 * m_max - raw_auto) / (p.K_i * p.manual_tracking_time)
+    feedforward = controller_inputs["m_steam"] + controller_inputs["m_dump"]
+    integral_authority = p.integral_authority_frac * p.sg_params.m_steam_design
+    target_integral_flow = float(
+        np.clip(0.5 * m_max - feedforward - p.K_p * 0.2, -integral_authority, integral_authority)
+    )
+    expected = (target_integral_flow / p.K_i - state[0]) / p.manual_tracking_time
 
     assert out["m_fw_demand"] == pytest.approx(0.5 * m_max)
     assert c.derivatives(state, controller_inputs)[0] == pytest.approx(expected)
@@ -121,13 +140,18 @@ def test_manual_tracking_uses_clipped_physical_demand():
     p = c.params
     m_max = p.m_fw_max_frac * p.sg_params.m_steam_design
     state = np.array([2.0])
+    integral_authority = p.integral_authority_frac * p.sg_params.m_steam_design
 
     high_inputs = inputs(feedwater_manual=2.0)
-    high_expected = (m_max - _raw_automatic_demand(c, state, high_inputs)) / (p.K_i * p.manual_tracking_time)
+    high_feedforward = high_inputs["m_steam"] + high_inputs["m_dump"]
+    high_target = np.clip(m_max - high_feedforward, -integral_authority, integral_authority) / p.K_i
+    high_expected = (high_target - state[0]) / p.manual_tracking_time
     assert c.derivatives(state, high_inputs)[0] == pytest.approx(high_expected)
 
     low_inputs = inputs(feedwater_manual=-1.0)
-    low_expected = (0.0 - _raw_automatic_demand(c, state, low_inputs)) / (p.K_i * p.manual_tracking_time)
+    low_feedforward = low_inputs["m_steam"] + low_inputs["m_dump"]
+    low_target = np.clip(0.0 - low_feedforward, -integral_authority, integral_authority) / p.K_i
+    low_expected = (low_target - state[0]) / p.manual_tracking_time
     assert c.derivatives(state, low_inputs)[0] == pytest.approx(low_expected)
 
 
@@ -155,11 +179,11 @@ def test_manual_tracking_makes_auto_demand_match_manual_after_a_few_seconds():
     assert abs(raw_auto - 0.9 * m_max) < 0.01 * m_max
 
 
-def test_manual_tracking_steady_inputs_have_small_five_second_lag():
+def test_manual_tracking_steady_inputs_converges_to_integral_authority_limit():
     c = FeedwaterController(FeedwaterControllerParams())
     p = c.params
     controller_inputs = inputs(feedwater_manual=0.0)
-    initial_raw_auto = _raw_automatic_demand(c, np.array([0.0]), controller_inputs)
+    integral_authority = p.integral_authority_frac * p.sg_params.m_steam_design
 
     def rhs(_t: float, y: np.ndarray) -> list[float]:
         return [c.derivatives(y, controller_inputs)[0]]
@@ -174,13 +198,13 @@ def test_manual_tracking_steady_inputs_have_small_five_second_lag():
     )
 
     assert sol.success, sol.message
-    residual = _raw_automatic_demand(c, np.array([sol.y[0, -1]]), controller_inputs)
-    expected = initial_raw_auto * math.exp(-5.0 / p.manual_tracking_time)
-    assert residual == pytest.approx(expected, rel=5.0e-3)
-    assert residual < 15.0
+    integral_flow = p.K_i * sol.y[0, -1]
+    expected = -integral_authority * (1.0 - math.exp(-5.0 / p.manual_tracking_time))
+    assert integral_flow == pytest.approx(expected, rel=5.0e-3)
+    assert abs(integral_flow) < integral_authority
 
 
-def _manual_to_auto_demand_step(feedwater_manual: float, transfer_time: float) -> tuple[float, float, float]:
+def _manual_to_auto_demand_step(feedwater_manual: float, transfer_time: float) -> tuple[float, float, float, float]:
     eng = build_standard_plant()
     eng.run(10.0, max_step=0.5)
     manual_snap = eng.run(
@@ -190,20 +214,43 @@ def _manual_to_auto_demand_step(feedwater_manual: float, transfer_time: float) -
     )
     manual_demand = manual_snap["fw_ctrl"]["m_fw_demand"]
     auto_demand = eng.snapshot()["fw_ctrl"]["m_fw_demand"]
-    return auto_demand - manual_demand, manual_demand, auto_demand
+    integral_flow = FeedwaterControllerParams().K_i * manual_snap["fw_ctrl"]["level_error_integral"]
+    return auto_demand - manual_demand, manual_demand, auto_demand, integral_flow
 
 
-def test_standard_plant_five_second_manual_zero_transfer_is_effectively_bumpless():
-    """Fast manual tracking removes the previous 1,444 kg/s AUTO demand step."""
-    step, manual_demand, auto_demand = _manual_to_auto_demand_step(feedwater_manual=0.0, transfer_time=15.0)
+def test_manual_zero_then_auto_recovers_without_model_limit():
+    """Large manual/AUTO mismatch steps back toward feed-forward and preserves inventory."""
+    params = FeedwaterControllerParams()
+    integral_authority = params.integral_authority_frac * params.sg_params.m_steam_design
+    eng = build_standard_plant()
+    snap = eng.snapshot()
+    min_level = snap["sg_sec"]["level_sg"]
+    for _ in range(5):
+        snap = eng.step(1.0, feedwater_manual=0.0)
+        check_snapshot(snap)
+        min_level = min(min_level, snap["sg_sec"]["level_sg"])
+
+    manual_demand = snap["fw_ctrl"]["m_fw_demand"]
+    auto_transfer_snap = eng.snapshot()
+    transfer_step = auto_transfer_snap["fw_ctrl"]["m_fw_demand"] - manual_demand
+    auto_snap = eng.step(1.0)
+    check_snapshot(auto_snap)
+    min_level = min(min_level, auto_snap["sg_sec"]["level_sg"])
+
+    while eng.t < 600.0:
+        snap = eng.step(min(1.0, 600.0 - eng.t))
+        check_snapshot(snap)
+        min_level = min(min_level, snap["sg_sec"]["level_sg"])
 
     assert manual_demand == 0.0
-    assert auto_demand > 0.0
-    assert abs(step) < 25.0
+    assert transfer_step > 0.5 * params.sg_params.m_steam_design
+    assert transfer_step < params.sg_params.m_steam_design
+    assert min_level > 0.35
+    assert abs(params.K_i * auto_snap["fw_ctrl"]["level_error_integral"]) <= integral_authority + 2.0
 
 
-def test_standard_plant_manual_to_auto_feedwater_transfer_is_effectively_bumpless():
-    """Moving plant inputs leave only a small residual manual-to-AUTO demand step."""
+def test_standard_plant_manual_to_auto_feedwater_transfer_is_bumpless_when_near_auto_demand():
+    """Moving plant inputs leave only a small residual step when manual demand is near AUTO."""
     eng = build_standard_plant()
     manual_snap = eng.run(
         100.0,
@@ -216,6 +263,24 @@ def test_standard_plant_manual_to_auto_feedwater_transfer_is_effectively_bumples
     auto_demand = auto_snap["fw_ctrl"]["m_fw_demand"]
 
     assert abs(auto_demand - manual_demand) < 10.0
+
+
+def test_integral_authority_stays_bounded_in_manual_and_auto():
+    params = FeedwaterControllerParams()
+    integral_authority = params.integral_authority_frac * params.sg_params.m_steam_design
+    eng = build_standard_plant()
+    max_abs_integral_flow = 0.0
+
+    for _ in range(5):
+        snap = eng.step(1.0, feedwater_manual=0.0)
+        max_abs_integral_flow = max(max_abs_integral_flow, abs(params.K_i * snap["fw_ctrl"]["level_error_integral"]))
+
+    for _ in range(60):
+        snap = eng.step(1.0)
+        max_abs_integral_flow = max(max_abs_integral_flow, abs(params.K_i * snap["fw_ctrl"]["level_error_integral"]))
+        check_snapshot(snap)
+
+    assert max_abs_integral_flow <= integral_authority + 2.0
 
 
 def test_manual_override_clips_fraction_to_physical_range():
@@ -319,6 +384,8 @@ def test_nonfinite_manual_input_raises_value_error():
         {"antiwindup_tracking_time": 0.0},
         {"manual_tracking_time": math.nan},
         {"manual_tracking_time": 0.0},
+        {"integral_authority_frac": math.nan},
+        {"integral_authority_frac": 0.0},
     ],
 )
 def test_invalid_params_raise_value_error(kwargs):
