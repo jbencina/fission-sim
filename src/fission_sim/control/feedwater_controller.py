@@ -51,9 +51,10 @@ Conservation Equations in a Control Volume", for the inlet-minus-outlet mass
 balance behind the steam-flow feed-forward term:
 https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
 
-Åström, K. J. and Murray, R. M. *Feedback Systems*, 2nd ed. §11.3 describes
-integrator windup and back-calculation/tracking anti-windup:
-https://fbswiki.org/
+Åström, K. J. and Murray, R. M. *Feedback Systems*, 2nd ed. §11.4
+"Integrator Windup" describes integrator windup and back-calculation/tracking
+anti-windup:
+https://fbswiki.org/wiki/index.php/PID_Control
 
 Åström, K. J. and Hägglund, T. *Advanced PID Control*, ISA, 2006. §3.5
 describes practical PID anti-windup by back-calculation.
@@ -173,7 +174,7 @@ class FeedwaterControllerParams:
 
         ``T_i`` is the reset time: after a sustained error, the integral term
         catches up to the proportional term over about ``T_i`` seconds.
-        ``T_t`` is the anti-windup tracking time from Åström & Murray §11.3:
+        ``T_t`` is the anti-windup tracking time from Åström & Murray §11.4:
         while the actuator is clipped, the stored integral is pulled toward
         the clipped demand over about ``T_t`` seconds.
         """
@@ -384,7 +385,7 @@ class FeedwaterController:
         Notes
         -----
         Governing integral equation with back-calculation anti-windup
-        (Åström & Murray §11.3; Åström & Hägglund §3.5):
+        (Åström & Murray §11.4; Åström & Hägglund §3.5):
 
             dI/dt = e + (u_clipped − u_raw) / (K_i · T_t)
 
@@ -404,7 +405,7 @@ class FeedwaterController:
         e = terms.level_error
         p = self.params
 
-        # Back-calculation anti-windup (Åström & Murray §11.3): compare the
+        # Back-calculation anti-windup (Åström & Murray §11.4): compare the
         # realizable clipped demand with the unconstrained PI demand and feed
         # that mismatch back into the integrator through the tracking time.
         # This is continuous at the actuator limit because u_clipped and

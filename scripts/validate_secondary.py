@@ -290,7 +290,7 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
                     f"< {MASS_ACCUMULATION_FRAC}",
                     frac < MASS_ACCUMULATION_FRAC,
                 ),
-                result(f"{prefix}: nonzero ΔM", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+                result(f"{prefix}: nonzero |ΔM|", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
             ]
         )
     elif spec.slug == "load_manual":
@@ -640,7 +640,7 @@ def _criteria_for_m4_nonhalting(spec: Scenario, snaps: list[dict[str, Any]]) -> 
                     f"< {MASS_ACCUMULATION_FRAC}",
                     mass_frac < MASS_ACCUMULATION_FRAC,
                 ),
-                result(f"{prefix}: nonzero ΔM", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+                result(f"{prefix}: nonzero |ΔM|", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
                 result(
                     f"{prefix}: shell energy accumulation",
                     energy_frac,

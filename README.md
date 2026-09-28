@@ -1816,7 +1816,7 @@ The source files retain the textbook citations used while developing the model. 
 | Tavg rod-control context | First-stage impulse-pressure `T_ref` program, deadband, lock-up, speed program, and omitted power-mismatch anticipation | [NRC Westinghouse Technology Systems Manual §8.1, Rod Control System, §8.1.4.2-5, pp. 8.1-6-8 (PDF pp. 10-12), Fig. 8.1-4](https://www.nrc.gov/docs/ML1122/ML11223A252.pdf) |
 | Reactor/turbine trip context | P-4 reactor-trip→turbine-trip logic and representative P-9/P-7 turbine-trip→reactor-trip context deferred to the RPS milestone | [NRC Westinghouse Technology Systems Manual §12.2, Reactor Protection System, §12.2.3.16 p. 12.2-7 and §12.2.4 pp. 12.2-10-11 (PDF pp. 11, 14-15)](https://www.nrc.gov/docs/ML1122/ML11223A301.pdf) |
 | SG water-level context | Real level/flow control, narrow-range instruments, shrink/swell; M4 collapsed fraction does not model indicated-level shrink/swell | [NRC Westinghouse Technology Systems Manual §11.1, Steam Generator Water Level Control System, pp. 11.1-2-3 (PDF pp. 4-5), Fig. 11.1-2](https://www.nrc.gov/docs/ML1122/ML11223A293.pdf) |
-| PI anti-windup context | Back-calculation/tracking correction used in `dI/dt = e + (u_clipped − u_raw)/(K_i·T_t)` | [Åström and Murray, *Feedback Systems*, 2nd ed., §11.3](https://fbswiki.org/wiki/index.php/Feedback_Systems:_An_Introduction_for_Scientists_and_Engineers) |
+| PI anti-windup context | Back-calculation/tracking correction used in `dI/dt = e + (u_clipped − u_raw)/(K_i·T_t)` | [Åström and Murray, *Feedback Systems*, 2nd ed., §11.4 "Integrator Windup"](https://fbswiki.org/wiki/index.php/PID_Control) |
 | Rod scram timing | Rapid rod insertion / fall into the core for PWR scram timing; this model's constant-velocity drop inserts 99 % of travel within about 2 s | [Nuclear-power.com, "SCRAM - Reactor Trip"](https://www.nuclear-power.com/nuclear-power/reactor-physics/reactor-dynamics/scram-reactor-trip/) |
 
 ## Equations
@@ -2049,7 +2049,7 @@ program.
 State: `m_fw` in the feedwater actuator and `I = ∫(level_setpoint − level_sg)dt`
 in the controller. Public cross-checks: Yan §5.2 for mass conservation, NRC
 Westinghouse Technology Systems Manual §11.1 for three-element SG water-level
-control signals, and Åström/Murray §11.3 for back-calculation anti-windup.
+control signals, and Åström/Murray §11.4 for back-calculation anti-windup.
 The gains and limits below are M4 L1 tuning choices, not plant-specific
 settings.
 
@@ -2243,7 +2243,7 @@ snapshots without `sg_sec` still pass the primary domain checker.
 m4` check the level dynamics added by M4. Validation measured on this branch:
 
 1. **Steady state, 600 s** — max collapsed-level error `1.44e-15`; final feed/steam mismatch `7.90e-15` of outflow.
-2. **Integrated shell balances during a 100 % → 80 % admission ramp** — mass-accumulation residual `4.19e-6` of shell mass, nonzero `ΔM_sec = 3,149.6 kg`, and shell-energy accumulation residual `3.04e-4`.
+2. **Integrated shell balances during a 100 % → 80 % admission ramp** — mass-accumulation residual `4.19e-6` of shell mass, signed `ΔM_sec = −3,149.6 kg` (`|ΔM_sec| = 3,149.6 kg` in the validation table), and shell-energy accumulation residual `3.04e-4`.
 3. **10 percentage-point admission reduction at 5 points/min, rods automatic** — max collapsed-level excursion `0.00180`; final residual from the 0.50 setpoint `1.99e-6`.
 4. **Collapsed-level setpoint step 0.50 → 0.55 at t = 10 s** — final residual `9.84e-5`; maximum level `0.559884` (< 0.57).
 5. **Loss of feedwater at t = 10 s** — manual feedwater at 0 reaches `sg_tubes_uncovered` at about `t = 64 s` (30..600 s acceptance band). In a real plant, low-low SG level would trip the reactor and start auxiliary feedwater before this model validity limit; M5 adds that protection behavior.
