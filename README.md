@@ -217,9 +217,10 @@ explains which assumption failed: a notice in the dashboard (the
 console. Resume is refused until you reset. Boiling, a water-solid
 pressurizer, and automatic reactor protection (a trip on high power or
 pressure) are not modeled, so the operator's own commands can reach the edge
-of the model. For example, full rod withdrawal together with a 10 MPa
-pressure setpoint makes the controller spray continuously, and the
-pressurizer fills solid after about 6 simulated minutes.
+of the model. For example, applying full rod withdrawal and a 10 MPa pressure
+setpoint together from the full-power state makes the controller spray
+continuously, and the pressurizer fills solid after about 236.5 s (roughly
+4 simulated minutes).
 
 Other simplifications to keep in mind (these do not stop the simulation):
 
@@ -1276,11 +1277,17 @@ speed(|err|) = 0                                      if |err| ≤ deadband
 In active automatic mode:
 
 ```text
-d(rod_demand_auto)/dt = −sign(err) · speed(|err|)
+rate_candidate = −sign(err) · speed(|err|)
+
+d(rod_demand_auto)/dt = 0               if rod_demand_auto ≤ 0 and rate_candidate < 0
+                       = 0               if rod_demand_auto ≥ 1 and rate_candidate > 0
+                       = rate_candidate  otherwise
 ```
 
 Hotter-than-reference coolant inserts rods; colder-than-reference coolant
-withdraws rods. Outside active automatic mode:
+withdraws rods. The travel-limit guard blocks only motion farther out of
+bounds; inward recovery is still allowed after a small numerical overshoot.
+Outside active automatic mode:
 
 ```text
 d(rod_demand_auto)/dt = (rod_position − rod_demand_auto) / tau_track
@@ -1886,8 +1893,16 @@ speed(|err|) = 0                                             if |err| ≤ 0.8 K
 **Active automatic rod demand:**
 
 ```
-d(rod_demand_auto)/dt = −sign(err) · speed(|err|)
+rate_candidate = −sign(err) · speed(|err|)
+
+d(rod_demand_auto)/dt = 0               if rod_demand_auto ≤ 0 and rate_candidate < 0
+                       = 0               if rod_demand_auto ≥ 1 and rate_candidate > 0
+                       = rate_candidate  otherwise
 ```
+
+The travel-limit guard blocks only motion farther out of bounds. If a
+numerical overshoot leaves the demand just below 0 or just above 1, the
+opposite-sign recovery rate is still allowed.
 
 **Tracking when manual, SCRAMed, or turbine-tripped:**
 

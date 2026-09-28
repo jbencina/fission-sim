@@ -2,18 +2,18 @@
 
 Reachable path (accepted operator commands only): withdraw the control bank
 fully (rod command 1.0) and lower the pressure setpoint to the 10 MPa bottom
-of the accepted range. Rod withdrawal heats the loop, whose expanding water
-surges into the pressurizer, while the controller sprays continuously to
-chase the low setpoint. Both fill the pressurizer; after about 370 s of
-simulated time it goes water-solid (steam quality reaches 0), which the
-saturated-pressurizer closure cannot describe. Before the domain check, the
-simulation kept running there with a negative quality and a pressure that
-climbed for no physical reason.
+of the accepted range together from the default full-power state. Rod
+withdrawal heats the loop, whose expanding water surges into the pressurizer,
+while the controller sprays continuously to chase the low setpoint. Both fill
+the pressurizer; after about 236.5 s of simulated time it goes water-solid
+(steam quality reaches 0), which the saturated-pressurizer closure cannot
+describe. Before the domain check, the simulation kept running there with a
+negative quality and a pressure that climbed for no physical reason.
 
 The test runs at speed 200 (the allowed speeds are widened for this test
-only; the operator can choose 1–10x), so the ~6-minute transient takes a
-few seconds of wall time. That changes only how
-far each step advances, not which commands were accepted.
+only; the operator can choose 1–10x), so the roughly 4-minute transient takes
+a few seconds of wall time. That changes only how far each step advances, not
+which commands were accepted.
 """
 
 from __future__ import annotations
