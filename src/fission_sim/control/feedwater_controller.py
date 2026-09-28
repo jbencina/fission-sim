@@ -19,12 +19,17 @@ Tong, L. S. and Weisman, J. *Thermal Analysis of Pressurized Water Reactors*,
 3rd ed., American Nuclear Society, 1996. (Steam-generator secondary-side mass
 and energy balances; feedwater is the controlled inlet flow to the shell.)
 
-Public reference:
+Yan, J. *Introduction to Engineering Thermodynamics*, §5.2.2 "Mass
+Conservation Equations in a Control Volume", for the inlet-minus-outlet mass
+balance used by this placeholder:
+https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
 
-- U.S. NRC Technical Training Center, *Reactor Concepts Manual: Pressurized
-  Water Reactor Systems*, describes steam generators, feedwater, and the need
-  to maintain secondary-side water inventory around the U-tubes:
-  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+U.S. NRC Technical Training Center, *Westinghouse Technology Systems Manual*,
+§11.1 "Steam Generator Water Level Control System", pp. 11.1-2-3 (PDF
+pp. 4-5) and Fig. 11.1-2, Rev. 0706, describes measured level, steam-flow,
+and feedwater-flow signals in the real control system that this L1 mass match
+defers:
+https://www.nrc.gov/docs/ML1122/ML11223A293.pdf
 """
 
 from __future__ import annotations
@@ -136,8 +141,8 @@ class FeedwaterController:
             ``m_fw`` [kg/s], the feedwater demand entering the steam-generator
             shell.
         """
-        # Governing M3 mass-closure equation (Tong & Weisman, 1996;
-        # NRC Reactor Concepts Manual PWR systems chapter):
+        # Governing M3 mass-closure equation (Yan §5.2.2 mass balance; NRC
+        # WTSM §11.1 for the real measured flows this placeholder defers):
         #
         #     m_fw = m_steam + m_dump
         #

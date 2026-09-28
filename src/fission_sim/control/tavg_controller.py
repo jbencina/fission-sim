@@ -3,14 +3,16 @@
 This control-layer component models the simplified automatic rod control
 function used in many Westinghouse-style pressurized-water reactors: compare
 the measured (in real plants, auctioneered highest-loop) average primary
-temperature ``T_avg`` with the turbine-load reference temperature ``T_ref``,
-then move the control bank inward or outward using a deadband and speed
-program. The default program uses an approximately 1.5 °F deadband, holds
-8 steps/min through about 3 °F error, then ramps to 72 steps/min at about
-5 °F error for a 228-step bank. At L1, one state variable is the automatic
-rod-demand position; the physical rod actuator is still the separate
+temperature ``T_avg`` with the reference temperature ``T_ref``, then move the
+control bank inward or outward using a deadband and speed program. The
+reference Westinghouse signal uses first-stage turbine impulse pressure as a
+turbine-power indication; this simulator supplies an admission-based L1 proxy
+from ``Turbine``. The default program uses an approximately 1.5 °F deadband,
+holds 8 steps/min through about 3 °F error, then ramps to 72 steps/min at
+about 5 °F error for a 228-step bank. At L1, one state variable is the
+automatic rod-demand position; the physical rod actuator is still the separate
 ``RodController``. The standard plant wires this controller between the
-turbine reference-temperature program and the rod actuator.
+turbine reference-temperature proxy and the rod actuator.
 
 # SIMPLIFICATION: the reference Westinghouse controller has lock-up hysteresis
 with separate start/stop thresholds; this L1 model keeps only a single
@@ -22,21 +24,12 @@ is omitted, so this is a temperature-only feedback controller.
 
 References
 ----------
-Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Volume I: Thermal
-Hydraulic Fundamentals*, 2nd ed., CRC Press, 2011, Ch. 7. (PWR load-following
-temperature program context.)
-
-Public reference:
-
-- U.S. NRC Technical Training Center, *Reactor Concepts Manual:
-  Pressurized Water Reactor Systems*, describes PWR reactor control by
-  control rods and the primary/secondary power balance that motivates a
-  programmed average-temperature reference:
-  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
-- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
-  Manual*, §8.1, "Rod Control System", §8.1.4.2–5 and Fig. 8.1-4, documents
-  the Tavg/Tref program, 1.5 °F deadband, 3–5 °F speed-program ramp, 0.5 °F
-  lock-up hysteresis, and nuclear/turbine-power mismatch anticipation:
+U.S. NRC Technical Training Center, *Westinghouse Technology Systems Manual*,
+§8.1 "Rod Control System", §8.1.4.2-5, pp. 8.1-6-8 (PDF pp. 10-12) and
+Fig. 8.1-4, Rev. 0209. Documents the Tavg/Tref program, first-stage
+impulse-pressure turbine-power signal, 1.5 °F deadband, 3-5 °F speed-program
+ramp, 0.5 °F lock-up hysteresis, and nuclear/turbine-power mismatch
+anticipation:
   https://www.nrc.gov/docs/ML1122/ML11223A252.pdf
 """
 
@@ -74,16 +67,16 @@ class TavgControllerParams:
         transfers bumpless without making the controller stiff.
     """
 
-    # Deadband: 0.8 K × 9/5 = 1.44 °F, the public Westinghouse rod-control
-    # deadband is usually described as about 1.5 °F. [K]
+    # Deadband: 0.8 K × 9/5 = 1.44 °F, matching the representative
+    # Westinghouse rod-control pickup scale in NRC WTSM §8.1.4.2. [K]
     deadband: float = 0.8
 
-    # Plateau endpoint: 3.0 °F × 5/9 = 1.667 K, where the Westinghouse speed
-    # program leaves the 8 steps/min minimum-speed plateau. [K]
+    # Plateau endpoint: 3.0 °F × 5/9 = 1.667 K, where the representative
+    # speed program leaves the 8 steps/min minimum-speed plateau. [K]
     err_plateau: float = 5.0 / 3.0
 
     # Full-speed point: 5.0 °F × 5/9 = 2.778 K, matching the 5 °F endpoint of
-    # the Westinghouse Tavg speed-program ramp. [K]
+    # the representative Tavg speed-program ramp. [K]
     err_max: float = 25.0 / 9.0
 
     # 8 steps/min over a 228-step bank:
@@ -96,7 +89,8 @@ class TavgControllerParams:
     # physical bank can follow automatic demand without becoming the limiter.
     v_max: float = 5.3e-3  # [1/s]
 
-    # Numerical tracking lag for bumpless transfers. One second is much
+    # Numerical tracking lag for bumpless transfers. L1 tuning choice: one
+    # second is much
     # shorter than operator-visible load-following transients but nonzero, so
     # the ODE remains continuous when action is suspended. [s]
     tau_track: float = 1.0
@@ -134,7 +128,7 @@ class TavgController:
         T_avg : float [K]
             Average primary coolant temperature.
         T_ref : float [K]
-            Turbine-load reference temperature.
+            Admission-based reference temperature proxy from ``Turbine``.
         rod_position : float [dimensionless, 0–1]
             Actual control-bank position from ``RodController``.
         rod_command : float [dimensionless, 0–1]

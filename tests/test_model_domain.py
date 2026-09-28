@@ -85,7 +85,7 @@ def test_secondary_states_inside_domain_pass(overrides):
     ("overrides", "limit", "message"),
     [
         ({"P_steam": float("nan")}, "non_finite", "non-numeric value for P_steam"),
-        ({"P_steam": P_STEAM_MIN - 1.0}, "steam_pressure", "feedwater would flash to steam"),
+        ({"P_steam": P_STEAM_MIN - 1.0}, "steam_pressure", "configured feedwater would flash near"),
         ({"P_steam": P_STEAM_MAX + 1.0}, "steam_pressure", "above the model's 12 MPa ceiling"),
         ({"x_sg": 0.0}, "sg_solid", "filled solid"),
         ({"x_sg": 1.0}, "sg_dry", "boiled dry"),
@@ -95,7 +95,7 @@ def test_secondary_states_inside_domain_pass(overrides):
 def test_secondary_states_outside_domain_raise_named_limit(overrides, limit, message):
     p = SGSecondaryParams()
     with pytest.raises(ModelDomainError, match=message) as exc_info:
-        check_secondary_domain(**{**{"P_steam": p.P_ref, "x_sg": 0.05}, **overrides})
+        check_secondary_domain(**{**{"P_steam": p.P_ref, "x_sg": 0.05, "P_fw_flash": p.P_fw_flash}, **overrides})
     assert exc_info.value.limit == limit
 
 
@@ -109,7 +109,8 @@ def test_snapshot_uses_configured_feedwater_flash_pressure():
     snap = build_standard_plant(sg_sec_params=sg_params).snapshot()
     assert snap["sg_sec"]["P_fw_flash"] > P_STEAM_MIN
     snap["sg_sec"]["P_steam"] = 4.46e6
-    with pytest.raises(ModelDomainError, match="feedwater would flash to steam") as exc_info:
+    expected_flash = rf"configured feedwater would flash near {sg_params.P_fw_flash / 1e6:.2f} MPa"
+    with pytest.raises(ModelDomainError, match=expected_flash) as exc_info:
         check_snapshot(snap)
     assert exc_info.value.limit == "steam_pressure"
 

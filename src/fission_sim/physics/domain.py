@@ -43,7 +43,8 @@ reports it as a ``ModelDomainError`` too (the step genuinely cannot
 complete).
 
 This module adds no physics: no boiling model, no clamping, no automatic
-reactor protection. It only makes the edge of the model visible.
+reactor protection. It only makes the edge of the model visible. These are
+simulation validity limits, not plant protection setpoints.
 
 Public references:
 
@@ -87,7 +88,7 @@ MIN_SUBCOOLING: float = 0.0
 # Lowest secondary steam pressure accepted [Pa]. This is deliberately above
 # P_sat(500 K) ≈ 2.64 MPa because the SGSecondary feedwater enters at
 # T_fw = 500 K; below saturation at that temperature, CoolProp would return a
-# vapor enthalpy for h(P, T_fw), i.e. the feedwater would flash to steam.
+# vapor enthalpy for h(P, T_fw), i.e. the feedwater would cross its flashing boundary.
 P_STEAM_MIN: float = 3.0e6
 
 # Margin above the feedwater flash pressure [-]. The 0.1 % buffer keeps the
@@ -95,9 +96,8 @@ P_STEAM_MIN: float = 3.0e6
 # roundoff, while adding only ~2.6 kPa for the default 500 K feedwater.
 FW_FLASH_MARGIN: float = 1.0e-3
 
-# Highest secondary steam pressure accepted [Pa]. SG safety valves lift near
-# 8.3 MPa in the model's references; 12 MPa is a numerical/domain ceiling, not
-# modeled protection.
+# Highest secondary steam pressure accepted [Pa]. This is a numerical/domain
+# ceiling for the simplified shell, not a plant protection setpoint.
 P_STEAM_MAX: float = 12.0e6
 
 
@@ -252,7 +252,8 @@ def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | N
     if bad:
         raise ModelDomainError(
             f"The steam generator produced a non-numeric value for {', '.join(bad)}. "
-            "The shell-side equations have been pushed somewhere they cannot be evaluated.",
+            "The shell-side equations have been pushed somewhere they cannot be evaluated. "
+            "This is a simulation validity limit, not a plant protection setpoint.",
             limit="non_finite",
         )
 
@@ -261,33 +262,40 @@ def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | N
         pressure_floor = max(pressure_floor, P_fw_flash * (1.0 + FW_FLASH_MARGIN))
 
     if P_steam < pressure_floor:
+        if P_fw_flash is None:
+            flash_text = "the configured feedwater flash pressure is not available"
+        else:
+            flash_text = f"the configured feedwater would flash near {P_fw_flash / 1e6:.2f} MPa"
         raise ModelDomainError(
             f"Steam pressure fell to {P_steam / 1e6:.2f} MPa, below the model's "
-            f"{pressure_floor / 1e6:.2f} MPa floor. At lower pressure the "
-            "configured feedwater would flash to steam, but the M3 shell "
-            "energy balance assumes liquid feedwater entering saturated water "
-            "under its own steam.",
+            f"{P_STEAM_MIN / 1e6:.2f} MPa guard band or configured-feedwater "
+            f"flash margin; {flash_text}. The M3 shell energy balance assumes "
+            "liquid feedwater entering saturated water under its own steam. "
+            "This is a simulation validity limit, not a plant protection setpoint.",
             limit="steam_pressure",
         )
     if P_steam > P_STEAM_MAX:
         raise ModelDomainError(
             f"Steam pressure rose to {P_steam / 1e6:.2f} MPa, above the model's "
-            f"{P_STEAM_MAX / 1e6:.0f} MPa ceiling. Real steam generators open "
-            "relief and safety valves near the main-steam pressure range; this "
-            "simplified lumped shell has only the modeled dump path.",
+            f"{P_STEAM_MAX / 1e6:.0f} MPa ceiling. This is a simulation validity "
+            "limit for the simplified lumped shell, not a plant protection "
+            "setpoint; real steam generators use separate relief and safety "
+            "valves outside this model.",
             limit="steam_pressure",
         )
     if x_sg >= 1.0:
         raise ModelDomainError(
             "The steam generator has boiled dry: no liquid is left on the shell "
             "side, so there is nothing to boil and the heat-transfer picture no "
-            "longer applies.",
+            "longer applies. This is a simulation validity limit, not a plant "
+            "protection setpoint.",
             limit="sg_dry",
         )
     if x_sg <= 0.0:
         raise ModelDomainError(
             "The steam generator shell has filled solid with water: the steam "
-            "space is gone and pressure can no longer come from a steam bubble.",
+            "space is gone and pressure can no longer come from a steam bubble. "
+            "This is a simulation validity limit, not a plant protection setpoint.",
             limit="sg_solid",
         )
 

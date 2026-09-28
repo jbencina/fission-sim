@@ -25,21 +25,29 @@ constant-``UA`` ``SteamGenerator`` component.
 
 References
 ----------
-Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed.,
-CRC Press, 2012. Ch. 6 covers control-volume mass and energy balances;
-Ch. 7 describes PWR steam generators and secondary-side boiling.
+Yan, J. *Introduction to Engineering Thermodynamics*, §5.2.2 "Mass
+Conservation Equations in a Control Volume" and §5.2.3 "Energy Conservation
+Equations in a Control Volume". Transient open-system balance forms:
+https://pressbooks.bccampus.ca/thermo1/chapter/5-2-steady-flow-and-transient-flow/
 
 DOE Fundamentals Handbook, *Thermodynamics, Heat Transfer, and Fluid Flow*,
 Vol. 1, DOE-HDBK-1012/1-92. Saturation properties, quality, and two-phase
-mixture relationships:
+mixture relationships, including HT-01 p. 34 Eq. (1-20) for quality and
+p. 54 for accumulation:
 https://www.steamtablesonline.com/pdf/Thermodynamics-Volume1.pdf
 
 Public PWR system reference:
 
-- U.S. NRC Technical Training Center, *Reactor Concepts Manual: Pressurized
-  Water Reactor Systems*, describes PWR steam generators, feedwater, and
-  steam flow:
-  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §7.1 "Main and Auxiliary Steam Systems", §7.1.3.3 p. 7.1-5 and
+  §7.1.3.4 p. 7.1-6 (PDF pp. 7-8), Rev. 0101, for representative steam-line
+  relief paths:
+  https://www.nrc.gov/docs/ML1122/ML11223A244.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §11.1 "Steam Generator Water Level Control System", pp. 11.1-2-3
+  (PDF pp. 4-5) and Fig. 11.1-2, Rev. 0706, for the real narrow-range
+  level/shrink-swell context that this collapsed-level model omits:
+  https://www.nrc.gov/docs/ML1122/ML11223A293.pdf
 - CoolProp / IAPWS references for water and steam property evaluations:
   https://coolprop.org/fluid_properties/IF97.html
   https://iapws.org/documents/release/IF97-Rev
@@ -114,8 +122,13 @@ def _solve_u_for_pressure(M_sec: float, U_closed_form: float, V_sec: float, P_re
     internal energies used for the closed-form state use IF97. The two
     backends are both accurate steam-water property models, but their
     numerical surfaces are not bit-identical; solving this one scalar closes
-    that tiny mismatch without changing the physically meaningful mass/level
-    design point.
+    the initial-pressure mismatch without changing the physically meaningful
+    mass/level design point.
+
+    The root reconciles pressure only. It does not make the stored HEOS
+    ``U_sec`` exactly equal to the IF97 phase-split internal energy; the
+    default difference is about 50.23 MJ, or 0.016 % of the stored shell
+    energy, which is acceptable for this L1 educational model.
     """
 
     def pressure_residual(U_sec: float) -> float:
@@ -235,9 +248,10 @@ class SGSecondaryParams:
     :func:`fission_sim.physics.pressurizer.saturation_state`.
     """
 
-    # Total secondary-side water/steam volume. Provenance: four large
-    # Model-F-class U-tube steam-generator shells, roughly 150 m³ shell-side
-    # inventory volume each, lumped into one educational component.
+    # Total secondary-side water/steam volume. Provenance: generic L1
+    # educational assumption of plausible four-SG scale; at level_ref = 0.5
+    # the default IF97 phase split contains about 222 t of liquid. This is
+    # not a plant drawing value or calibrated level elevation.
     V_sec: float = 600.0  # [m³]
 
     # Design secondary saturation temperature. Provenance: matches the
@@ -245,8 +259,9 @@ class SGSecondaryParams:
     # which is about 285 °C and corresponds to ~6.9 MPa steam.
     T_sec_ref: float = 558.0  # [K]
 
-    # Design collapsed water level. Provenance: half-full leaves symmetric
-    # margin for boiloff and overfill in this simplified shell model.
+    # Design collapsed water level. Provenance: generic L1 educational anchor;
+    # half-full leaves symmetric margin for boiloff and overfill in this
+    # simplified shell model, not a narrow-range level setpoint.
     level_ref: float = 0.5  # [-]
 
     # Feedwater temperature. Provenance: 500 K = 227 °C, a typical final
@@ -280,8 +295,8 @@ class SGSecondaryParams:
 
         Notes
         -----
-        Governing design equations (Todreas & Kazimi Ch. 6 control-volume
-        bookkeeping; DOE-HDBK-1012/1-92 saturation properties):
+        Governing design equations (DOE-HDBK-1012/1-92 HT-01 p. 34
+        saturated-mixture relations):
 
             P_ref = P_sat(T_sec_ref)
             V_l = level_ref · V_sec
@@ -291,8 +306,10 @@ class SGSecondaryParams:
             m_steam,design = Q_design / (h_g(P_ref) − h_fw(P_ref, T_fw))
 
         The final ``U_sec_initial`` is the scalar root near ``U_closed`` that
-        makes the shared ``saturation_state`` inversion return exactly
-        ``P_ref``.
+        makes the shared ``saturation_state`` inversion return ``P_ref``. It
+        reconciles the initial pressure only; the HEOS stored energy and the
+        IF97 phase-split energy still differ by about 0.016 % at the default
+        state.
         """
         P_ref = self.P_ref
         if P_ref is None:
@@ -317,7 +334,7 @@ class SGSecondaryParams:
             M_sec_initial = M_l + M_v
 
             # U = M_l · u_l + M_v · u_v, the extensive internal energy of the
-            # two saturated phases before reconciling the IF97/HEOS backends.
+            # two saturated phases before the pressure-only IF97/HEOS root.
             U_closed_form = M_l * u_l + M_v * u_v
 
             # Keep the closed-form mass: level depends on mass and IF97
@@ -447,9 +464,8 @@ class SGSecondary:
 
         Notes
         -----
-        Governing equations (open-system first law on a rigid control
-        volume, Todreas & Kazimi Ch. 6; public cross-check:
-        DOE-HDBK-1012/1-92):
+        Governing equations (Yan §5.2.2 mass conservation and §5.2.3 energy
+        conservation for a transient control volume):
 
             dM_sec/dt = ṁ_fw − ṁ_steam − ṁ_dump
             dU_sec/dt = Q_sg + ṁ_fw · h_fw(P_steam)
@@ -468,12 +484,12 @@ class SGSecondary:
         m_fw = inputs["m_fw"]
         m_out = m_steam + m_dump
 
-        # Mass balance: feedwater entering minus all steam leaving
-        # (Todreas & Kazimi Ch. 6, conservation of mass).
+        # Mass balance: feedwater entering minus all steam leaving (Yan
+        # §5.2.2, transient control-volume mass conservation).
         dM_dt = m_fw - m_out
 
         # Energy balance for a rigid control volume. Flow work is already
-        # included in the stream enthalpies h_fw and h_g.
+        # included in the stream enthalpies h_fw and h_g (Yan §5.2.3).
         dU_dt = inputs["Q_sg"] + m_fw * self.h_fw(sat.P) - m_out * sat.h_v
 
         return np.array([dM_dt, dU_dt], dtype=float)

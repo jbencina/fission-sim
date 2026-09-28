@@ -3,7 +3,7 @@
 This module represents the main turbine, main steam header relief path, and
 the Westinghouse-style ``T_ref`` program as one L1 component. The component
 does not model turbine stages or a condenser; it turns steam-generator shell
-pressure and a governor load demand into steam flow, relief/dump flow,
+pressure and a governor admission demand into steam flow, relief/dump flow,
 gross electric power, and the reactor coolant average-temperature reference
 used by rod control.
 
@@ -20,34 +20,49 @@ megawatts and speed/pressure through several valve groups, not one fixed
 valve position.
 # SIMPLIFICATION: steam dump, steam-generator power-operated relief valves,
 and safety valves are lumped into one proportional relief path. Real plants
-use a limited condenser steam dump (often about 40 % load) plus staggered
-relief and safety valves near the 7.6–8.3 MPa main-steam range.
+use a limited condenser steam dump, separate atmospheric SG power-operated
+relief valves, and staggered safety valves with their own capacities,
+permissives, and reset behavior.
 # SIMPLIFICATION: no turbine rotor inertia, condenser pressure, moisture
 separation/reheat, extraction feedwater heating, or generator losses are
 modeled.
+# SIMPLIFICATION: the ``T_ref`` signal is an admission-based proxy for the
+first-stage impulse-pressure turbine-power program used by the reference
+rod-control system.
 
 References
 ----------
-Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed.,
-CRC Press, 2012. Ch. 7 describes PWR steam generators and secondary plant
-heat removal.
-
-Kearton, W. J. *Steam Turbine Theory and Practice*, 7th ed., Pitman, 1958.
-Ch. VII describes turbine governing and the approximately pressure-scaled
-flow through wide-open turbine valves.
+NASA Glenn, "Mass Flow Rate Equations", Eq. 10 and choking condition Eq. 19.
+These equations support the approximate ``m ∝ area · P / sqrt(T)`` scaling
+used here, not a detailed wet-steam turbine stage model:
+https://www.grc.nasa.gov/www/k-12/airplane/mflchk.html
 
 DOE Fundamentals Handbook, *Thermodynamics, Heat Transfer, and Fluid Flow*,
 Vol. 1, DOE-HDBK-1012/1-92. Control-volume enthalpy bookkeeping and turbine
 work:
 https://www.steamtablesonline.com/pdf/Thermodynamics-Volume1.pdf
 
-Public PWR system reference:
-
-- U.S. NRC Technical Training Center, *Reactor Concepts Manual: Pressurized
-  Water Reactor Systems*, describes PWR steam generators, turbine-generator
-  heat conversion, rod-control temperature program context, and reactor trip
-  actions:
-  https://ww2.nrc.gov/sites/default/files/doc_library/cdn/legacy/reading-rm/basic-ref/students/for-educators/04.pdf
+Public PWR system references:
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §11.2 "Steam Dump Control System", printed pp. 11.2-1-5 (PDF
+  pp. 5-9), Rev. 0403, for steam-dump modes, no-load setting, 40 % condenser
+  dump capacity example, and trip heat-removal context:
+  https://www.nrc.gov/docs/ML1122/ML11223A294.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §7.1 "Main and Auxiliary Steam Systems", §7.1.3.3 p. 7.1-5 and
+  §7.1.3.4 p. 7.1-6 (PDF pp. 7-8), Rev. 0101, for atmospheric PORV and
+  safety-valve capacity/setpoint examples:
+  https://www.nrc.gov/docs/ML1122/ML11223A244.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §8.1 "Rod Control System", §8.1.4.2-5, pp. 8.1-6-8 (PDF
+  pp. 10-12), Fig. 8.1-4, Rev. 0209, for turbine-impulse-pressure-derived
+  ``T_ref`` and rod-control signals:
+  https://www.nrc.gov/docs/ML1122/ML11223A252.pdf
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §12.2 "Reactor Protection System -- Reactor Trip Signals",
+  §12.2.3.16 p. 12.2-7 and §12.2.4 pp. 12.2-10-11 (PDF pp. 11, 14-15),
+  Rev. 0109, for P-4 and turbine-trip reactor-trip examples:
+  https://www.nrc.gov/docs/ML1122/ML11223A301.pdf
 - CoolProp / IAPWS references for water and steam property evaluations:
   https://coolprop.org/fluid_properties/IF97.html
   https://iapws.org/documents/release/IF97-Rev
@@ -76,7 +91,7 @@ class TurbineParams:
         ``P_ref`` [Pa], design steam flow ``m_steam_design`` [kg/s], and
         feedwater temperature ``T_fw`` [K].
     ramp_rate : float, optional
-        Maximum governor load-change rate [1/s].
+        Maximum governor admission-change rate [1/s].
     tau_gov : float, optional
         First-order governor lag time constant inside the rate limit [s].
     tau_trip : float, optional
@@ -91,11 +106,11 @@ class TurbineParams:
         Steam pressure where the lumped dump/relief path reaches design
         steam-flow capacity [Pa].
     T_ref_noload : float, optional
-        Reactor coolant average-temperature reference at no turbine load [K].
+        Reactor coolant average-temperature reference at no turbine admission [K].
     T_ref_full : float, optional
-        Reactor coolant average-temperature reference at full turbine load [K].
+        Reactor coolant average-temperature reference at full turbine admission [K].
     load_initial : float, optional
-        Initial turbine admission/load state [-].
+        Initial turbine admission state [-].
     k_valve : float or None, optional
         Linear admission-flow coefficient [kg/(s·Pa)]. If None, derived as
         ``m_steam_design / P_ref`` so full load at design pressure removes
@@ -111,42 +126,43 @@ class TurbineParams:
     # point so the all-default plant starts at exact full-load balance.
     sg_params: SGSecondaryParams = field(default_factory=SGSecondaryParams)
 
-    # 8.33e-4 1/s = 0.05 per minute. Provenance: plan value for a 5 %/min
-    # educational turbine-governor load ramp.
+    # 8.33e-4 1/s = 0.05 per minute. Provenance: L1 tuning choice matching a
+    # recognizable 5 percentage-point/minute maneuver scale; this limits
+    # admission, not measured MW.
     ramp_rate: float = 8.33e-4  # [1/s]
 
-    # Governor lag time. Provenance: plan value, a deliberately fast 1 s
-    # lag so the rate limiter, not a slow actuator, sets load-ramp behavior.
+    # Governor lag time. Provenance: L1 tuning choice, a deliberately fast
+    # 1 s lag so the rate limiter, not a slow actuator, sets admission-ramp
+    # behavior.
     tau_gov: float = 1.0  # [s]
 
-    # Stop-valve closure time. Provenance: plan value representing fast main
-    # turbine stop-valve closure after a trip.
+    # Stop-valve closure smoothing time. Provenance: L1 tuning choice; this
+    # is an exponential time constant, not a validated stop-valve stroke time.
     tau_trip: float = 0.5  # [s]
 
     # Thermal-to-electric efficiency. Provenance: typical large PWR gross
     # efficiency of about one-third; 0.33 × 3.0 GWth ≈ 990 MWe.
     eta: float = 0.33  # [-]
 
-    # Dump begins opening near 7.6 MPa. Provenance: plan setpoint; roughly
-    # the lower end of main steam dump / relief action in the referenced PWR
-    # training material.
+    # Dump begins opening near 7.6 MPa. Provenance: L1 tuning choice anchored
+    # to the NRC WTSM §11.2 representative no-load pressure-control example;
+    # it is not a universal plant setpoint.
     P_dump_set: float = 7.6e6  # [Pa]
 
-    # Full lumped relief capacity near 8.2 MPa. Provenance: plan value inside
-    # the 7.6–8.3 MPa range spanning ~40 % condenser dump, SG PORVs, and
-    # safety valves in real plants.
+    # Full lumped relief capacity near 8.2 MPa. Provenance: L1 aggregate
+    # tuning choice; real condenser dumps, SG PORVs, and safety valves have
+    # separate capacities and staggered setpoints.
     P_dump_full: float = 8.2e6  # [Pa]
 
-    # No-load Tavg reference. Provenance: 565 K is approximately the
-    # saturation temperature of 7.6 MPa steam, matching the plan's no-load
-    # reference anchor.
+    # No-load Tavg reference. Provenance: L1 tuning choice; 565 K is close to
+    # the saturation temperature at the 7.6 MPa pressure-control anchor.
     T_ref_noload: float = 565.0  # [K]
 
     # Full-load Tavg reference. Provenance: same 583 K nominal primary-loop
     # average temperature used by LoopParams.T_avg_ref.
     T_ref_full: float = 583.0  # [K]
 
-    # Initial turbine admission. Provenance: full-load default keeps the
+    # Initial turbine admission. Provenance: full-admission default keeps the
     # all-default plant at its design balance.
     load_initial: float = 1.0  # [-]
 
@@ -175,7 +191,8 @@ class TurbineParams:
 
         Notes
         -----
-        Governing calibration equation (Kearton, turbine governing):
+        Governing calibration equation (NASA Glenn mass-flow scaling, Eq. 10
+        and choked-flow condition Eq. 19, reduced to one L1 coefficient):
 
             k_valve = m_steam,design / P_ref
 
@@ -185,7 +202,7 @@ class TurbineParams:
         for name in ("ramp_rate", "tau_gov", "tau_trip"):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(f"{name} must be finite and > 0 so the turbine load derivative is well defined.")
+                raise ValueError(f"{name} must be finite and > 0 so the turbine admission derivative is well defined.")
 
         if not math.isfinite(float(self.P_dump_set)):
             raise ValueError("P_dump_set must be finite [Pa] so the steam-dump opening pressure is defined.")
@@ -226,7 +243,9 @@ class Turbine:
         Reactor trip signal. In Westinghouse terminology, a reactor trip
         generates the P-4 interlock: in plain words, once the reactor trips,
         the turbine is also tripped so it stops drawing full steam flow from
-        a heat source that has just shut down.
+        a heat source that has just shut down. P-4 is this reactor-trip to
+        turbine-trip direction only; turbine-trip to reactor-trip logic
+        (P-9/P-7 in representative plants) is not modeled.
 
     Ports out
     ---------
@@ -280,12 +299,12 @@ class Turbine:
         return np.array([self.params.load_initial], dtype=float)
 
     def T_ref_for(self, load: float) -> float:
-        """Return the average-temperature reference for a turbine load.
+        """Return the average-temperature reference for turbine admission.
 
         Parameters
         ----------
         load : float
-            Normalized turbine admission/load [-].
+            Normalized turbine admission [-].
 
         Returns
         -------
@@ -294,30 +313,31 @@ class Turbine:
 
         Notes
         -----
-        Governing equation (NRC Reactor Concepts Manual, PWR rod-control
-        temperature-program context):
+        Governing equation (NRC Westinghouse Technology Systems Manual §8.1,
+        representative rod-control temperature program):
 
             T_ref = T_ref,noload + (T_ref,full − T_ref,noload) · load
 
-        This L1 model uses a straight line between no-load and full-load
-        anchors.
+        The reference system derives load from first-stage turbine impulse
+        pressure. This L1 model uses turbine admission as a proxy, so
+        ``T_ref`` is admission-based rather than measured-MW based.
         """
         p = self.params
         return p.T_ref_noload + (p.T_ref_full - p.T_ref_noload) * load
 
     @staticmethod
     def _clipped_load_demand(load_demand: Any) -> float:
-        """Return finite load demand clipped to the physical interval [0, 1].
+        """Return finite admission demand clipped to the physical interval [0, 1].
 
         Parameters
         ----------
         load_demand : Any
-            External load demand value, expected to be numeric [-].
+            External admission demand value, expected to be numeric [-].
 
         Returns
         -------
         float
-            Finite load demand clipped into ``[0, 1]`` [-].
+            Finite admission demand clipped into ``[0, 1]`` [-].
 
         Raises
         ------
@@ -373,15 +393,16 @@ class Turbine:
 
         Notes
         -----
-        Governing equations (Kearton, turbine governing; NRC Reactor Concepts
-        Manual for trip action):
+        Governing equations (NRC WTSM §12.2 for P-4 trip action and NASA
+        Glenn mass-flow scaling for the admission concept):
 
             dload/dt = −load / tau_trip                         (trip or scram)
             dload/dt = clip((load_demand − load) / tau_gov,
                             −ramp_rate, +ramp_rate)             (normal)
 
         A reactor trip closes the turbine stop valves through the P-4
-        interlock even when the explicit turbine-trip input is false.
+        interlock even when the explicit turbine-trip input is false. The
+        reverse turbine-trip-to-reactor-trip protection path is deferred.
         """
         p = self.params
         load = float(state[0])
@@ -389,12 +410,13 @@ class Turbine:
 
         if self._trip_active(inputs):
             # Reactor trip → P-4 interlock → turbine trip: close stop valves
-            # exponentially toward zero (NRC Reactor Concepts Manual PWR).
+            # exponentially toward zero (NRC WTSM §12.2). The reverse
+            # turbine-trip → reactor-trip path is not part of M3.
             return np.array([-load / p.tau_trip], dtype=float)
 
         # SIMPLIFICATION: this state is valve admission, not a full
         # megawatt/speed governor. The first-order lag is then clipped to the
-        # 5 %/min educational load-program ramp rate (Kearton Ch. VII).
+        # 5 percentage-point/minute L1 admission-ramp choice.
         rate = (demand - load) / p.tau_gov
         return np.array([float(np.clip(rate, -p.ramp_rate, p.ramp_rate))], dtype=float)
 
@@ -423,13 +445,14 @@ class Turbine:
         load_clipped = max(float(load), 0.0)
 
         # SIMPLIFICATION: linear choked/admission-valve law standing in for
-        # real multi-valve turbine governing (Kearton Ch. VII):
+        # real multi-valve turbine governing (NASA Glenn Eq. 10/19 scaling):
         #     ṁ_steam = k_v · load · P_steam
         m_steam = p.k_valve * load_clipped * P_steam
 
         # SIMPLIFICATION: one proportional relief path represents condenser
-        # steam dump plus SG PORVs and safety valves. Real plants have
-        # multiple paths whose setpoints and capacities are staggered:
+        # steam dump plus SG PORVs and safety valves (NRC WTSM §§11.2, 7.1).
+        # Real plants have multiple paths whose setpoints and capacities are
+        # staggered:
         #     ṁ_dump = ṁ_design · clip((P_steam − P_set) / (P_full − P_set), 0, 1)
         dump_fraction = (P_steam - p.P_dump_set) / (p.P_dump_full - p.P_dump_set)
         m_dump = sg.m_steam_design * float(np.clip(dump_fraction, 0.0, 1.0))
@@ -441,8 +464,9 @@ class Turbine:
         #     P_electric = η · ṁ_steam · (h_g(P_steam) − h_fw(P_steam, T_fw))
         P_electric = p.eta * m_steam * (h_g - h_fw)
 
-        # Linear Westinghouse-style average-temperature program (NRC Reactor
-        # Concepts Manual PWR rod-control context):
+        # Linear admission-based proxy for the Westinghouse average-
+        # temperature program. The reference signal uses first-stage impulse
+        # pressure as turbine-power indication (NRC WTSM §8.1):
         #     T_ref = T_ref,noload + (T_ref,full − T_ref,noload) · load
         T_ref = self.T_ref_for(load_clipped)
 
