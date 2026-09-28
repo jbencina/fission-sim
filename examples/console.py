@@ -25,8 +25,11 @@ Commands:
     admission <0-1> / turbine_load <0-1>
                     set turbine admission demand (valve admission, not MW);
                     gross electrical MW is displayed separately
-    level <0-1>     set SG collapsed liquid-fraction setpoint
-    feedwater <0-1> set manual feedwater demand fraction
+    level <0.35-0.90>
+                    set ordinary SG collapsed liquid-fraction setpoint
+                    (inside the 0.30/0.95 model validity limits)
+    feedwater <0-1> set manual demand as a fraction of maximum feedwater
+                    flow (max = 120 % design; kg/s and % design shown)
     feedwater auto  return feedwater to automatic three-element control
     trip            Unprotected turbine trip: automatic reactor trip on
                     turbine trip omitted; ideal feedwater and combined
@@ -63,7 +66,7 @@ from collections import deque
 
 from fission_sim.control.pressurizer_controller import PressurizerControllerParams
 from fission_sim.disclaimer import print_disclaimer
-from fission_sim.physics.domain import ModelDomainError, check_snapshot
+from fission_sim.physics.domain import LEVEL_SG_MAX, LEVEL_SG_MIN, ModelDomainError, check_snapshot
 from fission_sim.plant import build_standard_plant
 
 # Rolling window of last N steps shown in the table.
@@ -76,9 +79,24 @@ WALL_TICK_S = 1.0
 P_SETPOINT_DEFAULT = PressurizerControllerParams().P_setpoint_default
 # The console layout is intentionally narrow enough for a default terminal.
 DISPLAY_WIDTH = 92
+# Ordinary operator setpoints leave margin inside the mathematical model
+# validity limits (0.30 and 0.95). Deliberate boundary exercises use manual
+# feedwater commands and halt at the limits instead.
+SG_LEVEL_TARGET_MIN = 0.35
+SG_LEVEL_TARGET_MAX = 0.90
+# The default feedwater actuator can deliver 120 % of design steam flow.
+FEEDWATER_MAX_FRAC_OF_DESIGN = 1.20
 UNPROTECTED_TURBINE_TRIP_LABEL = (
     "Unprotected turbine trip: automatic reactor trip on turbine trip omitted; "
     "ideal feedwater and combined dump/relief available"
+)
+UNPROTECTED_LOFW_LABEL = (
+    "Unprotected inventory-depletion exercise: low-low level reactor trip and "
+    "auxiliary feedwater start are omitted."
+)
+UNPROTECTED_OVERFILL_LABEL = (
+    "Unprotected overfill exercise: high-high level turbine trip and "
+    "feedwater isolation are omitted."
 )
 SIGNAL_RELEASE_NOTE = (
     "idealized signal release; turbine admission demand held at 0.000. "
@@ -172,6 +190,69 @@ def _fmt_optional_fraction(value: float | None) -> str:
     return f"{value:.2f}" if value is not None else "auto"
 
 
+def _fmt_time_estimate(value: float | None) -> str:
+    """Format a diagnostic time estimate without implying clock precision."""
+    if value is None:
+        return "n/a"
+    seconds = float(value)
+    if seconds >= 1.0e6:
+        return ">1e6 s"
+    return f"{seconds:.0f} s"
+
+
+def _feedwater_mode_label(fw_ctrl: dict) -> str:
+    """Return ``AUTO`` / ``MANUAL`` with saturation called out."""
+    label = str(fw_ctrl["mode"]).upper()
+    if fw_ctrl.get("saturated"):
+        label += " (saturated)"
+    return label
+
+
+def _feedwater_capacity(state: dict) -> tuple[float | None, float | None]:
+    """Return ``(m_fw_max, m_fw_design)`` [kg/s] from the latest snapshot."""
+    try:
+        m_fw_max = float(state["last_snap"]["feedwater"]["m_fw_max"])
+    except KeyError:
+        return None, None
+    return m_fw_max, m_fw_max / FEEDWATER_MAX_FRAC_OF_DESIGN
+
+
+def _feedwater_manual_ack(state: dict, fraction: float) -> str:
+    """Return an explicit manual-feedwater acknowledgement with real units."""
+    m_fw_max, m_fw_design = _feedwater_capacity(state)
+    denominator = "fraction of maximum feedwater flow (max = 120 % design)"
+    if m_fw_max is None or m_fw_design is None:
+        flow_text = "kg/s unavailable"
+    else:
+        demand = fraction * m_fw_max
+        pct_design = 100.0 * demand / m_fw_design
+        flow_text = f"{demand:.1f} kg/s, {pct_design:.1f} % design"
+    msg = f"Manual feedwater demand set to {fraction:.3f}: {denominator} = {flow_text}."
+    if fraction == 0.0:
+        msg += f" {UNPROTECTED_LOFW_LABEL}"
+    elif fraction == 1.0:
+        msg += f" {UNPROTECTED_OVERFILL_LABEL}"
+    return msg
+
+
+def _feedwater_help_text() -> str:
+    """Return the feedwater command help/error text."""
+    return (
+        "ERROR: 'feedwater' requires 'feedwater auto' or a fraction in [0,1]; "
+        "fraction of maximum feedwater flow (max = 120 % design), with kg/s "
+        "and % design shown in the acknowledgement."
+    )
+
+
+def _level_range_text() -> str:
+    """Return the ordinary SG-level command range explanation."""
+    return (
+        f"ERROR: ordinary SG level setpoint must be {SG_LEVEL_TARGET_MIN:.2f}–"
+        f"{SG_LEVEL_TARGET_MAX:.2f}; model validity limits are "
+        f"{LEVEL_SG_MIN:.2f} and {LEVEL_SG_MAX:.2f}."
+    )
+
+
 def _message_lines(message: str) -> list[str]:
     """Wrap the current acknowledgement without exceeding the console width."""
     if not message:
@@ -212,12 +293,14 @@ def status_lines(state: dict) -> list[str]:
     level_sg = float(sg_sec["level_sg"]) * 100.0
     m_fw = float(feedwater["m_fw"])
     m_fw_demand = float(fw_ctrl["m_fw_demand"])
-    fw_mode = str(fw_ctrl["mode"]).upper()
+    fw_mode = _feedwater_mode_label(fw_ctrl)
     level_setpoint = float(state.get("level_setpoint", fw_ctrl.get("level_setpoint", 0.5))) * 100.0
     boil_off_time = sg_sec.get("boil_off_time_s")
-    boil_off_text = "n/a" if boil_off_time is None else f"{float(boil_off_time):.0f} s"
     m_steam = float(turbine["m_steam"])
     m_dump = float(turbine["m_dump"])
+    total_steam = m_steam + m_dump
+    boil_off_text = "n/a (steam outflow negligible)" if total_steam < 1.0e-3 else _fmt_time_estimate(boil_off_time)
+    floor_time_text = _fmt_time_estimate(sg_sec.get("time_to_level_floor_s"))
     flow_mismatch = m_fw - (m_steam + m_dump)
 
     lines = [
@@ -230,11 +313,12 @@ def status_lines(state: dict) -> list[str]:
         f"{100.0 * admission_actual:5.1f}%  gross electrical = {P_electric:.0f} MW",
         f"   T_avg - T_ref = {T_err:+.2f} K  P_steam = {P_steam:.3f} MPa  "
         f"SG collapsed frac = {level_sg:5.1f}%",
-        f"   feedwater {fw_mode}: flow = {m_fw:7.1f} kg/s  demand = {m_fw_demand:7.1f} kg/s  "
-        f"level set = {level_setpoint:5.1f}%",
+        f"   feedwater {fw_mode}: flow/demand = {m_fw:7.1f} / {m_fw_demand:7.1f} kg/s  "
+        f"set = {level_setpoint:5.1f}%",
         f"   secondary flows: steam = {m_steam:7.1f} kg/s  dump = {m_dump:7.1f} kg/s  "
-        f"boil-off time = {boil_off_text}",
-        f"   flow mismatch feed - (steam + dump) = {flow_mismatch:+.3f} kg/s",
+        f"feed-out = {flow_mismatch:+.3f} kg/s",
+        f"   SG inv cue: total liquid ÷ steam flow, not time to limit = {boil_off_text}",
+        f"   SG floor trend: time to {LEVEL_SG_MIN:.2f} model floor = {floor_time_text}",
     ]
     lines.extend(_message_lines(state.get("msg", "")))
     return lines
@@ -266,8 +350,9 @@ def render(state: dict) -> None:
     )
     lines.append("   Commands: <num>=rod  auto/manual rods  s=scram  r=idealized release")
     lines.append("             admission <0-1> (or turbine_load) = turbine admission demand")
-    lines.append("             level <0-1> = SG collapsed fraction setpoint")
-    lines.append("             feedwater <0-1>/auto = manual/automatic feedwater")
+    lines.append("             level <0.35-0.90> = ordinary SG collapsed-fraction setpoint")
+    lines.append("             feedwater <0-1> = manual fraction of maximum feedwater flow")
+    lines.append("                   (max = 120 % design); feedwater auto = automatic")
     lines.append("             trip: Unprotected turbine trip — automatic reactor trip on turbine trip")
     lines.append("                   omitted; ideal feedwater and combined dump/relief available")
     lines.append("             untrip=idealized release  q=quit")
@@ -396,16 +481,16 @@ def process_command(state: dict, cmd: str) -> bool:
         state["msg"] = f"Turbine admission demand set to {val:.3f} (valve admission, not MW)."
         return True
 
-    # --- SG level setpoint: "level <0-1>" ---
+    # --- SG level setpoint: "level <0.35-0.90>" ---
     if cmd.startswith("level ") or cmd == "level":
         arg = cmd[6:].strip() if cmd.startswith("level ") else ""
         try:
             val = float(arg)
         except ValueError:
-            state["msg"] = f"ERROR: 'level' expects a collapsed liquid fraction in [0,1], got {arg!r}"
+            state["msg"] = _level_range_text()
             return True
-        if not (0.0 <= val <= 1.0):
-            state["msg"] = "ERROR: level setpoint must be in [0, 1]"
+        if not (SG_LEVEL_TARGET_MIN <= val <= SG_LEVEL_TARGET_MAX):
+            state["msg"] = _level_range_text()
             return True
         state["level_setpoint"] = val
         state["msg"] = f"SG collapsed liquid-fraction setpoint set to {val:.3f}."
@@ -414,20 +499,23 @@ def process_command(state: dict, cmd: str) -> bool:
     # --- feedwater manual override: "feedwater <0-1>" or "feedwater auto" ---
     if cmd.startswith("feedwater ") or cmd == "feedwater":
         arg = cmd[len("feedwater") :].strip()
-        if arg == "auto" or arg == "":
+        if arg == "":
+            state["msg"] = _feedwater_help_text()
+            return True
+        if arg == "auto":
             state["feedwater_manual"] = None
-            state["msg"] = "Feedwater returned to automatic three-element level control."
+            state["msg"] = "Feedwater AUTO selected: automatic three-element level control resumes."
             return True
         try:
             val = float(arg)
         except ValueError:
-            state["msg"] = f"ERROR: 'feedwater' expects a fraction in [0,1] or 'auto', got {arg!r}"
+            state["msg"] = _feedwater_help_text()
             return True
         if not (0.0 <= val <= 1.0):
             state["msg"] = "ERROR: feedwater manual fraction must be in [0, 1]"
             return True
         state["feedwater_manual"] = val
-        state["msg"] = f"Manual feedwater demand set to {val:.3f} of maximum."
+        state["msg"] = _feedwater_manual_ack(state, val)
         return True
 
     # --- numeric rod command ---
@@ -555,7 +643,10 @@ def main() -> None:
         termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
         print("\nExiting interactive console.")
     if halt_reason is not None:
-        print(f"Model limit reached: {halt_reason} The simulation stopped at t = {state['sim_t']:.1f} s.")
+        print(
+            f"Model limit reached: {halt_reason} Last displayed valid state: "
+            f"t = {state['sim_t']:.1f} s; violation detected on next advance."
+        )
 
 
 if __name__ == "__main__":

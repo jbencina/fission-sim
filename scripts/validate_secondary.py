@@ -26,7 +26,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fission_sim.physics import coolprop
-from fission_sim.physics.domain import P_STEAM_MIN, ModelDomainError, check_secondary_domain, check_snapshot
+from fission_sim.physics.domain import (
+    LEVEL_SG_MAX,
+    LEVEL_SG_MIN,
+    P_STEAM_MIN,
+    ModelDomainError,
+    check_secondary_domain,
+    check_snapshot,
+)
 from fission_sim.physics.sg_secondary import SGSecondaryParams
 from fission_sim.plant import build_standard_plant
 from fission_sim.validation.secondary_acceptance import (
@@ -75,6 +82,15 @@ ScenarioFn = Callable[[float], dict[str, Any]]
 UNPROTECTED_TURBINE_TRIP_TITLE = (
     "Unprotected turbine trip: automatic reactor trip on turbine trip omitted; "
     "ideal feedwater and combined dump/relief available"
+)
+BOUNDARY_SCENARIOS = {"m4_loss_of_feedwater", "m4_feedwater_max"}
+UNPROTECTED_LOFW_TITLE = (
+    "M4 unprotected inventory-depletion exercise: loss of feedwater at power "
+    "(low-low level reactor trip / auxiliary feedwater start omitted)"
+)
+UNPROTECTED_OVERFILL_TITLE = (
+    "M4 unprotected overfill exercise: maximum manual feedwater "
+    "(high-high level turbine trip / feedwater isolation omitted)"
 )
 
 
@@ -150,7 +166,7 @@ def _run_scenario(spec: Scenario, *, step_dt: float | None) -> list[dict[str, An
 
 
 def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -> None:
-    """Save a six-panel PNG for one scenario."""
+    """Save a multi-panel PNG for one scenario."""
     t = np.array([s["t"] for s in snaps], dtype=float)
     n = series(snaps, "core", "n")
     T_avg = series(snaps, "loop", "T_avg")
@@ -158,12 +174,18 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     P_steam = series(snaps, "sg_sec", "P_steam") / 1e6
     m_dump = series(snaps, "turbine", "m_dump")
     level = series(snaps, "sg_sec", "level_sg")
+    level_target = series(snaps, "signals", "level_setpoint")
     rod = series(snaps, "rod", "rod_position")
     P_electric = series(snaps, "turbine", "P_electric") / 1e6
     admission_actual = series(snaps, "turbine", "load") * 100.0
     admission_demand = series(snaps, "turbine", "load_demand") * 100.0
+    m_fw_demand = series(snaps, "fw_ctrl", "m_fw_demand")
+    m_fw_actual = series(snaps, "feedwater", "m_fw")
+    m_steam = series(snaps, "turbine", "m_steam")
+    total_steam = m_steam + m_dump
+    flow_mismatch = m_fw_actual - total_steam
 
-    fig, axes = plt.subplots(3, 2, figsize=(12, 10), sharex=True)
+    fig, axes = plt.subplots(4, 2, figsize=(12, 13), sharex=True)
     ax = axes[0, 0]
     ax.plot(t, n)
     ax.set_ylabel("n [-]")
@@ -188,9 +210,14 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     ax.grid(alpha=0.3)
 
     ax = axes[1, 1]
-    ax.plot(t, level)
+    ax.plot(t, level, label="collapsed liquid fraction")
+    ax.plot(t, level_target, "--", label="level target")
+    if spec.slug in BOUNDARY_SCENARIOS:
+        ax.axhline(LEVEL_SG_MIN, color="tab:red", linestyle=":", label="0.30 model floor")
+        ax.axhline(LEVEL_SG_MAX, color="tab:red", linestyle="-.", label="0.95 model ceiling")
     ax.set_ylabel("SG collapsed liquid\nfraction [-]")
     ax.set_title("4 SGs lumped; no shrink/swell", fontsize=9)
+    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
     ax = axes[2, 0]
@@ -210,6 +237,22 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     handles, labels = ax.get_legend_handles_labels()
     handles2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(handles + handles2, labels + labels2, loc="best", fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[3, 0]
+    ax.plot(t, m_fw_demand, "--", label="feedwater demand")
+    ax.plot(t, m_fw_actual, label="actual feedwater")
+    ax.plot(t, total_steam, label="total steam outflow")
+    ax.set_ylabel("kg/s")
+    ax.set_xlabel("time [s]")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+
+    ax = axes[3, 1]
+    ax.plot(t, flow_mismatch)
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.set_ylabel("feedwater - steam\nkg/s")
+    ax.set_xlabel("time [s]")
     ax.grid(alpha=0.3)
 
     fig.suptitle(textwrap.fill(spec.title, width=92))
@@ -735,15 +778,25 @@ def _m4_scenarios() -> list[Scenario]:
         ),
         Scenario(
             "m4_loss_of_feedwater",
-            "M4 loss of feedwater at power",
+            UNPROTECTED_LOFW_TITLE,
             600.0,
             lambda t: {"feedwater_manual": 0.0 if t >= 10.0 else None},
+            caption=(
+                "Unprotected inventory-boundary exercise: low-low level reactor trip and auxiliary "
+                "feedwater start are omitted. The 0.30 line is a surrogate model-validity floor, "
+                "not a protected-trip setpoint or damage-time calculation."
+            ),
         ),
         Scenario(
             "m4_feedwater_max",
-            "M4 manual feedwater held at maximum",
+            UNPROTECTED_OVERFILL_TITLE,
             2000.0,
             lambda t: {"feedwater_manual": 1.0 if t >= 10.0 else None},
+            caption=(
+                "Unprotected inventory-boundary exercise: high-high level turbine trip and "
+                "feedwater isolation are omitted. The 0.95 line is a surrogate model-validity ceiling, "
+                "not a moisture-carryover or protection threshold."
+            ),
         ),
         Scenario(
             "m4_trip_scram_level",

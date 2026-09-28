@@ -144,10 +144,30 @@ def test_console_trip_releases_require_explicit_readmission():
     assert "not a plant restart" in state["msg"]
 
 
+def _console_m4_state() -> dict:
+    """Return the minimal console state needed for M4 command/status tests."""
+    snap = build_standard_plant().snapshot()
+    return {
+        "sim_t": 0.0,
+        "rod_command": 0.5,
+        "scram": False,
+        "msg": "",
+        "last_snap": snap,
+        "heater_manual": None,
+        "spray_manual": None,
+        "P_setpoint": 15.5e6,
+        "turbine_load": 1.0,
+        "turbine_trip": False,
+        "rod_auto": False,
+        "level_setpoint": 0.5,
+        "feedwater_manual": None,
+    }
+
+
 def test_console_level_and_feedwater_commands():
     """Console exposes M4 SG level setpoint and feedwater manual override."""
     console = _load_example("console")
-    state = {"level_setpoint": 0.5, "feedwater_manual": None, "msg": ""}
+    state = _console_m4_state()
 
     assert console.process_command(state, "level 0.55")
     assert state["level_setpoint"] == pytest.approx(0.55)
@@ -156,10 +176,49 @@ def test_console_level_and_feedwater_commands():
     assert console.process_command(state, "feedwater 0.25")
     assert state["feedwater_manual"] == pytest.approx(0.25)
     assert "Manual feedwater demand" in state["msg"]
+    assert "fraction of maximum feedwater flow (max = 120 % design)" in state["msg"]
+    assert "500.7 kg/s" in state["msg"]
+    assert "30.0 % design" in state["msg"]
 
     assert console.process_command(state, "feedwater auto")
     assert state["feedwater_manual"] is None
-    assert "automatic three-element" in state["msg"]
+    assert "Feedwater AUTO selected" in state["msg"]
+
+
+def test_console_rejects_bare_feedwater_command():
+    """A bare ``feedwater`` command reports help instead of silently selecting AUTO."""
+    console = _load_example("console")
+    state = _console_m4_state()
+    state["feedwater_manual"] = 0.25
+
+    assert console.process_command(state, "feedwater")
+
+    assert state["feedwater_manual"] == pytest.approx(0.25)
+    assert "requires 'feedwater auto' or a fraction" in state["msg"]
+
+
+def test_console_rejects_level_targets_outside_ordinary_band():
+    """Ordinary SG level commands stay inside the 0.35-0.90 operating band."""
+    console = _load_example("console")
+    state = _console_m4_state()
+
+    assert console.process_command(state, "level 0.2")
+
+    assert state["level_setpoint"] == pytest.approx(0.5)
+    assert "0.35" in state["msg"]
+    assert "0.90" in state["msg"]
+    assert "validity limits are 0.30 and 0.95" in state["msg"]
+
+
+def test_console_status_reports_feedwater_controller_saturation():
+    """Console status shows AUTO saturation as a control-authority limit."""
+    console = _load_example("console")
+    state = _console_m4_state()
+    state["last_snap"]["fw_ctrl"]["saturated"] = True
+
+    text = "\n".join(console.status_lines(state))
+
+    assert "feedwater AUTO (saturated)" in text
 
 
 @pytest.mark.parametrize("name", ["run_core", "report_core"])
