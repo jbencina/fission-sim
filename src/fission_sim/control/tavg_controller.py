@@ -120,9 +120,12 @@ class TavgController:
 
     Ports out (returned by ``outputs()``):
         rod_demand : float [dimensionless, 0–1 nominal]
-            Command sent to the rod actuator. In automatic mode this is the
-            clipped controller state. In manual mode this is the operator's
-            ``rod_command``.
+            Command sent to the rod actuator. In acting automatic mode this is
+            the clipped controller state. In automatic-but-suspended mode
+            (SCRAM or turbine trip), this is the clipped actual
+            ``rod_position`` so the rods hold where they are while the
+            internal state tracks for a bumpless return. In manual mode this
+            is the operator's ``rod_command``.
 
     State vector (length ``state_size`` = 1, names in ``state_labels``):
         index 0 : rod_demand_auto — automatic rod demand [0–1 withdrawn]
@@ -244,9 +247,11 @@ class TavgController:
 
         if not self._acting(inputs):
             # Tracking equation for bumpless mode transfer. In auto-but-
-            # suspended mode outputs() still publishes clip(state); if the rod
-            # position is following that output, this derivative is zero, so
-            # suspension is neutral rather than a new rod-drive request.
+            # suspended mode outputs() publishes the current rod_position, so
+            # rod_command equals the physical bank position and suspension is
+            # neutral rather than a new rod-drive request. The state still
+            # tracks internally so returning to acting automatic control is
+            # bumpless.
             # SIMPLIFICATION: one first-order tracking state stands in for the
             # operator/control-system alignment logic used during mode changes.
             return np.array([(inputs["rod_position"] - demand) / p.tau_track])
@@ -277,20 +282,24 @@ class TavgController:
             ``[rod_demand_auto]`` [dimensionless].
         inputs : dict
             Required key ``rod_auto`` [bool]. In manual mode also uses
-            ``rod_command`` [dimensionless].
+            ``rod_command`` [dimensionless]. In automatic mode with suspended
+            action also uses ``rod_position`` [dimensionless], ``scram``
+            [bool], and ``turbine_trip`` [bool].
 
         Returns
         -------
         dict
             ``{"rod_demand": float [dimensionless]}``.
         """
-        if inputs["rod_auto"]:
-            # Auto mode publishes the controller state. SCRAM/turbine-trip
-            # suspension affects only the derivative (tracking rod_position);
-            # the output remains the tracked state so mode transfer has no
-            # discontinuity.
-            return {"rod_demand": float(np.clip(state[0], 0.0, 1.0))}
-        return {"rod_demand": float(inputs["rod_command"])}
+        if not inputs["rod_auto"]:
+            return {"rod_demand": float(inputs["rod_command"])}
+        if not self._acting(inputs):
+            # Real rod control has a hold condition: no automatic rod motion
+            # is demanded during a trip/suspension. Publish the actual bank
+            # position, not the lagging internal demand, because the rod
+            # actuator itself is rate-limited and may not have caught up yet.
+            return {"rod_demand": float(np.clip(inputs["rod_position"], 0.0, 1.0))}
+        return {"rod_demand": float(np.clip(state[0], 0.0, 1.0))}
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
         """Return operator-facing diagnostics for the controller.

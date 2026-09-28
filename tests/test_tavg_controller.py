@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from fission_sim.control.tavg_controller import TavgController, TavgControllerParams
+from fission_sim.physics.rod_controller import RodController, RodParams
 
 
 def inputs(**over):
@@ -91,6 +92,46 @@ def test_auto_suspended_output_is_neutral_when_tracking_rod_position():
     inp = inputs(T_avg=560.0, rod_position=0.42, turbine_trip=True)
     assert c.outputs(np.array([0.42]), inputs=inp)["rod_demand"] == pytest.approx(0.42)
     assert c.derivatives(np.array([0.42]), inp)[0] == pytest.approx(0.0)
+
+
+def test_auto_suspended_output_holds_actual_rod_position_when_state_differs():
+    c = TavgController(TavgControllerParams())
+    out = c.outputs(np.array([0.67]), inputs=inputs(rod_position=0.31, turbine_trip=True))
+    assert out["rod_demand"] == pytest.approx(0.31)
+
+
+def test_scram_clear_with_turbine_trip_does_not_withdraw_rods():
+    """Coupled controller + rod actuator: clearing SCRAM under turbine trip holds rods in place."""
+    ctrl = TavgController(TavgControllerParams(), rod_position_initial=0.7)
+    rod = RodController(RodParams())
+    ctrl_state = ctrl.initial_state()
+    rod_state = rod.initial_state()
+
+    def step(*, scram: bool, turbine_trip: bool, dt: float = 0.005) -> None:
+        nonlocal ctrl_state, rod_state
+        ctrl_inputs = inputs(
+            T_avg=560.0,
+            T_ref=583.0,
+            rod_position=rod_state[0],
+            rod_command=0.7,
+            rod_auto=True,
+            scram=scram,
+            turbine_trip=turbine_trip,
+        )
+        rod_demand = ctrl.outputs(ctrl_state, inputs=ctrl_inputs)["rod_demand"]
+        ctrl_state = ctrl_state + ctrl.derivatives(ctrl_state, ctrl_inputs) * dt
+        rod_state = rod_state + rod.derivatives(rod_state, {"rod_command": rod_demand, "scram": scram}) * dt
+
+    for _ in range(round(2.0 / 0.005)):
+        step(scram=True, turbine_trip=True)
+
+    position_when_scram_clears = rod_state[0]
+    assert ctrl_state[0] > position_when_scram_clears + 0.02
+
+    for _ in range(round(5.0 / 0.005)):
+        step(scram=False, turbine_trip=True)
+
+    assert rod_state[0] <= position_when_scram_clears + 1e-12
 
 
 def test_telemetry_without_inputs():
