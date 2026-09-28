@@ -1385,7 +1385,7 @@ controller and physical bank aligned at startup.
   a stale manual command will move the rods.
 - In the implemented acceptance test for a 10 percentage-point admission reduction at 5 points/min,
   rods-auto returns `T_avg` to within 1.0 K of `T_ref = 581.2 K` and inserts
-  the control bank to about 0.393 withdrawn.
+  the control bank to about 0.384 withdrawn.
 
 ### SecondarySink (`src/fission_sim/physics/secondary_sink.py`)
 

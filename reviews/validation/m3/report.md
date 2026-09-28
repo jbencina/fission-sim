@@ -228,3 +228,241 @@ Relative to the scratch root:
 All 33 dense criteria and all 15 selected step-mode criteria pass; the requested test selection reports **96 passed in 53.70s**. All eleven scenario PNGs were opened, the main equilibria were independently checked, and the actual console completed the operator sequence. There is no high-severity finding or unexplained physical trajectory; the stated L1 realism limitations and low-severity numerical/presentation observations should be handed to the independent physics and operator reviewers rather than hidden by changing defaults.
 
 M-gate 2: PASS
+
+## Re-validation after M3.9.n (2026-09-28, commit e1c96f1)
+
+This append-only re-validation covers `3716061` (rod-speed plateau), `54cfcf2`
+and `04cd835` (transient shell-energy accumulation and its printed criterion),
+`4127bf2` (console/operator labels), and `e1c96f1` (documentation). HEAD remained
+`e1c96f1` throughout. No source, tests, documentation outside this report, or
+examples were edited, and no commit was created. The pre-existing untracked
+`M3-M4-IMPLEMENTATION-PLAN.md` was left untouched.
+
+**Artifact root (`$S`):**
+`/home/jbencina/.copilot/session-state/1217b4be-707a-424f-96b0-7dec3ca1b8d0/files/m3-revalidate/`.
+`$H` below denotes the original scratch harness,
+`../m3-validate/capture_scenarios.py`, relative to that root.
+
+### Commands, timing, and scope
+
+| Command | Wall time | Result |
+|---|---:|---|
+| `MPLBACKEND=Agg uv run python scripts/validate_secondary.py --milestone m3 --out-dir "$S"` | 56.25 s | Exit 0; **34/34 criteria pass**; eight dense PNGs |
+| `MPLBACKEND=Agg uv run python "$H" --mode dense --out-dir "$S/metrics" --scenarios steady load_auto turbine_trip` | 23.75 s | Exit 0; repeatable telemetry capture; **15/15 selected criteria pass** |
+| `MPLBACKEND=Agg uv run python "$H" --mode step --out-dir "$S/step" --scenarios steady turbine_trip` | 117.74 s | Exit 0; **11/11 criteria pass**, using the validator's `step_dt=0.1` path |
+| `make test` | **110.27 s** | Exit 0; **375 Python tests and 75 JavaScript tests pass** |
+
+The CLI still has no scenario-selection flag. As in the original validation,
+the unchanged scratch harness imports the current CLI's scenario definitions,
+calls `_run_scenario(..., step_dt=0.1)`—the same path selected by
+`--step-dt 0.1`—and uses its domain checks, criteria, and plotting. The two
+600 s stepped integrations took **34.348 s** for steady and **80.460 s** for
+turbine trip; total command time includes imports, plots, and file writes.
+Automatic load reduction was re-validated in dense mode, not stepped mode,
+for this requested rerun.
+
+Commands overlapped on the shared host; these are observed wall times, not
+exclusive-machine benchmarks. Dense extrema use the unchanged 1 s readout
+cadence and BDF `max_step=0.5`; stepped trajectories check every 0.1 s step
+and save approximately 1 s readouts. Reported extrema therefore remain
+sampled extrema, not sub-sample guarantees.
+
+### New dense criteria table
+
+Values below are the CLI's printed values; literal vertical bars in criterion
+names are escaped for a valid Markdown table. All **34** rows pass, including
+the new transient-energy row.
+
+| Criterion | Measured | Limit | Pass |
+|---|---:|---|:---:|
+| steady: final n | 1.11022e-16 | < 0.001 | yes |
+| steady: final T_avg error | 0 | < 0.05 K | yes |
+| steady: final P_steam error | 2.79397e-09 | < 5000.0 Pa | yes |
+| steady: final level error | 1.44329e-15 | < 0.001 | yes |
+| steady: final turbine admission error | 0 | < 1e-09 | yes |
+| equilibrium: heat-rate mismatch | 3.8147e-15 | < 0.005 | yes |
+| mass match: shell mass drift | 0 | < 1.0 kg | yes |
+| load manual: final n | 0.971936 | 0.96..0.98 | yes |
+| load manual: final T_avg | 587.836 | 586..590 K | yes |
+| load manual: final P_steam | 7.48379e+06 | 7.35e+06..7.65e+06 Pa | yes |
+| load manual: T_avg warmed | 587.836 | > 583.5 K | yes |
+| load manual: P_steam rose | 584615 | > 100000 Pa | yes |
+| load manual: equilibrium heat-rate mismatch | 1.18864e-11 | < 0.01 | yes |
+| load manual: shell energy accumulation | **2.59456e-05** | **< 0.001** | **yes** |
+| load auto: final T_ref | 0 | < 1e-6 K | yes |
+| load auto: \|T_avg - T_ref\| | 0.276799 | <= 1.0 K | yes |
+| load auto: rods inserted | 0.383704 | < 0.5 | yes |
+| load auto: final n | 0.904078 | 0.88..0.95 | yes |
+| turbine trip: max P_steam | 8.17206e+06 | < 8500000.0 Pa | yes |
+| turbine trip: max m_dump | 1591.3 | > 0 kg/s | yes |
+| turbine trip: final load | 1.12541e-244 | < 0.001 | yes |
+| turbine trip: final n | 0.941044 | 0.93..0.96 | yes |
+| turbine trip: final T_avg | 593.16 | 591..595 K | yes |
+| turbine trip: final P_steam | 8.17038e+06 | 8e+06..8.35e+06 Pa | yes |
+| scram alone: final load | 4.35261e-144 | < 0.001 | yes |
+| scram alone: max P_steam | 7.85335e+06 | < 8500000.0 Pa | yes |
+| scram alone: final n | 2.75996e-06 | < 0.01 | yes |
+| trip scram: final n | 6.78557e-08 | < 0.01 | yes |
+| trip scram: min primary subcooling | 20.1961 | > 0 K | yes |
+| huge shell: max \|T_avg(M2)-T_avg(M3)\| | 0.000273998 | < 0.5 K | yes |
+| domain: P_STEAM_MIN above P_sat(T_fw) | 361102 | > 0 Pa | yes |
+| domain: low steam pressure | steam_pressure | steam_pressure | yes |
+| domain: dry shell | sg_dry | sg_dry | yes |
+| domain: solid shell | sg_solid | sg_solid | yes |
+
+The new energy quantity is
+`max(abs(ΔU_sec − integral(Q_sg + m_fw*h_fw − (m_steam + m_dump)*h_g))) / max(abs(ΔU_sec))`
+over the manual-load transient, using trapezoidal integration of sampled
+telemetry. Its measured error is **0.002595% of the largest stored-energy
+change**, below the **0.1%** limit. It is distinct from the final-equilibrium
+heat-rate mismatch, whose label now accurately describes what it checks.
+
+### Required 0.1 s step-mode criteria
+
+| Criterion | Dense | Step 0.1 s | Limit | Both pass |
+|---|---:|---:|---|:---:|
+| Steady final n error | 1.11022e-16 | 1.11022e-16 | < 0.001 | yes |
+| Steady final T_avg error [K] | 0 | 0 | < 0.05 | yes |
+| Steady final P_steam error [Pa] | 2.79397e-09 | 2.79397e-09 | < 5000 | yes |
+| Steady final level error | 1.44329e-15 | 1.44329e-15 | < 0.001 | yes |
+| Steady final turbine-admission error | 0 | 0 | < 1e-9 | yes |
+| Trip maximum P_steam [Pa] | 8.17206e6 | 8.17206e6 | < 8.5e6 | yes |
+| Trip maximum dump flow [kg/s] | 1591.3 | 1591.3 | > 0 | yes |
+| Trip final turbine admission | 1.12541e-244 | 9.88131e-324 | < 0.001 | yes |
+| Trip final n | 0.941044 | 0.941044 | 0.93–0.96 | yes |
+| Trip final T_avg [K] | 593.16 | 593.16 | 591–595 | yes |
+| Trip final P_steam [Pa] | 8.17038e6 | 8.17038e6 | 8.0e6–8.35e6 | yes |
+
+Both stepped PNGs were opened. Steady remains flat at the design values;
+trip remains bounded with stationary rods and an open combined dump/relief
+path. All captured fields in the five dense/stepped NPZ files are finite.
+The re-captured dense steady and turbine-trip arrays are identical to the
+pre-fix captures, confirming that these non-auto trajectories did not change.
+
+The previously reported floating-point input-scheduling effect remains:
+the step clock is `9.99999999999998` after 100 steps, so the held trip input
+first activates at approximately 10.1 s. Same-index transient differences
+reach 20.43 kPa, 0.09243 K, and 29.76 MW, but final trip temperature and
+pressure differ by only `8.10e-8 K` and `0.00167 Pa`. This is not a new
+post-fix discrepancy.
+
+### Opened PNGs and label confirmation
+
+The actual generated **`load_auto.png` and `turbine_trip.png`** were opened
+with the image-viewing tool, as were `step/steady.png` and
+`step/turbine_trip.png`; the following is visual confirmation, not just a
+source-code inspection.
+
+- **Admission:** automatic-load title reads “100% to 90% turbine admission,
+  rods automatic.” Electrical panels distinguish gross electrical power
+  [MW], turbine admission demand [%], and turbine admission actual [%].
+  In the trip case, the untouched operator demand remains 100% while actual
+  admission closes to zero; the legend correctly distinguishes these signals.
+- **Collapsed liquid fraction:** the axis reads “SG collapsed liquid
+  fraction [-]” and the panel title reads “4 SGs lumped; no shrink/swell.”
+  It is no longer presented as an unexplained indicated SG level.
+- **Unprotected trip:** the trip title explicitly says automatic reactor
+  trip on turbine trip is omitted and ideal feedwater plus combined
+  dump/relief remain available. The footer explicitly limits P-4 to the
+  SCRAM-to-turbine-trip direction and says this is not a normal protected trip.
+- **Pressure/dump legend:** blue “Steam pressure P_steam [MPa]” and red
+  “Combined dump/relief flow m_dump [kg/s]” are both visible, with their
+  respective axes. This resolves the prior unlabeled-red-line finding.
+
+The console itself was not driven again in this scoped rerun; these plot
+checks do not purport to be a second interactive-console inspection.
+
+### Rods-auto before/after the 8 steps/min plateau
+
+These are independently recomputed from the original and new saved dense
+trajectories, not copied from rounded plot labels. Signed error means
+`T_avg − T_ref`; the acceptance row above uses its absolute final value.
+
+| Quantity | Before M3.9.n | After M3.9.n |
+|---|---:|---:|
+| Maximum positive temperature error [K] | +1.335317 at 67 s | **+2.008057 at 89 s** |
+| Final signed temperature error [K] | +0.287776 | **−0.276799** |
+| Maximum T_avg [K] | 583.559854 | 583.900938 |
+| Final T_avg [K], with T_ref = 581.2 K | 581.487776 | 580.923201 |
+| Minimum / final n | 0.908387 / 0.909533 | 0.899580 / 0.904078 |
+| Final rod position | 0.393108 | 0.383704 |
+| Last rod movement above 1e-10 per saved interval [s] | 154 | 188 |
+| Maximum / final steam pressure [MPa] | 7.024807 / 6.976180 | 7.086630 / 6.932105 |
+| Final gross electrical output [MW] | 900.437 | 895.037 |
+| Rod-direction reversals above 1e-10 per saved interval | 0 | 0 |
+| Last-300-s rod-position range | 0 | 0 |
+| Last-300-s temperature-error range [K] | 4.60e-9 | 5.47e-9 |
+
+The slower minimum-speed region permits a larger initial temperature error
+and a longer insertion interval. Thermal lag subsequently carries temperature
+slightly below the reference, but the endpoint remains inside the 0.8 K
+controller deadband and the 1.0 K acceptance tolerance. The plot shows one
+bounded warming/cooling excursion and a small power undershoot followed by
+settling, **not sustained limit cycling**. Rod motion is monotone insertion
+then hold; there is no sampled withdrawal or tail chatter. Dump flow remains
+zero throughout this maneuver.
+
+A direct public-API spot check returns `speed = 5.8e-4 1/s` at errors just
+above 0.8 K and at 1.0, 1.5, and 1.666667 K—**7.9344 steps/min** using the
+documented 228-step bank, i.e. the rounded 8 steps/min plateau. The
+2.008057 K transient peak legitimately enters the ramp above that plateau.
+The two regimes should not be confused with an 8 steps/min speed cap.
+
+### Full `make test` result
+
+The full target ran both suites and exited 0. Summary lines from
+`make-test.txt`:
+
+```text
+======================= 375 passed in 108.44s (0:01:48) ========================
+ Test Files  9 passed (9)
+      Tests  75 passed (75)
+   Duration  561ms (transform 824ms, setup 0ms, import 1.13s, tests 204ms, environment 1ms)
+wall_time_seconds=110.27
+```
+
+### New observations and severity
+
+1. **Low — larger but settling rods-auto excursion.** Peak positive error
+   increases from 1.335317 K to 2.008057 K and the final offset changes sign.
+   This is visible and quantified above; it is not hidden behind the
+   final-value criterion. All final bands pass, no model-domain halt occurs,
+   and no sustained limit cycle is observed.
+2. **Low — one stale README example endpoint.** At `e1c96f1`,
+   `README.md:1388` still says the automatic maneuver inserts the bank to
+   “about 0.393 withdrawn”; the new reproducible endpoint is **0.383704**.
+   The documented speed program is current, but that illustrative endpoint
+   predates the plateau change. Left untouched under the validator's
+   report-only scope; this is non-gating documentation drift.
+3. **Low — frontend tooling deprecation diagnostics.** The full test run
+   prints Vite warnings that `vite:react-babel` specifies deprecated
+   `esbuild` and `optimizeDeps.esbuildOptions`, and says oxc options take
+   precedence. All nine JavaScript test files pass. These are observed
+   maintenance warnings, not evidence of a physics regression or proof that
+   the M3 fixes introduced a frontend problem.
+
+No new medium/high-severity finding or failed numerical trajectory was
+observed. Dense CLI, dense capture, and both required stepped cases emitted
+no numerical warnings. The earlier SciPy warning occurred in stepped
+`load_auto`, which was not rerun here, so its absence in this narrower step
+selection is **not** evidence that the dependency issue was fixed.
+The original L1 model limitations—admission rather than MW demand,
+unprotected trip behavior, ideal feedwater, collapsed rather than indicated
+level, and omitted decay heat—still apply; clearer labels do not add the
+missing physical systems.
+
+### Re-validation artifacts and decision
+
+Under `$S`: `dense.txt`, `capture.txt`, `step.txt`, `make-test.txt`, their
+`*-time.txt` wall-time files, the eight root-level dense PNGs,
+`step/{steady,turbine_trip}.png`, `metrics/{steady,load_auto,turbine_trip}.npz`,
+`step/{steady,turbine_trip}.npz`, the two `summary.json` files,
+`rod-comparison.json`, and `step-comparison.json` preserve the evidence.
+
+All 34 dense criteria and all 11 required stepped criteria pass; the full
+Python/JavaScript test gate passes; the requested plot labels are present;
+the updated automatic-rod response remains bounded and settles without
+observed limit cycling. The low-severity notes above do not invalidate the
+educational L1 milestone acceptance contract.
+
+M3 re-validated: PASS
