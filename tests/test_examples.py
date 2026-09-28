@@ -73,7 +73,19 @@ def test_dump_state_runs_and_dumps_every_module(capsys):
     _load_example("dump_state").main()
 
     out = capsys.readouterr().out
-    for module_name in ("rod", "core", "loop", "sg", "sg_sec", "turbine", "fw_ctrl", "tavg_ctrl", "pzr", "pzr_ctrl"):
+    for module_name in (
+        "rod",
+        "core",
+        "loop",
+        "sg",
+        "sg_sec",
+        "turbine",
+        "feedwater",
+        "fw_ctrl",
+        "tavg_ctrl",
+        "pzr",
+        "pzr_ctrl",
+    ):
         assert f"    {module_name}:\n" in out
 
 
@@ -100,6 +112,8 @@ def test_console_status_reports_p4_turbine_trip():
         "turbine_load": 1.0,
         "turbine_trip": False,
         "rod_auto": True,
+        "level_setpoint": 0.5,
+        "feedwater_manual": None,
     }
 
     text = "\n".join(console.status_lines(state))
@@ -108,6 +122,7 @@ def test_console_status_reports_p4_turbine_trip():
     assert "retained manual cmd = 0.5000" in text
     assert "turbine trip = ON (SCRAM via P-4)" in text
     assert "turbine admission demand/actual" in text
+    assert "feedwater AUTO" in text
 
 
 def test_console_trip_releases_require_explicit_readmission():
@@ -127,6 +142,24 @@ def test_console_trip_releases_require_explicit_readmission():
     assert state["turbine_load"] == 0.0
     assert "idealized signal release" in state["msg"]
     assert "not a plant restart" in state["msg"]
+
+
+def test_console_level_and_feedwater_commands():
+    """Console exposes M4 SG level setpoint and feedwater manual override."""
+    console = _load_example("console")
+    state = {"level_setpoint": 0.5, "feedwater_manual": None, "msg": ""}
+
+    assert console.process_command(state, "level 0.55")
+    assert state["level_setpoint"] == pytest.approx(0.55)
+    assert "collapsed liquid-fraction setpoint" in state["msg"]
+
+    assert console.process_command(state, "feedwater 0.25")
+    assert state["feedwater_manual"] == pytest.approx(0.25)
+    assert "Manual feedwater demand" in state["msg"]
+
+    assert console.process_command(state, "feedwater auto")
+    assert state["feedwater_manual"] is None
+    assert "automatic three-element" in state["msg"]
 
 
 @pytest.mark.parametrize("name", ["run_core", "report_core"])

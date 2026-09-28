@@ -137,8 +137,8 @@ The shortest mental model is:
 | Dashboard/API | `web/`, `src/fission_sim/api/` | Browser UI, WebSocket telemetry, operator commands |
 | Standard plant | `src/fission_sim/plant.py` | `build_standard_plant()`: wires the M3 primary/secondary modules into a ready-to-run engine |
 | Engine | `src/fission_sim/engine/` | Wires components, owns the state vector, advances time |
-| Control | `src/fission_sim/control/` | Pressurizer pressure control, flow-matching feedwater, and automatic Tavg rod-control logic |
-| Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, SG shell, turbine, pressurizer |
+| Control | `src/fission_sim/control/` | Pressurizer pressure control, three-element feedwater level control, and automatic Tavg rod-control logic |
+| Physics | `src/fission_sim/physics/` | Core, rods, primary loop, steam generator, SG shell, feedwater actuator, turbine, pressurizer |
 | Examples | `examples/` | CLI/report/plot drivers for common scenarios |
 
 Each physics component owns its parameters and equations, but not its evolving
@@ -155,20 +155,21 @@ build_standard_plant(
     *,
     core_params=None, loop_params=None, sg_params=None, rod_params=None,
     pzr_params=None, ctrl_params=None, sg_sec_params=None, turbine_params=None,
-    fw_params=None, tavg_params=None,
+    fw_params=None, feedwater_params=None, tavg_params=None,
     rod_command=None, P_setpoint=None, turbine_load=None, rod_auto=False,
 )
 ```
 
 Its snapshot module keys are `rod`, `core`, `loop`, `sg`, `sg_sec`,
-`turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. Its externals are
-`rod_command`, `scram`, `P_setpoint`, `heater_manual`, `spray_manual`,
-`turbine_load`, `turbine_trip`, and `rod_auto`. `SecondarySink` remains in
-the package for older M1/M2 examples/tests, but it is no longer in
-the standard plant. `sg_sec` telemetry includes `P_steam`, `T_secondary`,
-`level_sg`, shell quality `x`, inventory/energy, steam/feedwater flows, and
-`P_fw_flash` (the feedwater-temperature saturation pressure used by domain
-checks).
+`turbine`, `feedwater`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`. Its
+externals are `rod_command`, `scram`, `P_setpoint`, `heater_manual`,
+`spray_manual`, `turbine_load`, `turbine_trip`, `rod_auto`,
+`level_setpoint`, and `feedwater_manual`. `SecondarySink` remains in the
+package for older M1/M2 examples/tests, but it is no longer in the standard
+plant. `sg_sec` telemetry includes `P_steam`, `T_secondary`, `level_sg`,
+shell quality `x`, inventory/energy, steam/feedwater flows, `P_fw_flash`
+(the feedwater-temperature saturation pressure used by domain checks), and
+`boil_off_time_s`.
 
 ### What To Watch
 
@@ -181,6 +182,7 @@ checks).
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
 | `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
 | `P_steam`, `level_sg`, `level_margin_low`, `boil_off_time_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin, estimated boil-off time if feedwater stopped, turbine/dump flows, gross electric power, and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
+| `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual` | Actual feedwater actuator flow, controller demand, operator level setpoint, and optional manual feedwater override. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
 
@@ -1069,7 +1071,7 @@ The domain check keeps `P_steam` above 3.0 MPa, and also above
     telemetry(state, inputs=None) -> outputs() ∪ {
         "x", "M_l", "M_v", "M_sec", "U_sec", "h_g", "h_fw",
         "P_fw_flash", "Q_sg", "m_steam", "m_dump", "m_fw",
-        "Q_steam_net",
+        "Q_steam_net", "boil_off_time_s",
     }
         Flow-dependent keys are None when inputs is omitted.
 
@@ -1095,9 +1097,9 @@ The domain check keeps `P_steam` above 3.0 MPa, and also above
   together, not an indicated narrow-range level and not a shrink/swell model.
 - The shell is always in saturated equilibrium. Subcooled boiling, dryout,
   and two-phase flow patterns are not represented.
-- M3 feedwater exactly matches outgoing steam mass, so total shell mass stays
-  constant to solver tolerance. Collapsed level can still move because liquid
-  and vapor densities change with pressure.
+- M4 feedwater is a dynamic actuator under three-element level control, so
+  shell mass changes during transients. The acceptance tests compare
+  `ΔM_sec` with `∫(m_fw − m_steam − m_dump)dt`.
 - The initial `U_sec` root reconciles the initial pressure only. It does not
   force exact single-EOS thermodynamic closure; the default HEOS stored energy
   differs from the IF97 phase split by about 50.23 MJ, or 0.016 %.
@@ -1217,24 +1219,103 @@ T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
   active `T_avg` controller is regulating post-trip temperature. Decay heat
   is omitted.
 
-### FeedwaterController (`src/fission_sim/control/feedwater_controller.py`)
+### FeedwaterSystem (`src/fission_sim/physics/feedwater.py`)
 
-M3 stateless feedwater stand-in: exact mass-flow matching.
+L1 main-feedwater pump and regulating-valve actuator.
 
 **What it represents**
 
-Real steam generators need feedwater controls to maintain tube coverage while
-steam flow changes. M3 has the shell, turbine, and dump path but not yet the
-M4 feedwater actuator or three-element level controller, so this component
-commands feedwater equal to all steam leaving the shell.
+`FeedwaterSystem` turns the controller's instantaneous feedwater demand into
+actual feedwater flow entering the SG shell. The main feedwater pumps, control
+valves, and short piping volume are collapsed into one capacity-limited
+first-order lag.
 
 **Equation used**
 
 ```text
-m_fw = m_steam + m_dump
+dm_fw/dt = (clip(m_fw,demand, 0, m_fw,max) − m_fw) / tau_fw
 ```
 
-That makes `dM_sec/dt = 0` in `SGSecondary` for M3, except for solver roundoff.
+The default actuator starts at design steam flow, has a 5 s time constant, and
+can deliver 120 % of design steam flow.
+
+**API**
+
+**Constructor**
+
+    FeedwaterSystem(params: FeedwaterParams)
+
+**State vector** (`state_size = 1`)
+
+    state_labels = ("m_fw",)
+    units:        kg/s
+
+**Methods**
+
+    initial_state() -> np.ndarray      # [m_fw_initial]
+
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {"m_fw_demand": float [kg/s]}
+
+    outputs(state, inputs=None) -> {"m_fw": float [kg/s]}
+        State-derived: downstream modules see the delayed actuator flow.
+
+    telemetry(state, inputs=None) -> {"m_fw", "m_fw_demand", "m_fw_max"}
+        Demand is None when inputs are omitted.
+
+**FeedwaterParams (frozen dataclass)**
+
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `sg_params` | — | `SGSecondaryParams()` | Provides `m_steam_design` for design flow |
+| `tau_fw` | s | 5.0 | M4 L1 tuning choice for pump/valve response |
+| `m_fw_max_frac` | — | 1.2 | M4 L1 tuning choice: 120 % of design steam flow |
+| `m_fw_max` | kg/s | None → `m_fw_max_frac · m_steam_design` ≈ 2,003 | Feedwater capacity |
+| `m_fw_initial` | kg/s | None → `m_steam_design` ≈ 1,669 | Design mass balance |
+
+**Simplifications / what to watch**
+
+- No pump curves, valve stroke limits, header pressure, cavitation, or
+  feedwater-heater dynamics are modeled.
+- The actuator is one-way: negative demand clips to zero rather than modeling
+  reverse flow.
+
+### FeedwaterController (`src/fission_sim/control/feedwater_controller.py`)
+
+L1 three-element steam-generator level controller with back-calculation
+anti-windup.
+
+**What it represents**
+
+Real PWR steam-generator level control uses measured level, steam flow, and
+feedwater flow. This L1 controller keeps the same operational idea but uses
+collapsed liquid fraction as the level signal and delegates feedwater-flow
+actuation to `FeedwaterSystem`. Steam outflow is feed-forward; proportional
+and integral trim restore the collapsed level setpoint.
+
+**Equations used**
+
+Automatic mode:
+
+```text
+e = level_setpoint − level_sg
+m_fw,demand = m_steam + m_dump + K_p · e + K_i · I
+```
+
+Manual mode:
+
+```text
+m_fw,demand = feedwater_manual · m_fw,max
+```
+
+Back-calculation anti-windup:
+
+```text
+dI/dt = e + (clip(m_fw,demand, 0, m_fw,max) − m_fw,demand) / (K_i · T_t)
+```
+
+Manual mode freezes the integral. Back-calculation pulls the stored integral
+back toward the realizable clipped demand smoothly when the actuator saturates.
 
 **API**
 
@@ -1242,33 +1323,54 @@ That makes `dM_sec/dt = 0` in `SGSecondary` for M3, except for solver roundoff.
 
     FeedwaterController(params: FeedwaterControllerParams)
 
-**State vector** (`state_size = 0`)
+**State vector** (`state_size = 1`)
 
-    state_labels = ()
+    state_labels = ("level_error_integral",)
+    units:        s
 
 **Methods**
 
-    initial_state() -> np.ndarray      # np.empty(0)
-    derivatives(state, inputs) -> np.ndarray  # np.empty(0)
+    initial_state() -> np.ndarray      # [0.0]
 
-    outputs(state, *, inputs) -> {"m_fw": float [kg/s]}
-        inputs: {"m_steam": float [kg/s], "m_dump": float [kg/s]}
+    derivatives(state, inputs) -> np.ndarray
+        inputs: {
+            "level_sg":         float [0..1],
+            "level_setpoint":   float [0..1],
+            "m_steam":          float [kg/s],
+            "m_dump":           float [kg/s],
+            "feedwater_manual": float [0..1] or None,
+        }
 
-    telemetry(state, inputs=None) -> {"m_fw", "m_steam", "m_dump"}
-        All values are None when inputs is omitted.
+    outputs(state, *, inputs) -> {"m_fw_demand": float [kg/s]}
+        Computed: depends on SG level, setpoint, steam/dump flows, and manual
+        override.
+
+    telemetry(state, inputs=None) -> {
+        "m_fw_demand", "level_error", "level_error_integral",
+        "feedwater_manual", "mode", "saturated",
+    }
+        Input-dependent values are None when inputs are omitted.
 
 **FeedwaterControllerParams (frozen dataclass)**
 
-No tunable M3 fields. The dataclass exists so the standard-plant factory keeps
-a stable parameter hook when M4 replaces this ideal match with level control.
+| Field | Units | Default | Source / note |
+|---|---:|---:|---|
+| `sg_params` | — | `SGSecondaryParams()` | Provides design steam flow |
+| `K_p` | kg/s per unit level | 3.34e3 | M4 L1 tuning: 5 % level error asks for 10 % design flow |
+| `K_i` | kg/s per s of integrated error | None → `K_p / 300` | M4 L1 tuning: 300 s reset time |
+| `level_setpoint_default` | — | 0.5 | M4 L1 half-full collapsed-level target |
+| `m_fw_max_frac` | — | 1.2 | Matches `FeedwaterParams` default maximum |
+| `antiwindup_tracking_time` | s | None → `(K_p / K_i) / 10` = 30 | M4 L1 tuning for back-calculation tracking |
 
 **Simplifications / what to watch**
 
-- This is not three-element control. It ignores measured level and feedwater
-  flow; it only replaces the steam mass that left.
-- Because pressure changes density, `level_sg` can drift slightly even with
-  constant total shell mass.
-- Feedwater temperature is constant at `SGSecondaryParams.T_fw = 500 K`.
+- `level_sg` is collapsed liquid fraction, not a real narrow-range indicated
+  level. No shrink/swell signal is modeled.
+- Steam and dump flows are ideal measurements with no sensor lag or
+  calibration error.
+- The controller does not model separate feedwater-flow transmitters; the
+  actuator state is visible in telemetry but not fed back into the control
+  law.
 
 ### TavgController (`src/fission_sim/control/tavg_controller.py`)
 

@@ -36,6 +36,7 @@ from fission_sim.disclaimer import print_disclaimer
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.domain import check_snapshot
+from fission_sim.physics.feedwater import FeedwaterParams, FeedwaterSystem
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -63,7 +64,8 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     sg_params = SGParams()
     sg_sec_params = SGSecondaryParams()
     turbine_params = TurbineParams(sg_params=sg_sec_params)
-    fw_params = FeedwaterControllerParams()
+    fw_params = FeedwaterControllerParams(sg_params=sg_sec_params)
+    feedwater_params = FeedwaterParams(sg_params=sg_sec_params)
     tavg_params = TavgControllerParams()
     # The pressurizer computes surge flow from the loop's thermal expansion,
     # so it shares the loop's parameter object.
@@ -83,6 +85,7 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     sg = engine.module(SteamGenerator(sg_params), name="sg")
     sg_sec = engine.module(SGSecondary(sg_sec_params), name="sg_sec")
     turbine = engine.module(Turbine(turbine_params), name="turbine")
+    feedwater = engine.module(FeedwaterSystem(feedwater_params), name="feedwater")
     fw_ctrl = engine.module(FeedwaterController(fw_params), name="fw_ctrl")
     tavg_ctrl = engine.module(TavgController(tavg_params, rod_position_initial=rod_position_initial), name="tavg_ctrl")
     pzr = engine.module(Pressurizer(pzr_params), name="pzr")
@@ -98,6 +101,8 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     load_demand = engine.input("turbine_load", default=turbine_params.load_initial)
     trip = engine.input("turbine_trip", default=False)
     auto = engine.input("rod_auto", default=False)
+    level_set = engine.input("level_setpoint", default=fw_params.level_setpoint_default)
+    fw_manual = engine.input("feedwater_manual", default=None)
 
     # 3. Wire outputs to inputs. Calling a module connects its input ports;
     #    ``module.<port>`` is a handle to one of its outputs. The order of
@@ -105,8 +110,15 @@ def build_plant(core_params: CoreParams) -> SimEngine:
     rod(rod_command=tavg_ctrl.rod_demand, scram=scram)
     Q_sg_sig = sg(T_avg=loop.T_avg, T_secondary=sg_sec.T_secondary)
     turbine(P_steam=sg_sec.P_steam, load_demand=load_demand, turbine_trip=trip, scram=scram)
-    m_fw = fw_ctrl(m_steam=turbine.m_steam, m_dump=turbine.m_dump)
-    sg_sec(Q_sg=Q_sg_sig, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=m_fw)
+    fw_ctrl(
+        level_sg=sg_sec.level_sg,
+        level_setpoint=level_set,
+        m_steam=turbine.m_steam,
+        m_dump=turbine.m_dump,
+        feedwater_manual=fw_manual,
+    )
+    feedwater(m_fw_demand=fw_ctrl.m_fw_demand)
+    sg_sec(Q_sg=Q_sg_sig, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=feedwater.m_fw)
     tavg_ctrl(
         T_avg=loop.T_avg,
         T_ref=turbine.T_ref,

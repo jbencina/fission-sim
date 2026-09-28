@@ -533,7 +533,8 @@ Keyword arguments replace one component's parameters, for example
 `build_standard_plant(core_params=CoreParams(alpha_m=-2e-4))`, or set the
 defaults of the `rod_command`, `P_setpoint`, `turbine_load`, and `rod_auto`
 externals. The module names (the snapshot keys) are `rod`, `core`, `loop`,
-`sg`, `sg_sec`, `turbine`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and `pzr_ctrl`.
+`sg`, `sg_sec`, `turbine`, `feedwater`, `fw_ctrl`, `tavg_ctrl`, `pzr`, and
+`pzr_ctrl`.
 
 The web runtime and the `report_primary.py`, `power_maneuver.py`,
 `console.py`, and `dump_state.py` examples use it. The tutorial below builds
@@ -553,6 +554,7 @@ from fission_sim.control.tavg_controller import TavgController, TavgControllerPa
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
 from fission_sim.physics.domain import check_snapshot
+from fission_sim.physics.feedwater import FeedwaterParams, FeedwaterSystem
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -569,7 +571,8 @@ rod_params = RodParams()
 sg_params = SGParams()
 sg_sec_params = SGSecondaryParams()
 turbine_params = TurbineParams(sg_params=sg_sec_params)
-fw_params = FeedwaterControllerParams()
+fw_params = FeedwaterControllerParams(sg_params=sg_sec_params)
+feedwater_params = FeedwaterParams(sg_params=sg_sec_params)
 tavg_params = TavgControllerParams()
 rod_position_initial = (
     rod_params.rod_position_design
@@ -583,6 +586,7 @@ loop = engine.module(PrimaryLoop(loop_params), name="loop")
 sg = engine.module(SteamGenerator(sg_params), name="sg")
 sg_sec = engine.module(SGSecondary(sg_sec_params), name="sg_sec")
 turbine = engine.module(Turbine(turbine_params), name="turbine")
+feedwater = engine.module(FeedwaterSystem(feedwater_params), name="feedwater")
 fw_ctrl = engine.module(FeedwaterController(fw_params), name="fw_ctrl")
 tavg_ctrl = engine.module(
     TavgController(tavg_params, rod_position_initial=rod_position_initial),
@@ -602,6 +606,8 @@ spray_manual = engine.input("spray_manual", default=None)
 load_demand = engine.input("turbine_load", default=turbine_params.load_initial)
 trip = engine.input("turbine_trip", default=False)
 auto = engine.input("rod_auto", default=False)
+level_set = engine.input("level_setpoint", default=fw_params.level_setpoint_default)
+fw_manual = engine.input("feedwater_manual", default=None)
 
 # 3. Wire by calling. Every output port is also an attribute (loop.T_avg,
 #    core.Q_fuel_to_coolant); a module with exactly one output port returns
@@ -610,8 +616,15 @@ auto = engine.input("rod_auto", default=False)
 rod(rod_command=tavg_ctrl.rod_demand, scram=scram)
 Q_sg = sg(T_avg=loop.T_avg, T_secondary=sg_sec.T_secondary)
 turbine(P_steam=sg_sec.P_steam, load_demand=load_demand, turbine_trip=trip, scram=scram)
-m_fw = fw_ctrl(m_steam=turbine.m_steam, m_dump=turbine.m_dump)
-sg_sec(Q_sg=Q_sg, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=m_fw)
+fw_ctrl(
+    level_sg=sg_sec.level_sg,
+    level_setpoint=level_set,
+    m_steam=turbine.m_steam,
+    m_dump=turbine.m_dump,
+    feedwater_manual=fw_manual,
+)
+feedwater(m_fw_demand=fw_ctrl.m_fw_demand)
+sg_sec(Q_sg=Q_sg, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=feedwater.m_fw)
 tavg_ctrl(
     T_avg=loop.T_avg,
     T_ref=turbine.T_ref,
@@ -673,7 +686,7 @@ state.
 Returned by `step()`, `run()`, and `engine.snapshot()`. This is the plant
 above after `step(dt=5.0)` at the design steady state, values rounded.
 
-There is no `sink` key in this M3 standard-plant shape; `SecondarySink`
+There is no `sink` key in this M4 standard-plant shape; `SecondarySink`
 appears only in deliberately hand-wired M1/M2 regression plants.
 
 ```python
@@ -683,13 +696,14 @@ appears only in deliberately hand-wired M1/M2 regression plants.
         "rod_command": 0.5, "scram": False, "P_setpoint": 15500000.0,
         "heater_manual": None, "spray_manual": None,
         "turbine_load": 1.0, "turbine_trip": False, "rod_auto": False,
+        "level_setpoint": 0.5, "feedwater_manual": None,
         "rho_rod": 0.0, "rod_position": 0.5,
         "T_hot": 597.742, "T_cold": 568.258, "T_avg": 583.0,
         "T_cool": 583.0, "T_secondary": 558.0,
         "P_steam": 6.899e6, "P": 15499345.2, "Q_fuel_to_coolant": 3.0e9,
         "Q_heater": 0.0, "m_dot_spray": 0.0, "Q_sg": 3.0e9,
         "m_steam": 1669.0, "m_dump": 0.0, "T_ref": 583.0,
-        "m_fw": 1669.0, "rod_demand": 0.5,
+        "m_fw_demand": 1669.0, "m_fw": 1669.0, "rod_demand": 0.5,
     },
     "rod": {
         "rod_position": 0.5, "shutdown_position": 1.0,
@@ -717,6 +731,7 @@ appears only in deliberately hand-wired M1/M2 regression plants.
         "Q_sg": 3.0e9,
         "m_steam": 1669.0, "m_dump": 0.0, "m_fw": 1669.0,
         "Q_steam_net": 3.0e9,
+        "boil_off_time_s": 133.3,
     },
     "turbine": {
         "load": 1.0, "m_steam": 1669.0, "m_dump": 0.0,
@@ -724,7 +739,11 @@ appears only in deliberately hand-wired M1/M2 regression plants.
         "load_demand": 1.0, "turbine_trip": False, "scram": False,
         "trip_active": False,
     },
-    "fw_ctrl": {"m_fw": 1669.0, "m_steam": 1669.0, "m_dump": 0.0},
+    "feedwater": {"m_fw": 1669.0, "m_fw_demand": 1669.0, "m_fw_max": 2002.8},
+    "fw_ctrl": {
+        "m_fw_demand": 1669.0, "level_error": 0.0, "level_error_integral": 0.0,
+        "feedwater_manual": None, "mode": "auto", "saturated": False,
+    },
     "tavg_ctrl": {
         "rod_demand_auto": 0.5, "rod_demand": 0.5,
         "T_err": 0.0, "rod_auto": False, "acting": False,

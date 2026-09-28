@@ -51,10 +51,20 @@ TRANSIENT_ENERGY_ACCUMULATION_FRAC: float = 1.0e-3
 ENERGY_BALANCE_FRAC: float = STEADY_HEAT_RATE_MISMATCH_FRAC
 TRANSIENT_ENERGY_BALANCE_FRAC: float = LOAD_HEAT_RATE_MISMATCH_FRAC
 MASS_DRIFT_LIMIT: float = 1.0  # [kg]
+MASS_ACCUMULATION_FRAC: float = 1.0e-3
 AUTO_TAVG_TREF_TOL: float = 1.0  # [K]
 STEAM_PRESSURE_MAX_ON_TRIP: float = 8.5e6  # [Pa]
 SCRAM_N_MAX: float = 1.0e-2
 HUGE_SHELL_TAVG_TOL: float = 0.5  # [K]
+M4_LEVEL_HOLD_TOL: float = 1.0e-3
+M4_FLOW_MATCH_FRAC: float = 5.0e-3
+M4_LOAD_LEVEL_EXCURSION: float = 0.05
+M4_LOAD_LEVEL_RESIDUAL: float = 0.005
+M4_SETPOINT_RESIDUAL: float = 0.01
+M4_SETPOINT_OVERSHOOT_MAX: float = 0.57
+M4_LOFW_HALT_BAND: tuple[float, float] = (30.0, 600.0)
+M4_OVERFILL_HALT_BAND: tuple[float, float] = (200.0, 2000.0)
+M4_TRIP_SCRAM_LEVEL_RESIDUAL: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -293,6 +303,51 @@ def secondary_energy_accumulation_fraction(snaps: list[dict[str, Any]]) -> float
     return float(np.max(np.abs(dU - integral)) / scale)
 
 
+def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
+    """Compare integrated shell net mass flow with stored mass change.
+
+    Parameters
+    ----------
+    snaps : list of dict
+        Uniformly sampled engine snapshots from one transient run. Each
+        snapshot must include ``t`` [s], ``sg_sec.M_sec`` [kg],
+        ``sg_sec.m_fw`` [kg/s], and turbine steam/dump flows [kg/s].
+
+    Returns
+    -------
+    float
+        ``max(|ΔM_sec - ∫(m_fw − m_steam − m_dump)dt|) / M_sec(0)`` [-],
+        using the trapezoid rule over the supplied samples. Returns 0 for
+        fewer than two samples.
+
+    Notes
+    -----
+    The integrand is the rigid control-volume mass balance:
+
+    ``dM_sec/dt = m_fw − m_steam − m_dump``
+
+    M4 uses a dynamic feedwater actuator, so this is the mass-conservation
+    check with a real inventory change that replaces the M3 exact-mass
+    constancy assertion.
+    """
+    if len(snaps) < 2:
+        return 0.0
+
+    t = np.array([snap["t"] for snap in snaps], dtype=float)
+    M = np.array([snap["sg_sec"]["M_sec"] for snap in snaps], dtype=float)
+    net = np.array(
+        [
+            snap["sg_sec"]["m_fw"] - snap["turbine"]["m_steam"] - snap["turbine"]["m_dump"]
+            for snap in snaps
+        ],
+        dtype=float,
+    )
+    integral = np.zeros_like(net)
+    integral[1:] = np.cumsum(0.5 * (net[:-1] + net[1:]) * np.diff(t))
+    dM = M - M[0]
+    return float(np.max(np.abs(dM - integral)) / max(abs(M[0]), 1.0))
+
+
 def secondary_energy_fraction(snap: dict[str, Any]) -> float:
     """Legacy alias for :func:`equilibrium_heat_rate_mismatch_fraction`.
 
@@ -321,6 +376,16 @@ __all__ = [
     "MANUAL_P_STEAM_BAND",
     "MANUAL_TAVG_BAND",
     "MASS_DRIFT_LIMIT",
+    "MASS_ACCUMULATION_FRAC",
+    "M4_FLOW_MATCH_FRAC",
+    "M4_LEVEL_HOLD_TOL",
+    "M4_LOAD_LEVEL_EXCURSION",
+    "M4_LOAD_LEVEL_RESIDUAL",
+    "M4_LOFW_HALT_BAND",
+    "M4_OVERFILL_HALT_BAND",
+    "M4_SETPOINT_OVERSHOOT_MAX",
+    "M4_SETPOINT_RESIDUAL",
+    "M4_TRIP_SCRAM_LEVEL_RESIDUAL",
     "SCRAM_N_MAX",
     "STEADY_LEVEL_TOL",
     "STEADY_LOAD_TOL",
@@ -340,5 +405,6 @@ __all__ = [
     "run_dense",
     "secondary_energy_accumulation_fraction",
     "secondary_energy_fraction",
+    "secondary_mass_accumulation_fraction",
     "series",
 ]

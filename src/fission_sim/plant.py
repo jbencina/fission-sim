@@ -1,4 +1,4 @@
-"""The standard M3 primary/secondary plant, assembled in one call.
+"""The standard M4 primary/secondary plant, assembled in one call.
 
 ``build_standard_plant()`` wires the coupled pressurized-water-reactor
 learning plant into a finalized ``SimEngine``:
@@ -7,8 +7,11 @@ learning plant into a finalized ``SimEngine``:
                                     │ m_steam, m_dump        │
                                     ▼                        │
     loop.T_avg ─▶ sg ──Q_sg──▶ sg_sec ──T_secondary──────────┘
-                  ▲              ▲
-                  │              └── m_fw ◀── fw_ctrl ◀── turbine
+                  ▲              ▲  │ level_sg
+                  │              │  ▼
+                  │              │ fw_ctrl ◀── level_setpoint, feedwater_manual
+                  │              │   │ m_fw_demand
+                  │              └── feedwater ──m_fw
                   │
     core ──Q_fuel_to_coolant──▶ loop, pzr
       ▲                         │
@@ -20,10 +23,11 @@ learning plant into a finalized ``SimEngine``:
     loop ──T_hot, T_cold──▶ pzr       pzr ──P──▶ pzr_ctrl ──Q_heater, m_dot_spray──▶ pzr
     pzr ──P──▶ loop                   pzr_ctrl ──m_dot_spray────────────────────────▶ loop
 
-Operator commands enter as eight engine externals: ``rod_command``,
+Operator commands enter as ten engine externals: ``rod_command``,
 ``scram``, ``P_setpoint``, ``heater_manual``, ``spray_manual``,
-``turbine_load``, ``turbine_trip`` and ``rod_auto``. ``heater_manual`` and
-``spray_manual`` use ``None`` for automatic pressurizer pressure control.
+``turbine_load``, ``turbine_trip``, ``rod_auto``, ``level_setpoint`` and
+``feedwater_manual``. ``heater_manual``, ``spray_manual`` and
+``feedwater_manual`` use ``None`` for automatic control.
 
 The web runtime and the operational examples use this factory so they all
 simulate the same plant. To see every ``engine.module``/``engine.input``
@@ -48,6 +52,7 @@ from fission_sim.control.pressurizer_controller import (
 from fission_sim.control.tavg_controller import TavgController, TavgControllerParams
 from fission_sim.engine import SimEngine
 from fission_sim.physics.core import CoreParams, PointKineticsCore
+from fission_sim.physics.feedwater import FeedwaterParams, FeedwaterSystem
 from fission_sim.physics.pressurizer import Pressurizer, PressurizerParams
 from fission_sim.physics.primary_loop import LoopParams, PrimaryLoop
 from fission_sim.physics.rod_controller import RodController, RodParams
@@ -91,27 +96,30 @@ def build_standard_plant(
     sg_sec_params: SGSecondaryParams | None = None,
     turbine_params: TurbineParams | None = None,
     fw_params: FeedwaterControllerParams | None = None,
+    feedwater_params: FeedwaterParams | None = None,
     tavg_params: TavgControllerParams | None = None,
     rod_command: float | None = None,
     P_setpoint: float | None = None,
     turbine_load: float | None = None,
     rod_auto: bool = False,
 ) -> SimEngine:
-    """Build and finalize the standard M3 plant.
+    """Build and finalize the standard M4 plant.
 
     Every parameter object defaults to its design-point values, so
     ``build_standard_plant()`` starts at steady full power. Pass an object
     to change one component, e.g. ``core_params=CoreParams(alpha_m=...)``.
 
     Module names (the snapshot keys) are ``rod``, ``core``, ``loop``,
-    ``sg``, ``sg_sec``, ``turbine``, ``fw_ctrl``, ``tavg_ctrl``, ``pzr`` and
-    ``pzr_ctrl``. These are the names ``physics.domain.check_snapshot``
-    expects.
+    ``sg``, ``sg_sec``, ``turbine``, ``feedwater``, ``fw_ctrl``,
+    ``tavg_ctrl``, ``pzr`` and ``pzr_ctrl``. These are the names
+    ``physics.domain.check_snapshot`` expects.
 
     Externals are ``rod_command`` [0..1], ``scram`` [bool],
     ``P_setpoint`` [Pa], ``heater_manual`` [None or 0..1],
     ``spray_manual`` [None or 0..1], ``turbine_load`` [0..1 valve
-    admission], ``turbine_trip`` [bool], and ``rod_auto`` [bool].
+    admission], ``turbine_trip`` [bool], ``rod_auto`` [bool],
+    ``level_setpoint`` [0..1 collapsed liquid fraction], and
+    ``feedwater_manual`` [None or 0..1].
 
     Parameters
     ----------
@@ -131,7 +139,11 @@ def build_standard_plant(
         ``sg_sec_params`` because the valve coefficient and design steam
         flow are derived from the shell design point.
     fw_params : FeedwaterControllerParams, optional
-        M3 flow-matching feedwater-controller parameters.
+        M4 three-element feedwater-controller parameters. ``None`` builds
+        ``FeedwaterControllerParams(sg_params=sg_sec_params)``.
+    feedwater_params : FeedwaterParams, optional
+        Feedwater actuator parameters. ``None`` builds
+        ``FeedwaterParams(sg_params=sg_sec_params)``.
     tavg_params : TavgControllerParams, optional
         Automatic Tavg rod-controller parameters.
     rod_command : float, optional
@@ -178,7 +190,9 @@ def build_standard_plant(
     if turbine_params is None:
         turbine_params = TurbineParams(sg_params=sg_sec_params)
     if fw_params is None:
-        fw_params = FeedwaterControllerParams()
+        fw_params = FeedwaterControllerParams(sg_params=sg_sec_params)
+    if feedwater_params is None:
+        feedwater_params = FeedwaterParams(sg_params=sg_sec_params)
     if tavg_params is None:
         tavg_params = TavgControllerParams()
     if pzr_params.loop_params != loop_params:
@@ -190,6 +204,16 @@ def build_standard_plant(
         raise ValueError(
             "turbine_params.sg_params must match sg_sec_params: the turbine's "
             "valve constant and design steam flow come from the shell side's design point"
+        )
+    if fw_params.sg_params != sg_sec_params:
+        raise ValueError(
+            "fw_params.sg_params must match sg_sec_params: the feedwater controller's design flow "
+            "comes from the shell side's design point"
+        )
+    if feedwater_params.sg_params != sg_sec_params:
+        raise ValueError(
+            "feedwater_params.sg_params must match sg_sec_params: the feedwater actuator's design flow "
+            "comes from the shell side's design point"
         )
     if abs(sg_params.T_secondary_ref - sg_sec_params.T_sec_ref) > 1e-9:
         raise ValueError(
@@ -217,6 +241,7 @@ def build_standard_plant(
     sg = engine.module(SteamGenerator(sg_params), name="sg")
     sg_sec = engine.module(SGSecondary(sg_sec_params), name="sg_sec")
     turbine = engine.module(Turbine(turbine_params), name="turbine")
+    feedwater = engine.module(FeedwaterSystem(feedwater_params), name="feedwater")
     fw_ctrl = engine.module(FeedwaterController(fw_params), name="fw_ctrl")
     tavg_ctrl = engine.module(TavgController(tavg_params, rod_position_initial=rod_position_initial), name="tavg_ctrl")
     pzr = engine.module(Pressurizer(pzr_params), name="pzr")
@@ -231,13 +256,22 @@ def build_standard_plant(
     load_demand = engine.input("turbine_load", default=turbine_load)
     trip = engine.input("turbine_trip", default=False)
     auto = engine.input("rod_auto", default=rod_auto)
+    level_set = engine.input("level_setpoint", default=fw_params.level_setpoint_default)
+    fw_manual = engine.input("feedwater_manual", default=None)
 
     # Wiring order does not matter: finalize() sorts the evaluation order.
     rod(rod_command=tavg_ctrl.rod_demand, scram=scram)
     Q_sg = sg(T_avg=loop.T_avg, T_secondary=sg_sec.T_secondary)
     turbine(P_steam=sg_sec.P_steam, load_demand=load_demand, turbine_trip=trip, scram=scram)
-    m_fw = fw_ctrl(m_steam=turbine.m_steam, m_dump=turbine.m_dump)
-    sg_sec(Q_sg=Q_sg, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=m_fw)
+    fw_ctrl(
+        level_sg=sg_sec.level_sg,
+        level_setpoint=level_set,
+        m_steam=turbine.m_steam,
+        m_dump=turbine.m_dump,
+        feedwater_manual=fw_manual,
+    )
+    feedwater(m_fw_demand=fw_ctrl.m_fw_demand)
+    sg_sec(Q_sg=Q_sg, m_steam=turbine.m_steam, m_dump=turbine.m_dump, m_fw=feedwater.m_fw)
     tavg_ctrl(
         T_avg=loop.T_avg,
         T_ref=turbine.T_ref,

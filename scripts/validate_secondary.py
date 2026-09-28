@@ -1,4 +1,4 @@
-"""Run M3 secondary-side acceptance scenarios and print a criteria table.
+"""Run M3/M4 secondary-side acceptance scenarios and print a criteria table.
 
 Examples
 --------
@@ -8,7 +8,7 @@ Run with dense BDF sampling (same mode as the pytest acceptance helper)::
 
 Run with dashboard-like fixed engine steps at 10 Hz simulated cadence::
 
-    uv run python scripts/validate_secondary.py --milestone m3 --step-dt 0.1
+    uv run python scripts/validate_secondary.py --milestone m4 --step-dt 0.1
 """
 
 from __future__ import annotations
@@ -35,10 +35,19 @@ from fission_sim.validation.secondary_acceptance import (
     DT,
     HUGE_SHELL_TAVG_TOL,
     LOAD_HEAT_RATE_MISMATCH_FRAC,
+    M4_FLOW_MATCH_FRAC,
+    M4_LEVEL_HOLD_TOL,
+    M4_LOAD_LEVEL_EXCURSION,
+    M4_LOAD_LEVEL_RESIDUAL,
+    M4_LOFW_HALT_BAND,
+    M4_OVERFILL_HALT_BAND,
+    M4_SETPOINT_OVERSHOOT_MAX,
+    M4_SETPOINT_RESIDUAL,
+    M4_TRIP_SCRAM_LEVEL_RESIDUAL,
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
-    MASS_DRIFT_LIMIT,
+    MASS_ACCUMULATION_FRAC,
     SCRAM_N_MAX,
     STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
@@ -57,6 +66,7 @@ from fission_sim.validation.secondary_acceptance import (
     result,
     run_dense,
     secondary_energy_accumulation_fraction,
+    secondary_mass_accumulation_fraction,
     series,
 )
 
@@ -271,8 +281,18 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
         )
     elif spec.slug == "mass_match":
         M = series(snaps, "sg_sec", "M_sec")
-        drift = float(np.max(np.abs(M - M[0])))
-        rows.append(result(f"{prefix}: shell mass drift", drift, f"< {MASS_DRIFT_LIMIT} kg", drift < MASS_DRIFT_LIMIT))
+        frac = secondary_mass_accumulation_fraction(snaps)
+        rows.extend(
+            [
+                result(
+                    f"{prefix}: shell mass accumulation",
+                    frac,
+                    f"< {MASS_ACCUMULATION_FRAC}",
+                    frac < MASS_ACCUMULATION_FRAC,
+                ),
+                result(f"{prefix}: nonzero ΔM", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+            ]
+        )
     elif spec.slug == "load_manual":
         n = series(snaps, "core", "n")[-1]
         T_avg = series(snaps, "loop", "T_avg")[-1]
@@ -506,9 +526,9 @@ def _m3_scenarios() -> list[Scenario]:
         Scenario("energy_balance", "Steady secondary energy balance, 60 s", 60.0, lambda t: {}),
         Scenario(
             "mass_match",
-            "M3 flow-matching feedwater, 300 s",
-            300.0,
-            lambda t: {"turbine_load": 0.8 if t > 10.0 else 1.0},
+            "Secondary shell mass accumulation, 600 s",
+            600.0,
+            ramp_to(0.8),
         ),
         Scenario("load_manual", "100% to 90% turbine admission, rods manual", 1500.0, ramp_to(0.9)),
         Scenario(
@@ -548,6 +568,240 @@ def run_m3(out_dir: Path, *, step_dt: float | None) -> list[CriterionResult]:
     return rows
 
 
+def _run_until_model_limit(
+    spec: Scenario,
+    *,
+    dt: float,
+) -> tuple[list[dict[str, Any]], str | None, float | None]:
+    """Step one scenario until a model-domain limit is reached.
+
+    Parameters
+    ----------
+    spec : Scenario
+        Scenario to run. ``spec.t_end`` is the maximum simulated time [s].
+    dt : float
+        Step size [s]. M4 acceptance uses 1 s steps for halting cases.
+
+    Returns
+    -------
+    tuple
+        ``(snapshots, limit, t_halt)``. ``limit`` and ``t_halt`` are None if
+        no model limit was reached before ``spec.t_end``.
+    """
+    engine = build_standard_plant(**(spec.plant_kwargs or {}))
+    snaps = [engine.snapshot()]
+    check_snapshot(snaps[0])
+    while engine.t < spec.t_end - 1e-9:
+        snap = engine.step(min(dt, spec.t_end - engine.t), **spec.scenario_fn(engine.t))
+        snaps.append(snap)
+        try:
+            check_snapshot(snap)
+        except ModelDomainError as err:
+            return snaps, err.limit, snap["t"]
+    return snaps, None, None
+
+
+def _criteria_for_m4_nonhalting(spec: Scenario, snaps: list[dict[str, Any]]) -> list[CriterionResult]:
+    """Evaluate M4 non-halting SG-level criteria."""
+    rows: list[CriterionResult] = []
+    prefix = spec.slug.replace("_", " ")
+    level = series(snaps, "sg_sec", "level_sg")
+
+    if spec.slug == "m4_steady":
+        m_fw = series(snaps, "feedwater", "m_fw")
+        m_out = series(snaps, "turbine", "m_steam") + series(snaps, "turbine", "m_dump")
+        level_err = float(np.max(np.abs(level - 0.5)))
+        flow_frac = float(abs(m_fw[-1] - m_out[-1]) / max(abs(m_out[-1]), 1.0))
+        rows.extend(
+            [
+                result(
+                    f"{prefix}: max level error",
+                    level_err,
+                    f"< {M4_LEVEL_HOLD_TOL}",
+                    level_err < M4_LEVEL_HOLD_TOL,
+                ),
+                result(
+                    f"{prefix}: final feed/steam mismatch",
+                    flow_frac,
+                    f"< {M4_FLOW_MATCH_FRAC}",
+                    flow_frac < M4_FLOW_MATCH_FRAC,
+                ),
+            ]
+        )
+    elif spec.slug == "m4_mass_integral":
+        M = series(snaps, "sg_sec", "M_sec")
+        mass_frac = secondary_mass_accumulation_fraction(snaps)
+        energy_frac = secondary_energy_accumulation_fraction(snaps)
+        rows.extend(
+            [
+                result(
+                    f"{prefix}: shell mass accumulation",
+                    mass_frac,
+                    f"< {MASS_ACCUMULATION_FRAC}",
+                    mass_frac < MASS_ACCUMULATION_FRAC,
+                ),
+                result(f"{prefix}: nonzero ΔM", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+                result(
+                    f"{prefix}: shell energy accumulation",
+                    energy_frac,
+                    f"< {TRANSIENT_ENERGY_ACCUMULATION_FRAC}",
+                    energy_frac < TRANSIENT_ENERGY_ACCUMULATION_FRAC,
+                ),
+            ]
+        )
+    elif spec.slug == "m4_load_auto_level":
+        excursion = float(np.max(np.abs(level - 0.5)))
+        residual = float(abs(level[-1] - 0.5))
+        rows.extend(
+            [
+                result(
+                    f"{prefix}: max level excursion",
+                    excursion,
+                    f"< {M4_LOAD_LEVEL_EXCURSION}",
+                    excursion < M4_LOAD_LEVEL_EXCURSION,
+                ),
+                result(
+                    f"{prefix}: final level residual",
+                    residual,
+                    f"< {M4_LOAD_LEVEL_RESIDUAL}",
+                    residual < M4_LOAD_LEVEL_RESIDUAL,
+                ),
+            ]
+        )
+    elif spec.slug == "m4_setpoint_step":
+        residual = float(abs(level[-1] - 0.55))
+        max_level = float(level.max())
+        rows.extend(
+            [
+                result(
+                    f"{prefix}: final setpoint residual",
+                    residual,
+                    f"< {M4_SETPOINT_RESIDUAL}",
+                    residual < M4_SETPOINT_RESIDUAL,
+                ),
+                result(
+                    f"{prefix}: overshoot ceiling",
+                    max_level,
+                    f"< {M4_SETPOINT_OVERSHOOT_MAX}",
+                    max_level < M4_SETPOINT_OVERSHOOT_MAX,
+                ),
+            ]
+        )
+    elif spec.slug == "m4_trip_scram_level":
+        min_level = float(level.min())
+        max_level = float(level.max())
+        residual = float(abs(level[-1] - 0.5))
+        rows.extend(
+            [
+                result(f"{prefix}: min level", min_level, "> 0.30", min_level > 0.30),
+                result(f"{prefix}: max level", max_level, "< 0.95", max_level < 0.95),
+                result(
+                    f"{prefix}: final level residual",
+                    residual,
+                    f"< {M4_TRIP_SCRAM_LEVEL_RESIDUAL}",
+                    residual < M4_TRIP_SCRAM_LEVEL_RESIDUAL,
+                ),
+            ]
+        )
+    return rows
+
+
+def _m4_scenarios() -> list[Scenario]:
+    """Return the M4 SG-level scenario set."""
+    return [
+        Scenario("m4_steady", "M4 level holds at setpoint for 600 s", 600.0, lambda t: {}),
+        Scenario("m4_mass_integral", "M4 shell mass equals integrated net flow", 600.0, ramp_to(0.8)),
+        Scenario(
+            "m4_load_auto_level",
+            "M4 100% to 90% turbine admission, rods automatic",
+            1800.0,
+            lambda t: {**ramp_to(0.9)(t), "rod_auto": True},
+            {"rod_auto": True},
+        ),
+        Scenario(
+            "m4_setpoint_step",
+            "M4 SG collapsed-level setpoint step 0.50 to 0.55",
+            1200.0,
+            lambda t: {"level_setpoint": 0.55 if t >= 10.0 else 0.5},
+        ),
+        Scenario(
+            "m4_loss_of_feedwater",
+            "M4 loss of feedwater at power",
+            600.0,
+            lambda t: {"feedwater_manual": 0.0 if t >= 10.0 else None},
+        ),
+        Scenario(
+            "m4_feedwater_max",
+            "M4 manual feedwater held at maximum",
+            2000.0,
+            lambda t: {"feedwater_manual": 1.0 if t >= 10.0 else None},
+        ),
+        Scenario(
+            "m4_trip_scram_level",
+            "M4 turbine trip plus SCRAM under automatic feedwater control",
+            1200.0,
+            lambda t: {"turbine_trip": t >= 10.0, "scram": t >= 10.0},
+            caption="Level is SG collapsed liquid fraction: four SGs lumped; no indicated-level shrink/swell.",
+        ),
+    ]
+
+
+def run_m4(out_dir: Path, *, step_dt: float | None) -> list[CriterionResult]:
+    """Run M4 validation, save plots and return all criteria rows."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[CriterionResult] = []
+    for spec in _m4_scenarios():
+        if spec.slug == "m4_loss_of_feedwater":
+            snaps, limit, t_halt = _run_until_model_limit(spec, dt=1.0)
+            _plot_scenario(spec, snaps, out_dir)
+            rows.extend(
+                [
+                    result(
+                        f"{spec.slug}: limit",
+                        limit or "no limit",
+                        "sg_tubes_uncovered",
+                        limit == "sg_tubes_uncovered",
+                    ),
+                    result(
+                        f"{spec.slug}: halt time",
+                        t_halt if t_halt is not None else "none",
+                        _band_text(M4_LOFW_HALT_BAND, "s"),
+                        t_halt is not None and _between(t_halt, M4_LOFW_HALT_BAND),
+                    ),
+                ]
+            )
+        elif spec.slug == "m4_feedwater_max":
+            snaps, limit, t_halt = _run_until_model_limit(spec, dt=1.0)
+            _plot_scenario(spec, snaps, out_dir)
+            rows.extend(
+                [
+                    result(f"{spec.slug}: limit", limit or "no limit", "sg_overfill", limit == "sg_overfill"),
+                    result(
+                        f"{spec.slug}: halt time",
+                        t_halt if t_halt is not None else "none",
+                        _band_text(M4_OVERFILL_HALT_BAND, "s"),
+                        t_halt is not None and _between(t_halt, M4_OVERFILL_HALT_BAND),
+                    ),
+                ]
+            )
+        else:
+            snaps = _run_scenario(spec, step_dt=step_dt)
+            _plot_scenario(spec, snaps, out_dir)
+            rows.extend(_criteria_for_m4_nonhalting(spec, snaps))
+
+    shell = SGSecondaryParams(V_sec=6.0e7)
+    try:
+        snap = build_standard_plant(sg_sec_params=shell).snapshot()
+    except ValueError as err:
+        rows.append(result("factory: nondefault shell params", str(err), "constructs", False))
+    else:
+        ok = abs(snap["feedwater"]["m_fw_max"] - 1.2 * shell.m_steam_design) < 1.0e-9 * shell.m_steam_design
+        rows.append(
+            result("factory: nondefault shell feedwater defaults", snap["feedwater"]["m_fw_max"], "derived", ok)
+        )
+    return rows
+
+
 def print_table(rows: list[CriterionResult]) -> None:
     """Print the markdown criteria table."""
     print("| criterion | measured | limit | pass |")
@@ -574,8 +828,9 @@ def main() -> int:
     """CLI entry point."""
     args = parse_args()
     if args.milestone == "m4":
-        raise SystemExit("M4 secondary/feedwater validation is not implemented yet.")
-    rows = run_m3(args.out_dir, step_dt=args.step_dt)
+        rows = run_m4(args.out_dir, step_dt=args.step_dt)
+    else:
+        rows = run_m3(args.out_dir, step_dt=args.step_dt)
     print_table(rows)
     return 0 if all(row.passed for row in rows) else 1
 

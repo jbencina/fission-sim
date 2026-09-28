@@ -202,6 +202,26 @@ def main() -> None:
         )
     print()
 
+    print("  FEEDWATER")
+    print("  ---------")
+    print(
+        f"    {'t[s]':>6}  {'m_fw':>8}  {'demand':>8}  {'mode':>6}"
+        f"  {'lvl_set':>7}  {'lvl_err':>8}  {'boiloff':>8}"
+    )
+    for ti in sample_t:
+        snap = dense.at(float(ti))
+        fw = snap["feedwater"]
+        ctrl = snap["fw_ctrl"]
+        boil = snap["sg_sec"]["boil_off_time_s"]
+        boil_text = "n/a" if boil is None else f"{boil:7.0f}s"
+        level_error = ctrl["level_error"]
+        print(
+            f"    {ti:6.1f}  {fw['m_fw']:8.1f}  {ctrl['m_fw_demand']:8.1f}"
+            f"  {ctrl['mode']:>6}  {snap['signals']['level_setpoint']:7.3f}"
+            f"  {level_error:+8.4f}  {boil_text:>8}"
+        )
+    print()
+
     print("  What this shows:")
     print("    * Steady state holds at n=1 with rod at design (0.5).")
     print("    * After the 0.5 → 0.675 rod_command step: the control bank (1,200 pcm over")

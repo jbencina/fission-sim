@@ -16,7 +16,6 @@ from fission_sim.validation.secondary_acceptance import (
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
-    MASS_DRIFT_LIMIT,
     SCRAM_N_MAX,
     STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
@@ -76,11 +75,17 @@ def test_equilibrium_heat_rate_mismatch_uses_shell_telemetry():
     assert equilibrium_heat_rate_mismatch_fraction(snap) == pytest.approx(0.0)
 
 
-def test_shell_mass_is_conserved_when_feedwater_matches_steam():
+def test_shell_mass_matches_integrated_flows():
     eng = build_standard_plant()
-    snaps = run(eng, 300.0, lambda t: {"turbine_load": 0.8 if t > 10 else 1.0})
+    snaps = run(eng, 600.0, ramp_to(0.8))
     M = series(snaps, "sg_sec", "M_sec")
-    assert np.max(np.abs(M - M[0])) < MASS_DRIFT_LIMIT
+    m_fw = series(snaps, "feedwater", "m_fw")
+    m_out = series(snaps, "turbine", "m_steam") + series(snaps, "turbine", "m_dump")
+    t = np.array([snap["t"] for snap in snaps], dtype=float)
+    net = np.zeros_like(M)
+    net[1:] = np.cumsum(0.5 * ((m_fw - m_out)[1:] + (m_fw - m_out)[:-1]) * np.diff(t))
+    assert np.max(np.abs((M - M[0]) - net)) < 1.0e-3 * M[0]
+    assert abs(M[-1] - M[0]) > 100.0
 
 
 def test_load_reduction_rods_manual_reactor_follows_turbine():
