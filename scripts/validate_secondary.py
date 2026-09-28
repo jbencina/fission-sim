@@ -43,11 +43,12 @@ from fission_sim.validation.secondary_acceptance import (
     M4_OVERFILL_HALT_BAND,
     M4_SETPOINT_OVERSHOOT_MAX,
     M4_SETPOINT_RESIDUAL,
-    M4_TRIP_SCRAM_LEVEL_RESIDUAL,
+    M4_TRIP_SCRAM_LEVEL_OFFSET,
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
-    MASS_ACCUMULATION_FRAC,
+    MASS_ACCUMULATION_CHANGE_FRAC,
+    MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO,
     SCRAM_N_MAX,
     STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
@@ -66,7 +67,7 @@ from fission_sim.validation.secondary_acceptance import (
     result,
     run_dense,
     secondary_energy_accumulation_fraction,
-    secondary_mass_accumulation_fraction,
+    secondary_mass_accumulation_metrics,
     series,
 )
 
@@ -280,17 +281,21 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
             )
         )
     elif spec.slug == "mass_match":
-        M = series(snaps, "sg_sec", "M_sec")
-        frac = secondary_mass_accumulation_fraction(snaps)
+        mass = secondary_mass_accumulation_metrics(snaps)
         rows.extend(
             [
                 result(
-                    f"{prefix}: shell mass accumulation",
-                    frac,
-                    f"< {MASS_ACCUMULATION_FRAC}",
-                    frac < MASS_ACCUMULATION_FRAC,
+                    f"{prefix}: shell mass accumulation vs |ΔM|",
+                    mass.fraction,
+                    f"< {MASS_ACCUMULATION_CHANGE_FRAC} (allowed residual {mass.allowed_residual:.6g} kg)",
+                    mass.fraction < MASS_ACCUMULATION_CHANGE_FRAC,
                 ),
-                result(f"{prefix}: nonzero |ΔM|", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+                result(
+                    f"{prefix}: mass-change signal",
+                    f"{mass.change:.6g} kg ({mass.change / max(mass.allowed_residual, 1.0e-12):.3g}× allowed)",
+                    f"> {MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO:g}× allowed residual",
+                    mass.change > MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO * mass.allowed_residual,
+                ),
             ]
         )
     elif spec.slug == "load_manual":
@@ -629,18 +634,22 @@ def _criteria_for_m4_nonhalting(spec: Scenario, snaps: list[dict[str, Any]]) -> 
             ]
         )
     elif spec.slug == "m4_mass_integral":
-        M = series(snaps, "sg_sec", "M_sec")
-        mass_frac = secondary_mass_accumulation_fraction(snaps)
+        mass = secondary_mass_accumulation_metrics(snaps)
         energy_frac = secondary_energy_accumulation_fraction(snaps)
         rows.extend(
             [
                 result(
-                    f"{prefix}: shell mass accumulation",
-                    mass_frac,
-                    f"< {MASS_ACCUMULATION_FRAC}",
-                    mass_frac < MASS_ACCUMULATION_FRAC,
+                    f"{prefix}: shell mass accumulation vs |ΔM|",
+                    mass.fraction,
+                    f"< {MASS_ACCUMULATION_CHANGE_FRAC} (allowed residual {mass.allowed_residual:.6g} kg)",
+                    mass.fraction < MASS_ACCUMULATION_CHANGE_FRAC,
                 ),
-                result(f"{prefix}: nonzero |ΔM|", abs(M[-1] - M[0]), "> 100 kg", abs(M[-1] - M[0]) > 100.0),
+                result(
+                    f"{prefix}: mass-change signal",
+                    f"{mass.change:.6g} kg ({mass.change / max(mass.allowed_residual, 1.0e-12):.3g}× allowed)",
+                    f"> {MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO:g}× allowed residual",
+                    mass.change > MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO * mass.allowed_residual,
+                ),
                 result(
                     f"{prefix}: shell energy accumulation",
                     energy_frac,
@@ -696,10 +705,10 @@ def _criteria_for_m4_nonhalting(spec: Scenario, snaps: list[dict[str, Any]]) -> 
                 result(f"{prefix}: min level", min_level, "> 0.30", min_level > 0.30),
                 result(f"{prefix}: max level", max_level, "< 0.95", max_level < 0.95),
                 result(
-                    f"{prefix}: final level residual",
+                    f"{prefix}: final bounded level offset",
                     residual,
-                    f"< {M4_TRIP_SCRAM_LEVEL_RESIDUAL}",
-                    residual < M4_TRIP_SCRAM_LEVEL_RESIDUAL,
+                    f"< {M4_TRIP_SCRAM_LEVEL_OFFSET}",
+                    residual < M4_TRIP_SCRAM_LEVEL_OFFSET,
                 ),
             ]
         )

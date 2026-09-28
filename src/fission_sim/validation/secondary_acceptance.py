@@ -51,7 +51,14 @@ TRANSIENT_ENERGY_ACCUMULATION_FRAC: float = 1.0e-3
 ENERGY_BALANCE_FRAC: float = STEADY_HEAT_RATE_MISMATCH_FRAC
 TRANSIENT_ENERGY_BALANCE_FRAC: float = LOAD_HEAT_RATE_MISMATCH_FRAC
 MASS_DRIFT_LIMIT: float = 1.0  # [kg]
-MASS_ACCUMULATION_FRAC: float = 1.0e-3
+# The mass-accumulation check scales the largest trapezoid-vs-state residual
+# to the largest observed inventory change, not total shell inventory. The
+# reviewer's independent quadrature table found 0.98 kg error at 1 s sampling
+# and 0.055 kg at 0.25 s, so 1 % of |ΔM| with a 10 kg absolute floor is a
+# tighter regression check while leaving normal sampling roundoff margin.
+MASS_ACCUMULATION_CHANGE_FRAC: float = 1.0e-2
+MASS_ACCUMULATION_ABS_FLOOR: float = 10.0  # [kg]
+MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO: float = 10.0
 AUTO_TAVG_TREF_TOL: float = 1.0  # [K]
 STEAM_PRESSURE_MAX_ON_TRIP: float = 8.5e6  # [Pa]
 SCRAM_N_MAX: float = 1.0e-2
@@ -64,7 +71,7 @@ M4_SETPOINT_RESIDUAL: float = 0.01
 M4_SETPOINT_OVERSHOOT_MAX: float = 0.57
 M4_LOFW_HALT_BAND: tuple[float, float] = (30.0, 600.0)
 M4_OVERFILL_HALT_BAND: tuple[float, float] = (200.0, 2000.0)
-M4_TRIP_SCRAM_LEVEL_RESIDUAL: float = 0.02
+M4_TRIP_SCRAM_LEVEL_OFFSET: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,34 @@ class CriterionResult:
     measured: str
     limit: str
     passed: bool
+
+
+@dataclass(frozen=True)
+class MassAccumulationMetrics:
+    """Mass-accumulation diagnostic values for one sampled transient.
+
+    Parameters
+    ----------
+    residual : float
+        Largest absolute mismatch between stored ``ΔM_sec`` and integrated
+        net boundary flow [kg].
+    change : float
+        Largest observed absolute inventory change ``|ΔM_sec|`` [kg].
+    scale : float
+        Denominator used for ``fraction`` [kg].
+    fraction : float
+        ``residual / scale`` [-], where ``scale`` is the larger of
+        ``change`` and the scale implied by the absolute floor.
+    allowed_residual : float
+        Acceptance residual [kg], equal to
+        ``MASS_ACCUMULATION_CHANGE_FRAC * scale``.
+    """
+
+    residual: float
+    change: float
+    scale: float
+    fraction: float
+    allowed_residual: float
 
 
 def result(criterion: str, measured: float | str, limit: str, passed: bool) -> CriterionResult:
@@ -303,7 +338,7 @@ def secondary_energy_accumulation_fraction(snaps: list[dict[str, Any]]) -> float
     return float(np.max(np.abs(dU - integral)) / scale)
 
 
-def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
+def secondary_mass_accumulation_metrics(snaps: list[dict[str, Any]]) -> MassAccumulationMetrics:
     """Compare integrated shell net mass flow with stored mass change.
 
     Parameters
@@ -315,10 +350,10 @@ def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
 
     Returns
     -------
-    float
-        ``max(|ΔM_sec - ∫(m_fw − m_steam − m_dump)dt|) / M_sec(0)`` [-],
-        using the trapezoid rule over the supplied samples. Returns 0 for
-        fewer than two samples.
+    MassAccumulationMetrics
+        Residual, inventory-change scale, and acceptance values. The
+        fractional residual is scaled to ``max(|ΔM_sec|)`` with a 10 kg
+        absolute residual floor, rather than to total shell mass.
 
     Notes
     -----
@@ -329,9 +364,22 @@ def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
     M4 uses a dynamic feedwater actuator, so this is the mass-conservation
     check with a real inventory change that replaces the M3 exact-mass
     constancy assertion.
+
+    The acceptance scale follows the independent M4 review's convergence
+    table: the same transient showed about 0.98 kg residual at 1 s sampling
+    and 0.055 kg at 0.25 s. Scaling to accumulated inventory change with a
+    10 kg absolute floor is therefore more meaningful than permitting
+    0.1 % of the full 233 t shell inventory.
     """
+    scale_floor = MASS_ACCUMULATION_ABS_FLOOR / MASS_ACCUMULATION_CHANGE_FRAC
     if len(snaps) < 2:
-        return 0.0
+        return MassAccumulationMetrics(
+            residual=0.0,
+            change=0.0,
+            scale=scale_floor,
+            fraction=0.0,
+            allowed_residual=MASS_ACCUMULATION_ABS_FLOOR,
+        )
 
     t = np.array([snap["t"] for snap in snaps], dtype=float)
     M = np.array([snap["sg_sec"]["M_sec"] for snap in snaps], dtype=float)
@@ -345,7 +393,32 @@ def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
     integral = np.zeros_like(net)
     integral[1:] = np.cumsum(0.5 * (net[:-1] + net[1:]) * np.diff(t))
     dM = M - M[0]
-    return float(np.max(np.abs(dM - integral)) / max(abs(M[0]), 1.0))
+    residual = float(np.max(np.abs(dM - integral)))
+    change = float(np.max(np.abs(dM)))
+    scale = max(change, scale_floor)
+    return MassAccumulationMetrics(
+        residual=residual,
+        change=change,
+        scale=scale,
+        fraction=residual / scale,
+        allowed_residual=MASS_ACCUMULATION_CHANGE_FRAC * scale,
+    )
+
+
+def secondary_mass_accumulation_fraction(snaps: list[dict[str, Any]]) -> float:
+    """Return the change-scaled shell mass-accumulation residual fraction.
+
+    Parameters
+    ----------
+    snaps : list of dict
+        Uniformly sampled engine snapshots from one transient run.
+
+    Returns
+    -------
+    float
+        ``secondary_mass_accumulation_metrics(snaps).fraction`` [-].
+    """
+    return secondary_mass_accumulation_metrics(snaps).fraction
 
 
 def secondary_energy_fraction(snap: dict[str, Any]) -> float:
@@ -376,7 +449,9 @@ __all__ = [
     "MANUAL_P_STEAM_BAND",
     "MANUAL_TAVG_BAND",
     "MASS_DRIFT_LIMIT",
-    "MASS_ACCUMULATION_FRAC",
+    "MASS_ACCUMULATION_ABS_FLOOR",
+    "MASS_ACCUMULATION_CHANGE_FRAC",
+    "MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO",
     "M4_FLOW_MATCH_FRAC",
     "M4_LEVEL_HOLD_TOL",
     "M4_LOAD_LEVEL_EXCURSION",
@@ -385,7 +460,8 @@ __all__ = [
     "M4_OVERFILL_HALT_BAND",
     "M4_SETPOINT_OVERSHOOT_MAX",
     "M4_SETPOINT_RESIDUAL",
-    "M4_TRIP_SCRAM_LEVEL_RESIDUAL",
+    "M4_TRIP_SCRAM_LEVEL_OFFSET",
+    "MassAccumulationMetrics",
     "SCRAM_N_MAX",
     "STEADY_LEVEL_TOL",
     "STEADY_LOAD_TOL",
@@ -406,5 +482,6 @@ __all__ = [
     "secondary_energy_accumulation_fraction",
     "secondary_energy_fraction",
     "secondary_mass_accumulation_fraction",
+    "secondary_mass_accumulation_metrics",
     "series",
 ]

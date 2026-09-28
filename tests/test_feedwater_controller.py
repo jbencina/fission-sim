@@ -5,6 +5,7 @@ import pytest
 from scipy.integrate import solve_ivp
 
 from fission_sim.control.feedwater_controller import FeedwaterController, FeedwaterControllerParams
+from fission_sim.plant import build_standard_plant
 
 TOY_RHO_L = 741.5  # [kg/m^3], saturated-liquid density from the independent review reproducer
 TOY_V_SEC = 600.0  # [m^3], default SGSecondary shell volume
@@ -98,13 +99,78 @@ def test_integral_contributes():
     assert out["m_fw_demand"] == pytest.approx(1669.0 + 10.0 * c.params.K_i)
 
 
-def test_manual_override_scales_max_flow_and_freezes_integral():
+def test_manual_override_scales_max_flow_and_tracks_integral():
     c = FeedwaterController(FeedwaterControllerParams())
     p = c.params
     m_max = p.m_fw_max_frac * p.sg_params.m_steam_design
-    out = c.outputs(np.array([3.0]), inputs=inputs(feedwater_manual=0.5))
+    state = np.array([3.0])
+    controller_inputs = inputs(feedwater_manual=0.5, level_sg=0.3)
+
+    out = c.outputs(state, inputs=controller_inputs)
+    raw_auto = _raw_automatic_demand(c, state, controller_inputs)
+    expected = (0.5 * m_max - raw_auto) / (p.K_i * p.antiwindup_tracking_time)
+
     assert out["m_fw_demand"] == pytest.approx(0.5 * m_max)
-    assert c.derivatives(np.array([3.0]), inputs(feedwater_manual=0.5, level_sg=0.3))[0] == 0.0
+    assert c.derivatives(state, controller_inputs)[0] == pytest.approx(expected)
+
+
+def test_manual_tracking_uses_clipped_physical_demand():
+    c = FeedwaterController(FeedwaterControllerParams())
+    p = c.params
+    m_max = p.m_fw_max_frac * p.sg_params.m_steam_design
+    state = np.array([2.0])
+
+    high_inputs = inputs(feedwater_manual=2.0)
+    high_expected = (m_max - _raw_automatic_demand(c, state, high_inputs)) / (
+        p.K_i * p.antiwindup_tracking_time
+    )
+    assert c.derivatives(state, high_inputs)[0] == pytest.approx(high_expected)
+
+    low_inputs = inputs(feedwater_manual=-1.0)
+    low_expected = (0.0 - _raw_automatic_demand(c, state, low_inputs)) / (
+        p.K_i * p.antiwindup_tracking_time
+    )
+    assert c.derivatives(state, low_inputs)[0] == pytest.approx(low_expected)
+
+
+def test_manual_tracking_makes_auto_demand_match_manual_after_tracking_times():
+    c = FeedwaterController(FeedwaterControllerParams())
+    p = c.params
+    m_max = p.m_fw_max_frac * p.sg_params.m_steam_design
+    controller_inputs = inputs(feedwater_manual=0.9, level_sg=0.527)
+
+    def rhs(_t: float, y: np.ndarray) -> list[float]:
+        return [c.derivatives(y, controller_inputs)[0]]
+
+    sol = solve_ivp(
+        rhs,
+        (0.0, 5.0 * p.antiwindup_tracking_time),
+        [0.0],
+        method="BDF",
+        rtol=1.0e-8,
+        atol=1.0e-10,
+    )
+
+    assert sol.success, sol.message
+    final_state = np.array([sol.y[0, -1]])
+    raw_auto = _raw_automatic_demand(c, final_state, controller_inputs)
+    assert abs(raw_auto - 0.9 * m_max) < 0.01 * m_max
+
+
+def test_standard_plant_manual_to_auto_feedwater_transfer_is_bumpless():
+    """Sustained manual operation tracks the automatic PI state before transfer."""
+    eng = build_standard_plant()
+    manual_snap = eng.run(
+        100.0,
+        scenario_fn=lambda t: {"feedwater_manual": 0.9 if t >= 10.0 else None},
+        max_step=0.5,
+    )
+
+    manual_demand = manual_snap["fw_ctrl"]["m_fw_demand"]
+    auto_snap = eng.snapshot()
+    auto_demand = auto_snap["fw_ctrl"]["m_fw_demand"]
+
+    assert abs(auto_demand - manual_demand) < 50.0
 
 
 def test_manual_override_clips_fraction_to_physical_range():

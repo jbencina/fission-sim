@@ -16,6 +16,8 @@ from fission_sim.validation.secondary_acceptance import (
     MANUAL_N_BAND,
     MANUAL_P_STEAM_BAND,
     MANUAL_TAVG_BAND,
+    MASS_ACCUMULATION_CHANGE_FRAC,
+    MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO,
     SCRAM_N_MAX,
     STEADY_HEAT_RATE_MISMATCH_FRAC,
     STEADY_LEVEL_TOL,
@@ -32,6 +34,7 @@ from fission_sim.validation.secondary_acceptance import (
     ramp_to,
     run_dense,
     secondary_energy_accumulation_fraction,
+    secondary_mass_accumulation_metrics,
     series,
 )
 from fission_sim.validation.secondary_acceptance import (
@@ -78,14 +81,9 @@ def test_equilibrium_heat_rate_mismatch_uses_shell_telemetry():
 def test_shell_mass_matches_integrated_flows():
     eng = build_standard_plant()
     snaps = run(eng, 600.0, ramp_to(0.8))
-    M = series(snaps, "sg_sec", "M_sec")
-    m_fw = series(snaps, "feedwater", "m_fw")
-    m_out = series(snaps, "turbine", "m_steam") + series(snaps, "turbine", "m_dump")
-    t = np.array([snap["t"] for snap in snaps], dtype=float)
-    net = np.zeros_like(M)
-    net[1:] = np.cumsum(0.5 * ((m_fw - m_out)[1:] + (m_fw - m_out)[:-1]) * np.diff(t))
-    assert np.max(np.abs((M - M[0]) - net)) < 1.0e-3 * M[0]
-    assert abs(M[-1] - M[0]) > 100.0
+    mass = secondary_mass_accumulation_metrics(snaps)
+    assert mass.fraction < MASS_ACCUMULATION_CHANGE_FRAC
+    assert mass.change > MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO * mass.allowed_residual
 
 
 def test_load_reduction_rods_manual_reactor_follows_turbine():

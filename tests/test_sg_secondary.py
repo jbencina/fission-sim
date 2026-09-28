@@ -107,6 +107,7 @@ def test_telemetry_without_inputs_reports_none_for_flows():
     tele = sgs.telemetry(sgs.initial_state())
     assert tele["m_steam"] is None and tele["Q_sg"] is None
     assert tele["boil_off_time_s"] is None
+    assert tele["time_to_level_floor_s"] is None
     assert 0.0 < tele["x"] < 1.0
     assert tele["M_sec"] == pytest.approx(SGSecondaryParams().M_sec_initial)
 
@@ -134,6 +135,7 @@ def test_telemetry_exposes_secondary_diagnostics():
         "m_fw",
         "Q_steam_net",
         "boil_off_time_s",
+        "time_to_level_floor_s",
     } <= set(tele)
     assert tele["Q_steam_net"] == pytest.approx(p.Q_design)
     assert tele["P_fw_flash"] == pytest.approx(p.P_fw_flash)
@@ -144,4 +146,27 @@ def test_telemetry_reports_boil_off_time():
     sgs = SGSecondary(p)
     tele = sgs.telemetry(sgs.initial_state(), design_inputs(p))
     assert 100.0 < tele["boil_off_time_s"] < 160.0  # ~222 t / 1,669 kg/s
+    assert tele["time_to_level_floor_s"] is None
     assert tele["level_margin_low"] == pytest.approx(0.20)
+
+
+def test_telemetry_reports_time_to_level_floor_for_draining_shell():
+    p = SGSecondaryParams()
+    sgs = SGSecondary(p)
+    lofw_inputs = design_inputs(p)
+    lofw_inputs["m_fw"] = 0.0
+
+    tele = sgs.telemetry(sgs.initial_state(), lofw_inputs)
+
+    assert tele["time_to_level_floor_s"] == pytest.approx(53.3, abs=1.5)
+
+
+def test_telemetry_omits_time_to_level_floor_when_not_draining():
+    p = SGSecondaryParams()
+    sgs = SGSecondary(p)
+    filling_inputs = design_inputs(p)
+    filling_inputs["m_fw"] = 1.1 * p.m_steam_design
+
+    tele = sgs.telemetry(sgs.initial_state(), filling_inputs)
+
+    assert tele["time_to_level_floor_s"] is None

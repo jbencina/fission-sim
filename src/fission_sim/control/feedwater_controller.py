@@ -31,6 +31,12 @@ that smoothly by comparing the raw PI demand with the clipped demand and
 bleeding the integral back toward a value the feedwater system can actually
 deliver.
 
+Manual mode uses the same tracking idea for bumpless transfer. While an
+operator-specified manual demand is active, the stored PI state tracks the
+manual output instead of freezing. After a few tracking times the automatic
+PI law would ask for essentially the same flow, so returning to AUTO does not
+create a demand step.
+
 # SIMPLIFICATION: no shrink/swell compensation is modeled. Real indicated
 steam-generator level changes when steam voids expand or collapse after a
 power change; this L1 model controls collapsed liquid volume fraction.
@@ -257,9 +263,9 @@ class FeedwaterController:
     State variables
     ---------------
     level_error_integral : float
-        Time integral of ``level_setpoint − level_sg`` [s]. A value of
-        ``10`` means a one-unit level error integrated for 10 seconds, or a
-        0.01 level error integrated for 1000 seconds.
+        Tracked PI integral state [s]. It equals the time integral of
+        ``level_setpoint − level_sg`` only during unsaturated automatic
+        operation; saturation and manual-output tracking also move it.
 
     Notes
     -----
@@ -322,13 +328,23 @@ class FeedwaterController:
         m_fw_max = self._m_fw_max()
         level_error = level_setpoint - level_sg
 
+        # Governing automatic three-element demand equation (Todreas &
+        # Kazimi Ch. 7; NRC WTSM §11.1 real SG level-control signals):
+        #
+        #     e = level_setpoint − level_sg
+        #     u_raw,auto = m_steam + m_dump + K_p · e + K_i · I
+        #
+        # The first two terms are steam-flow feed-forward; the last two terms
+        # are the level PI trim that removes long-term inventory drift.
+        raw_auto_demand = m_steam + m_dump + p.K_p * level_error + p.K_i * integral
+
         if inputs["feedwater_manual"] is not None:
             manual_fraction = self._manual_fraction(inputs["feedwater_manual"])
             manual_raw = float(inputs["feedwater_manual"]) * m_fw_max
             demand = float(np.clip(manual_raw, 0.0, m_fw_max))
             return _DemandTerms(
                 demand=demand,
-                raw_demand=manual_raw,
+                raw_demand=raw_auto_demand,
                 level_error=level_error,
                 level_error_integral=integral,
                 m_fw_max=m_fw_max,
@@ -337,25 +353,16 @@ class FeedwaterController:
                 saturated=manual_raw <= 0.0 or manual_raw >= m_fw_max,
             )
 
-        # Governing automatic three-element demand equation (Todreas &
-        # Kazimi Ch. 7; NRC WTSM §11.1 real SG level-control signals):
-        #
-        #     e = level_setpoint − level_sg
-        #     m_fw,demand = m_steam + m_dump + K_p · e + K_i · ∫e dt
-        #
-        # The first two terms are steam-flow feed-forward; the last two terms
-        # are the level PI trim that removes long-term inventory drift.
-        raw_demand = m_steam + m_dump + p.K_p * level_error + p.K_i * integral
-        demand = float(np.clip(raw_demand, 0.0, m_fw_max))
+        demand = float(np.clip(raw_auto_demand, 0.0, m_fw_max))
         return _DemandTerms(
             demand=demand,
-            raw_demand=raw_demand,
+            raw_demand=raw_auto_demand,
             level_error=level_error,
             level_error_integral=integral,
             m_fw_max=m_fw_max,
             feedwater_manual=None,
             mode="auto",
-            saturated=raw_demand <= 0.0 or raw_demand >= m_fw_max,
+            saturated=raw_auto_demand <= 0.0 or raw_auto_demand >= m_fw_max,
         )
 
     def derivatives(self, state: np.ndarray, inputs: dict[str, Any]) -> np.ndarray:
@@ -375,7 +382,9 @@ class FeedwaterController:
         np.ndarray, shape (1,)
             ``[d(level_error_integral)/dt]`` [-]. In automatic mode this is
             the current level error plus a continuous back-calculation
-            anti-windup correction; in manual mode it is zero.
+            anti-windup correction. In manual mode it is a tracking
+            correction that moves the automatic PI demand toward the manual
+            demand.
 
         Raises
         ------
@@ -397,21 +406,28 @@ class FeedwaterController:
         would have produced the clipped demand. This avoids a discontinuous
         on/off derivative at the limit, which is difficult for a stiff BDF
         integrator to step through.
+
+        Manual-output tracking (Åström & Murray §11.4 "Manual Control and
+        Tracking") uses the same state and tracking time:
+
+            dI/dt = (u_manual − u_raw,auto) / (K_i · T_t)
+
+        ``u_manual`` is the clipped physical manual demand sent to the
+        actuator. The tracked PI state therefore approaches the value that
+        would make the automatic law produce the current manual output.
         """
         terms = self._demand_terms(state, inputs)
-        if terms.mode == "manual":
-            return np.array([0.0], dtype=float)
-
-        e = terms.level_error
         p = self.params
+        tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
+        if terms.mode == "manual":
+            return np.array([tracking], dtype=float)
 
         # Back-calculation anti-windup (Åström & Murray §11.4): compare the
         # realizable clipped demand with the unconstrained PI demand and feed
         # that mismatch back into the integrator through the tracking time.
         # This is continuous at the actuator limit because u_clipped and
         # u_raw are equal as the controller leaves saturation.
-        tracking = (terms.demand - terms.raw_demand) / (p.K_i * p.antiwindup_tracking_time)
-        return np.array([e + tracking], dtype=float)
+        return np.array([terms.level_error + tracking], dtype=float)
 
     def outputs(self, state: np.ndarray, *, inputs: dict[str, Any]) -> dict[str, float]:
         """Return the feedwater-demand output port.
@@ -453,8 +469,9 @@ class FeedwaterController:
         -------
         dict
             Keys are ``m_fw_demand`` [kg/s], ``level_error`` [-],
-            ``level_error_integral`` [s], ``feedwater_manual`` [-] or None,
-            ``mode`` (``"auto"`` or ``"manual"``), and ``saturated`` [bool].
+            ``level_error_integral`` [s] (the tracked PI integral state),
+            ``feedwater_manual`` [-] or None, ``mode`` (``"auto"`` or
+            ``"manual"``), and ``saturated`` [bool].
         """
         integral = self._finite_input("level_error_integral", state[0])
         if inputs is None:

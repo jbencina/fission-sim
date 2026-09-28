@@ -65,6 +65,11 @@ from fission_sim.physics import coolprop
 from fission_sim.physics.domain import LEVEL_SG_MIN
 from fission_sim.physics.pressurizer import saturation_state
 
+# Numerical flow deadband for display-only time estimates. 1e-6 kg/s is far
+# below any modeled SG transient flow and prevents division by a near-zero
+# "drain rate" from being presented as a meaningful forecast.
+_FLOW_EPS: float = 1.0e-6  # [kg/s]
+
 
 def _root_bracket_contains_zero(f_lower: float, f_upper: float) -> bool:
     """Return whether a scalar root is bracketed by two residual values.
@@ -549,7 +554,9 @@ class SGSecondary:
             Also contains ``Q_sg``, ``m_steam``, ``m_dump``, ``m_fw``, and
             ``Q_steam_net``; those are numeric when ``inputs`` is provided.
             ``boil_off_time_s`` is also numeric when ``inputs`` is provided.
-            Input-dependent keys are None otherwise.
+            ``time_to_level_floor_s`` is numeric only when the shell is
+            presently draining toward the lower validity floor. Input-
+            dependent keys are None otherwise.
 
         Notes
         -----
@@ -557,10 +564,15 @@ class SGSecondary:
         percent of the shell mass is steam by mass, even though steam occupies
         much more volume than water.
 
-        ``boil_off_time_s`` answers the operator question "how long would the
-        water last if feedwater stopped now?" It divides the current liquid
-        mass by the current steam outflow and is a dashboard cue, not a new
-        ODE state.
+        ``boil_off_time_s`` divides total current liquid mass by present
+        steam outflow. It is a total-liquid turnover cue, not time to the
+        lower model limit or to a plant trip.
+
+        ``time_to_level_floor_s`` is a separate display estimate of time to
+        the L1 surrogate floor. It freezes the current saturated-liquid
+        density and present net flow imbalance, so it is only a trend
+        diagnostic; it does not integrate pressure, density, controller, or
+        actuator changes.
         """
         p = self.params
         M_sec, U_sec = state[0], state[1]
@@ -591,18 +603,33 @@ class SGSecondary:
             out["m_fw"] = None
             out["Q_steam_net"] = None
             out["boil_off_time_s"] = None
+            out["time_to_level_floor_s"] = None
         else:
             m_out = inputs["m_steam"] + inputs["m_dump"]
+            net_outflow = m_out - inputs["m_fw"]
             # Net heat exported by outgoing steam after subtracting the
             # enthalpy brought back by replacement feedwater.
             Q_steam_net = m_out * sat.h_v - inputs["m_fw"] * h_fw
-            # How long the liquid inventory would last if feedwater stopped now.
-            boil_off_time_s = sat.M_l / max(m_out, 1.0e-6)
+            # Total liquid inventory divided by present steam outflow. This
+            # is not time to LEVEL_SG_MIN because it counts liquid below the
+            # surrogate validity floor and ignores future property/flow
+            # changes.
+            boil_off_time_s = sat.M_l / max(m_out, _FLOW_EPS)
+            # SIMPLIFICATION: approximate time to the lower collapsed-level
+            # validity floor using frozen saturated-liquid density and the
+            # present net outflow. Vapor replacing the drained volume, future
+            # pressure changes, actuator motion, and controller response are
+            # intentionally omitted because this is telemetry only.
+            liquid_mass_above_floor = sat.rho_l * p.V_sec * max(sat.level - LEVEL_SG_MIN, 0.0)
+            time_to_level_floor_s = (
+                liquid_mass_above_floor / net_outflow if net_outflow > _FLOW_EPS else None
+            )
             out["Q_sg"] = inputs["Q_sg"]
             out["m_steam"] = inputs["m_steam"]
             out["m_dump"] = inputs["m_dump"]
             out["m_fw"] = inputs["m_fw"]
             out["Q_steam_net"] = Q_steam_net
             out["boil_off_time_s"] = boil_off_time_s
+            out["time_to_level_floor_s"] = time_to_level_floor_s
 
         return out

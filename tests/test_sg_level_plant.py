@@ -11,20 +11,14 @@ from fission_sim.physics.feedwater import FeedwaterParams
 from fission_sim.physics.sg_secondary import SGSecondaryParams
 from fission_sim.plant import build_standard_plant
 from fission_sim.validation.secondary_acceptance import (
+    M4_TRIP_SCRAM_LEVEL_OFFSET,
+    MASS_ACCUMULATION_CHANGE_FRAC,
+    MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO,
     TRANSIENT_ENERGY_ACCUMULATION_FRAC,
     secondary_energy_accumulation_fraction,
+    secondary_mass_accumulation_metrics,
 )
 from tests.test_secondary_plant import ramp_to, run, series
-
-
-def _integrated_net_mass(snaps: list[dict]) -> np.ndarray:
-    """Return ``∫(m_fw − m_steam − m_dump)dt`` over sampled snapshots."""
-    m_fw = series(snaps, "feedwater", "m_fw")
-    m_out = series(snaps, "turbine", "m_steam") + series(snaps, "turbine", "m_dump")
-    t = np.array([snap["t"] for snap in snaps], dtype=float)
-    net = np.zeros_like(m_fw)
-    net[1:] = np.cumsum(0.5 * ((m_fw - m_out)[1:] + (m_fw - m_out)[:-1]) * np.diff(t))
-    return net
 
 
 def test_level_holds_at_setpoint():
@@ -38,10 +32,9 @@ def test_level_holds_at_setpoint():
 
 def test_shell_mass_matches_integrated_flows():
     snaps = run(build_standard_plant(), 600.0, ramp_to(0.8))
-    M = series(snaps, "sg_sec", "M_sec")
-    net = _integrated_net_mass(snaps)
-    assert np.max(np.abs((M - M[0]) - net)) < 1e-3 * M[0]
-    assert abs(M[-1] - M[0]) > 100.0
+    mass = secondary_mass_accumulation_metrics(snaps)
+    assert mass.fraction < MASS_ACCUMULATION_CHANGE_FRAC
+    assert mass.change > MASS_ACCUMULATION_SIGNAL_TO_ALLOWED_RATIO * mass.allowed_residual
     assert secondary_energy_accumulation_fraction(snaps) < TRANSIENT_ENERGY_ACCUMULATION_FRAC
 
 
@@ -94,11 +87,23 @@ def test_feedwater_overfill_halts():
     assert t_halt is not None and 200.0 < t_halt < 2000.0
 
 
-def test_turbine_trip_and_scram_level_recovers():
+def test_turbine_trip_and_scram_level_remains_bounded_with_one_way_feedwater_residual():
+    """Post-trip level stays valid but retains an L1 one-way-feedwater offset.
+
+    With no decay heat, no auxiliary low-flow lineup, and no drain path, the
+    controller can stop adding feedwater but cannot remove the inventory added
+    while steam flow collapsed. The expected result is a bounded persistent
+    offset, not exact recovery to the 0.50 setpoint.
+    """
     snaps = run(build_standard_plant(), 1200.0, lambda t: {"turbine_trip": t >= 10.0, "scram": t >= 10.0})
     level = series(snaps, "sg_sec", "level_sg")
+    m_fw_demand = series(snaps, "fw_ctrl", "m_fw_demand")
+    integral = series(snaps, "fw_ctrl", "level_error_integral")
     assert level.min() > 0.30
-    assert abs(level[-1] - 0.5) < 0.02
+    assert level.max() < 0.95
+    assert m_fw_demand[-1] < 1.0e-6
+    assert np.isfinite(integral[-1])
+    assert abs(level[-1] - 0.5) < M4_TRIP_SCRAM_LEVEL_OFFSET
 
 
 def test_factory_derives_feedwater_defaults_from_nondefault_shell_params():
