@@ -12,11 +12,11 @@ power change at power.
 
 The pressurizer story runs in parallel: insertion cools the primary, which
 drives an outsurge (water contracts → level drops → P falls). The pressure
-dip (~170 kPa) goes past the controller's 150 kPa deadband, so the heaters
-fire for about a minute and a half. On withdrawal the primary reheats and
-drives an insurge that brings pressure back up; it stays below setpoint,
-so spray never opens. P stays within 0.2 MPa of the 15.5 MPa setpoint
-and level within 0.45-0.51 throughout.
+dip is about 0.52 MPa in the coupled-secondary M3 plant, so the heaters stay
+at their 1.8 MW maximum for several minutes. On withdrawal the primary
+reheats and drives an insurge that brings pressure back up; it stays below
+setpoint, so spray never opens. Level falls to about 0.359 at the low-power
+plateau and recovers slightly above 0.5 by the end of the return to power.
 
 This is **NOT** a cold-startup approach-to-criticality. A real cold
 startup begins at deep-subcritical conditions where neutron count rate
@@ -154,18 +154,22 @@ def main() -> None:
     print("  approaching where I want it' indicator. Magnitude tells you how fast;")
     print("  sign tells you direction; zero tells you you've arrived.")
     print()
-    print("  Pressurizer response:")
-    print("    * t = 30..150: outsurge as primary cools (T_avg drops ~3.5 K) → P falls")
-    print("      by up to ~170 kPa (low point ≈ 15.33 MPa near t = 150 s), past the")
-    print("      controller's 150 kPa deadband. The heaters run at their 1.8 MW maximum")
-    print("      from about t = 95 s to t = 165 s, then taper to ~0 by about t = 190 s.")
-    print("    * t = 150..360: new equilibrium ~150 kPa below setpoint, level ≈ 0.45")
-    print("      (down from 0.50). The offset sits at the deadband edge, so the")
-    print("      controller is essentially idle.")
-    print("    * t = 360..480: insurge as primary reheats; P recovers to ≈ 15.42 MPa,")
-    print("      still below setpoint, so spray never opens. Proportional control with a")
-    print("      deadband has no integral action, so this small offset remains.")
-    print("    * Throughout: |P − 15.5 MPa| stays under 0.2 MPa (inside the 0.5 MPa bound).")
+    print("  Pressurizer and coupled-secondary response:")
+    print("    * t = 30..150: rod insertion lowers power and secondary pressure/temperature")
+    print("      follow it (P_steam ≈ 6.41 MPa, T_secondary ≈ 553.1 K at t = 150 s).")
+    print("      The primary cools, outsurges, and pressure falls to ≈ 14.98 MPa.")
+    print("      That is well past the 150 kPa heater deadband, so heaters are at their")
+    print("      1.8 MW maximum.")
+    print("    * t = 150..360: with rods held at 0.325, the plant sits near n ≈ 0.897,")
+    print("      T_avg ≈ 572.83 K, P ≈ 15.28 MPa, and pressurizer level ≈ 0.359.")
+    print("      The controller still calls for maximum heaters at t = 360 s; it is not")
+    print("      an idle-pressure plateau.")
+    print("    * t = 360..480: rod withdrawal reheats the loop and drives insurge. Pressure")
+    print("      recovers to ≈ 15.41 MPa by t = 480 s while level rises to ≈ 0.475; spray")
+    print("      never opens because pressure remains below setpoint.")
+    print("    * By t = 900 s, the plant is essentially back at full power with P ≈")
+    print("      15.48 MPa and level ≈ 0.519. The M3 secondary is dynamic, so these")
+    print("      numbers differ from the old fixed-secondary M2 maneuver.")
     print()
 
     print("=" * 100)

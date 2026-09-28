@@ -209,6 +209,10 @@ class SGSecondaryParams:
     P_ref : float or None, optional
         Design shell pressure [Pa]. If None, derived as
         ``coolprop.P_sat(T_sec_ref)``.
+    P_fw_flash : float or None, optional
+        Feedwater saturation pressure at ``T_fw`` [Pa]. If None, derived as
+        ``coolprop.P_sat(T_fw)`` once during parameter construction so domain
+        checks need no property calls.
     m_steam_design : float or None, optional
         Design steam flow [kg/s]. If None, derived from
         ``Q_design / (h_g(P_ref) - h_fw(P_ref, T_fw))``.
@@ -255,6 +259,7 @@ class SGSecondaryParams:
     Q_design: float = 3.0e9  # [W]
 
     P_ref: float | None = None  # [Pa], derived from P_sat(T_sec_ref)
+    P_fw_flash: float | None = None  # [Pa], derived from P_sat(T_fw)
     m_steam_design: float | None = None  # [kg/s], derived from Q/(h_g - h_fw)
     M_sec_initial: float | None = None  # [kg], derived from saturated liquid/vapor volumes
     U_sec_initial: float | None = None  # [J], derived from pressure-matched saturated state
@@ -293,6 +298,8 @@ class SGSecondaryParams:
         if P_ref is None:
             P_ref = coolprop.P_sat(T=self.T_sec_ref)
             object.__setattr__(self, "P_ref", P_ref)
+        if self.P_fw_flash is None:
+            object.__setattr__(self, "P_fw_flash", coolprop.P_sat(T=self.T_fw))
 
         if self.M_sec_initial is None or self.U_sec_initial is None:
             # Saturated liquid/vapor properties at the design pressure.
@@ -521,9 +528,9 @@ class SGSecondary:
         dict
             Always contains ``P_steam``, ``T_secondary``, ``level_sg``, ``x``,
             ``M_l``, ``M_v``, ``M_sec``, ``U_sec``, ``h_g``, and ``h_fw``.
-            Also contains ``Q_sg``, ``m_steam``, ``m_dump``, ``m_fw``, and
-            ``Q_steam_net``; those are numeric when ``inputs`` is provided
-            and None otherwise.
+            Also contains ``P_fw_flash`` plus ``Q_sg``, ``m_steam``,
+            ``m_dump``, ``m_fw``, and ``Q_steam_net``; flow-dependent values
+            are numeric when ``inputs`` is provided and None otherwise.
 
         Notes
         -----
@@ -547,6 +554,7 @@ class SGSecondary:
             "U_sec": U_sec,
             "h_g": sat.h_v,
             "h_fw": h_fw,
+            "P_fw_flash": p.P_fw_flash,
         }
 
         if inputs is None:

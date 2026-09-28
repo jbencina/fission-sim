@@ -702,6 +702,7 @@ above after `step(dt=5.0)` at the design steady state, values rounded:
     "sg_sec": {
         "P_steam": 6.899e6, "T_secondary": 558.0, "level_sg": 0.5,
         "x": 0.0462, "M_sec": 233239.1, "U_sec": 3.06608e11,
+        "P_fw_flash": 2.6389e6,
         "m_steam": 1669.0, "m_dump": 0.0, "m_fw": 1669.0,
         "Q_steam_net": 3.0e9,
     },

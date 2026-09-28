@@ -165,7 +165,10 @@ Its snapshot module keys are `rod`, `core`, `loop`, `sg`, `sg_sec`,
 `rod_command`, `scram`, `P_setpoint`, `heater_manual`, `spray_manual`,
 `turbine_load`, `turbine_trip`, and `rod_auto`. `SecondarySink` remains in
 the package for older fixed-secondary examples/tests, but it is no longer in
-the standard plant.
+the standard plant. `sg_sec` telemetry includes `P_steam`, `T_secondary`,
+`level_sg`, shell quality `x`, inventory/energy, steam/feedwater flows, and
+`P_fw_flash` (the feedwater-temperature saturation pressure used by domain
+checks).
 
 ### What To Watch
 

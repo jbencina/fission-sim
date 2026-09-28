@@ -2,8 +2,9 @@
 
 Runs the same rod-step-then-scram scenario as ``run_primary.py`` and prints
 the full snapshot at a few sample times: every wired signal, then every
-module's telemetry (core, loop, rod, SG, sink, pressurizer and pressurizer
-controller). SSH-friendly. No matplotlib.
+module's telemetry (core, loop, rod, SG, secondary shell, turbine,
+feedwater/Tavg controls, pressurizer and pressurizer controller).
+SSH-friendly. No matplotlib.
 
 Run:
     uv run python examples/dump_state.py

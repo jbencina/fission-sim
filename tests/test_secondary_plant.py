@@ -9,6 +9,7 @@ from fission_sim.physics.domain import ModelDomainError, check_secondary_domain,
 from fission_sim.physics.sg_secondary import SGSecondaryParams
 from fission_sim.plant import build_standard_plant
 from fission_sim.validation.secondary_acceptance import (
+    AUTO_N_BAND,
     AUTO_TAVG_TREF_TOL,
     ENERGY_BALANCE_FRAC,
     HUGE_SHELL_TAVG_TOL,
@@ -101,7 +102,27 @@ def test_load_reduction_rods_auto_returns_to_program():
     assert abs(T_ref[-1] - (565.0 + 18.0 * 0.9)) < 1e-6
     assert abs(T_avg[-1] - T_ref[-1]) <= AUTO_TAVG_TREF_TOL
     assert rod[-1] < 0.5
-    assert 0.85 < series(snaps, "core", "n")[-1] < 0.95
+    _assert_between(series(snaps, "core", "n")[-1], AUTO_N_BAND)
+
+
+def test_run_dense_fractional_endpoint_does_not_extrapolate():
+    eng = build_standard_plant()
+    snaps = run(eng, 0.6, lambda t: {"scram": t >= 0.5})
+    times = np.array([snap["t"] for snap in snaps])
+    assert np.all(times <= 0.6)
+    assert times[-1] == pytest.approx(0.6)
+    assert snaps[-1]["core"]["n"] == pytest.approx(eng.snapshot()["core"]["n"])
+
+
+def test_run_dense_resumed_engine_samples_current_interval_only():
+    eng = build_standard_plant()
+    eng.step(0.4)
+    snaps = run(eng, 0.6, lambda t: {"scram": t >= 0.5})
+    times = np.array([snap["t"] for snap in snaps])
+    assert np.all(times >= 0.4)
+    assert np.all(times <= 0.6)
+    assert times[0] == pytest.approx(0.4)
+    assert times[-1] == pytest.approx(0.6)
 
 
 def test_turbine_trip_without_scram_stays_in_domain():

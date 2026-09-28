@@ -34,6 +34,7 @@ MANUAL_P_STEAM_BAND: tuple[float, float] = (7.35e6, 7.65e6)  # [Pa]
 TRIP_N_BAND: tuple[float, float] = (0.93, 0.96)
 TRIP_TAVG_BAND: tuple[float, float] = (591.0, 595.0)  # [K]
 TRIP_P_STEAM_BAND: tuple[float, float] = (8.0e6, 8.35e6)  # [Pa]
+AUTO_N_BAND: tuple[float, float] = (0.88, 0.95)
 
 STEADY_N_TOL: float = 1.0e-3
 STEADY_TAVG_TOL: float = 0.05  # [K]
@@ -114,10 +115,14 @@ def run_dense(engine, t_end: float, scenario: ScenarioFn, *, check: bool = True)
     Returns
     -------
     list of dict
-        Snapshots at ``0, DT, 2*DT, ..., t_end`` [s].
+        Snapshots from the engine's start time to ``t_end`` [s], sampled at
+        ``DT`` spacing with the exact endpoint always included.
     """
+    t_start = float(engine.t)
     _final, dense = engine.run(t_end, scenario_fn=scenario, dense=True, max_step=0.5)
-    times = np.arange(0.0, t_end + 0.5 * DT, DT)
+    times = np.arange(t_start, t_end, DT)
+    times = times[times < t_end - 1e-12]
+    times = np.append(times, t_end)
     snaps = dense.at(times)
     if check:
         for snap in snaps:
@@ -194,6 +199,7 @@ def secondary_energy_fraction(snap: dict[str, Any]) -> float:
 
 __all__ = [
     "AUTO_TAVG_TREF_TOL",
+    "AUTO_N_BAND",
     "CriterionResult",
     "DT",
     "ENERGY_BALANCE_FRAC",

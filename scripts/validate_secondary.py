@@ -29,6 +29,7 @@ from fission_sim.physics.domain import P_STEAM_MIN, ModelDomainError, check_seco
 from fission_sim.physics.sg_secondary import SGSecondaryParams
 from fission_sim.plant import build_standard_plant
 from fission_sim.validation.secondary_acceptance import (
+    AUTO_N_BAND,
     AUTO_TAVG_TREF_TOL,
     DT,
     ENERGY_BALANCE_FRAC,
@@ -291,7 +292,7 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
                     t_err <= AUTO_TAVG_TREF_TOL,
                 ),
                 result(f"{prefix}: rods inserted", rod, "< 0.5", rod < 0.5),
-                result(f"{prefix}: final n", n, "0.85..0.95", 0.85 < n < 0.95),
+                result(f"{prefix}: final n", n, _band_text(AUTO_N_BAND), _between(n, AUTO_N_BAND)),
             ]
         )
     elif spec.slug == "turbine_trip":

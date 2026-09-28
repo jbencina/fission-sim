@@ -90,6 +90,11 @@ MIN_SUBCOOLING: float = 0.0
 # vapor enthalpy for h(P, T_fw), i.e. the feedwater would flash to steam.
 P_STEAM_MIN: float = 3.0e6
 
+# Margin above the feedwater flash pressure [-]. The 0.1 % buffer keeps the
+# configured feedwater state strictly subcooled even with property-table
+# roundoff, while adding only ~2.6 kPa for the default 500 K feedwater.
+FW_FLASH_MARGIN: float = 1.0e-3
+
 # Highest secondary steam pressure accepted [Pa]. SG safety valves lift near
 # 8.3 MPa in the model's references; 12 MPa is a numerical/domain ceiling, not
 # modeled protection.
@@ -218,7 +223,7 @@ def check_primary_domain(
         )
 
 
-def check_secondary_domain(*, P_steam: float, x_sg: float) -> None:
+def check_secondary_domain(*, P_steam: float, x_sg: float, P_fw_flash: float | None = None) -> None:
     """Raise ``ModelDomainError`` if the SG shell is outside the M3 domain.
 
     Parameters
@@ -227,6 +232,11 @@ def check_secondary_domain(*, P_steam: float, x_sg: float) -> None:
         Saturated steam-generator shell pressure [Pa].
     x_sg : float
         Steam-generator shell quality (vapor mass fraction) [-].
+    P_fw_flash : float or None, optional
+        Saturation pressure at the configured feedwater temperature [Pa].
+        When provided, the pressure floor is raised above this value so the
+        feedwater enthalpy lookup remains compressed liquid. ``None`` keeps
+        the legacy fixed ``P_STEAM_MIN`` floor without property calls.
 
     Raises
     ------
@@ -236,6 +246,8 @@ def check_secondary_domain(*, P_steam: float, x_sg: float) -> None:
         quality.
     """
     values = {"P_steam": P_steam, "x_sg": x_sg}
+    if P_fw_flash is not None:
+        values["P_fw_flash"] = P_fw_flash
     bad = [name for name, value in values.items() if not math.isfinite(value)]
     if bad:
         raise ModelDomainError(
@@ -244,12 +256,17 @@ def check_secondary_domain(*, P_steam: float, x_sg: float) -> None:
             limit="non_finite",
         )
 
-    if P_steam < P_STEAM_MIN:
+    pressure_floor = P_STEAM_MIN
+    if P_fw_flash is not None:
+        pressure_floor = max(pressure_floor, P_fw_flash * (1.0 + FW_FLASH_MARGIN))
+
+    if P_steam < pressure_floor:
         raise ModelDomainError(
             f"Steam pressure fell to {P_steam / 1e6:.2f} MPa, below the model's "
-            f"{P_STEAM_MIN / 1e6:.1f} MPa floor. At lower pressure the 500 K "
-            "feedwater would flash to steam, but the M3 shell energy balance "
-            "assumes liquid feedwater entering saturated water under its own steam.",
+            f"{pressure_floor / 1e6:.2f} MPa floor. At lower pressure the "
+            "configured feedwater would flash to steam, but the M3 shell "
+            "energy balance assumes liquid feedwater entering saturated water "
+            "under its own steam.",
             limit="steam_pressure",
         )
     if P_steam > P_STEAM_MAX:
@@ -307,11 +324,16 @@ def check_snapshot(snap: dict) -> None:
     )
     if "sg_sec" in snap:
         sg_sec = snap["sg_sec"]
-        check_secondary_domain(P_steam=sg_sec["P_steam"], x_sg=sg_sec["x"])
+        check_secondary_domain(
+            P_steam=sg_sec["P_steam"],
+            x_sg=sg_sec["x"],
+            P_fw_flash=sg_sec.get("P_fw_flash"),
+        )
 
 
 __all__ = [
     "MIN_SUBCOOLING",
+    "FW_FLASH_MARGIN",
     "P_CRITICAL",
     "P_MAX",
     "P_MIN",

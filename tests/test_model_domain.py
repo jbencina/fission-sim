@@ -101,6 +101,17 @@ def test_secondary_states_outside_domain_raise_named_limit(overrides, limit, mes
 
 def test_steam_pressure_floor_keeps_feedwater_liquid():
     assert P_STEAM_MIN > coolprop.P_sat(T=SGSecondaryParams().T_fw)
+    assert SGSecondaryParams().P_fw_flash == pytest.approx(coolprop.P_sat(T=SGSecondaryParams().T_fw))
+
+
+def test_snapshot_uses_configured_feedwater_flash_pressure():
+    sg_params = SGSecondaryParams(T_fw=540.0)
+    snap = build_standard_plant(sg_sec_params=sg_params).snapshot()
+    assert snap["sg_sec"]["P_fw_flash"] > P_STEAM_MIN
+    snap["sg_sec"]["P_steam"] = 4.46e6
+    with pytest.raises(ModelDomainError, match="feedwater would flash to steam") as exc_info:
+        check_snapshot(snap)
+    assert exc_info.value.limit == "steam_pressure"
 
 
 def test_standard_plant_snapshot_is_inside_domain():

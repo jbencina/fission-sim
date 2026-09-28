@@ -125,6 +125,7 @@ def test_telemetry_exposes_secondary_diagnostics():
         "U_sec",
         "h_g",
         "h_fw",
+        "P_fw_flash",
         "Q_sg",
         "m_steam",
         "m_dump",
@@ -132,3 +133,4 @@ def test_telemetry_exposes_secondary_diagnostics():
         "Q_steam_net",
     } <= set(tele)
     assert tele["Q_steam_net"] == pytest.approx(p.Q_design)
+    assert tele["P_fw_flash"] == pytest.approx(p.P_fw_flash)
