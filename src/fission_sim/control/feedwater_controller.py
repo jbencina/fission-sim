@@ -1,9 +1,11 @@
 """M3 stand-in feedwater controller for the steam-generator secondary side.
 
 This L1 control component is the Milestone 3 stand-in for the feedwater
-system: feedwater exactly replaces the steam that leaves, so shell mass and
-level are constant. M4 replaces it with a three-element level controller and a
-feedwater actuator.
+system: feedwater exactly matches the steam that leaves, so shell mass
+inventory is constant. Collapsed level can still drift slightly with pressure
+because saturated liquid water becomes less dense as it gets hotter. M4
+replaces this ideal mass-inventory match with a three-element level controller
+and a feedwater actuator.
 
 Real pressurized-water reactors control steam-generator water level because
 the feedwater system must maintain tube coverage while the turbine removes
@@ -139,9 +141,11 @@ class FeedwaterController:
         #
         #     m_fw = m_steam + m_dump
         #
-        # SIMPLIFICATION: perfect level control. Real PWRs compare level,
-        # steam flow, and feedwater flow; this stand-in exactly replaces the
-        # steam that leaves so the shell mass and collapsed level stay fixed.
+        # SIMPLIFICATION: ideal mass-inventory matching, not level control.
+        # Real PWRs compare level, steam flow, and feedwater flow; this
+        # stand-in exactly replaces the steam mass leaving, so shell mass stays
+        # fixed. Collapsed level can still drift slightly when pressure changes
+        # because hotter saturated liquid water is less dense.
         return {"m_fw": inputs["m_steam"] + inputs["m_dump"]}
 
     def telemetry(self, state: np.ndarray, inputs: dict | None = None) -> dict:
