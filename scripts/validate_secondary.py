@@ -14,6 +14,7 @@ Run with dashboard-like fixed engine steps at 10 Hz simulated cadence::
 from __future__ import annotations
 
 import argparse
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -58,6 +59,10 @@ from fission_sim.validation.secondary_acceptance import (
 )
 
 ScenarioFn = Callable[[float], dict[str, Any]]
+UNPROTECTED_TURBINE_TRIP_TITLE = (
+    "Unprotected turbine trip: automatic reactor trip on turbine trip omitted; "
+    "ideal feedwater and combined dump/relief available"
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,9 @@ class Scenario:
         ``scenario_fn(t) -> dict`` external overrides.
     plant_kwargs : dict
         Keyword arguments passed to ``build_standard_plant``.
+    caption : str, optional
+        Additional plot caption text for scenario-specific interpretation
+        limits.
     """
 
     slug: str
@@ -83,6 +91,7 @@ class Scenario:
     t_end: float
     scenario_fn: ScenarioFn
     plant_kwargs: dict[str, Any] | None = None
+    caption: str | None = None
 
 
 def _step_sample(engine, t_end: float, scenario: ScenarioFn, *, dt: float) -> list[dict[str, Any]]:
@@ -138,6 +147,8 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     level = series(snaps, "sg_sec", "level_sg")
     rod = series(snaps, "rod", "rod_position")
     P_electric = series(snaps, "turbine", "P_electric") / 1e6
+    admission_actual = series(snaps, "turbine", "load") * 100.0
+    admission_demand = series(snaps, "turbine", "load_demand") * 100.0
 
     fig, axes = plt.subplots(3, 2, figsize=(12, 10), sharex=True)
     ax = axes[0, 0]
@@ -153,16 +164,20 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     ax.grid(alpha=0.3)
 
     ax = axes[1, 0]
-    ax.plot(t, P_steam, label="P_steam [MPa]")
+    ax.plot(t, P_steam, label="Steam pressure P_steam [MPa]")
     ax2 = ax.twinx()
-    ax2.plot(t, m_dump, "tab:red", label="m_dump [kg/s]")
+    ax2.plot(t, m_dump, "tab:red", label="Combined dump/relief flow m_dump [kg/s]")
     ax.set_ylabel("MPa")
     ax2.set_ylabel("kg/s")
+    handles, labels = ax.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles + handles2, labels + labels2, loc="best", fontsize=8)
     ax.grid(alpha=0.3)
 
     ax = axes[1, 1]
     ax.plot(t, level)
-    ax.set_ylabel("level_sg [-]")
+    ax.set_ylabel("SG collapsed liquid\nfraction [-]")
+    ax.set_title("4 SGs lumped; no shrink/swell", fontsize=9)
     ax.grid(alpha=0.3)
 
     ax = axes[2, 0]
@@ -172,13 +187,24 @@ def _plot_scenario(spec: Scenario, snaps: list[dict[str, Any]], out_dir: Path) -
     ax.grid(alpha=0.3)
 
     ax = axes[2, 1]
-    ax.plot(t, P_electric)
-    ax.set_ylabel("P_electric [MW]")
+    ax.plot(t, P_electric, label="Gross electrical power P_electric [MW]")
+    ax2 = ax.twinx()
+    ax2.plot(t, admission_demand, "--", color="tab:green", label="Turbine admission demand [%]")
+    ax2.plot(t, admission_actual, color="tab:orange", label="Turbine admission actual [%]")
+    ax.set_ylabel("MW")
+    ax2.set_ylabel("admission [%]")
     ax.set_xlabel("time [s]")
+    handles, labels = ax.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles + handles2, labels + labels2, loc="best", fontsize=8)
     ax.grid(alpha=0.3)
 
-    fig.suptitle(spec.title)
-    fig.tight_layout()
+    fig.suptitle(textwrap.fill(spec.title, width=92))
+    if spec.caption:
+        fig.text(0.5, 0.01, textwrap.fill(spec.caption, width=130), ha="center", fontsize=8)
+        fig.tight_layout(rect=(0.0, 0.04, 1.0, 0.96))
+    else:
+        fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     fig.savefig(out_dir / f"{spec.slug}.png", dpi=140)
     plt.close(fig)
 
@@ -224,7 +250,7 @@ def _criteria_for(spec: Scenario, snaps: list[dict[str, Any]]) -> list[Criterion
                     level_err < STEADY_LEVEL_TOL,
                 ),
                 result(
-                    f"{prefix}: final turbine load error",
+                    f"{prefix}: final turbine admission error",
                     load_err,
                     f"< {STEADY_LOAD_TOL}",
                     load_err < STEADY_LOAD_TOL,
@@ -475,15 +501,21 @@ def _m3_scenarios() -> list[Scenario]:
             300.0,
             lambda t: {"turbine_load": 0.8 if t > 10.0 else 1.0},
         ),
-        Scenario("load_manual", "100% to 90% load, rods manual", 1500.0, ramp_to(0.9)),
+        Scenario("load_manual", "100% to 90% turbine admission, rods manual", 1500.0, ramp_to(0.9)),
         Scenario(
             "load_auto",
-            "100% to 90% load, rods automatic",
+            "100% to 90% turbine admission, rods automatic",
             1800.0,
             lambda t: {**ramp_to(0.9)(t), "rod_auto": True},
             {"rod_auto": True},
         ),
-        Scenario("turbine_trip", "Turbine trip without SCRAM", 600.0, lambda t: {"turbine_trip": t >= 10.0}),
+        Scenario(
+            "turbine_trip",
+            UNPROTECTED_TURBINE_TRIP_TITLE,
+            600.0,
+            lambda t: {"turbine_trip": t >= 10.0},
+            caption="P-4 is only the SCRAM-to-turbine-trip direction here; this is not a normal protected trip.",
+        ),
         Scenario("scram_alone", "SCRAM alone trips turbine via P-4", 600.0, lambda t: {"scram": t >= 10.0}),
         Scenario(
             "trip_scram",

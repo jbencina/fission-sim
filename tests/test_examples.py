@@ -83,6 +83,52 @@ def test_validate_secondary_script_imports():
     assert module.parse_args is not None
 
 
+def test_console_status_reports_p4_turbine_trip():
+    """Console status distinguishes SCRAM's effective P-4 turbine trip."""
+    console = _load_example("console")
+    engine = build_standard_plant(rod_auto=True)
+    snap = engine.step(1.0, scram=True, rod_auto=True)
+    state = {
+        "sim_t": engine.t,
+        "rod_command": 0.5,
+        "scram": True,
+        "msg": "",
+        "last_snap": snap,
+        "heater_manual": None,
+        "spray_manual": None,
+        "P_setpoint": 15.5e6,
+        "turbine_load": 1.0,
+        "turbine_trip": False,
+        "rod_auto": True,
+    }
+
+    text = "\n".join(console.status_lines(state))
+
+    assert "rod control = AUTO SUSPENDED" in text
+    assert "retained manual cmd = 0.5000" in text
+    assert "turbine trip = ON (SCRAM via P-4)" in text
+    assert "turbine admission demand/actual" in text
+
+
+def test_console_trip_releases_require_explicit_readmission():
+    """SCRAM release and turbine untrip leave admission demand at zero."""
+    console = _load_example("console")
+
+    state = {"scram": True, "turbine_trip": True, "turbine_load": 0.9, "msg": ""}
+    assert console.process_command(state, "r")
+    assert state["scram"] is False
+    assert state["turbine_load"] == 0.0
+    assert "idealized signal release" in state["msg"]
+    assert "not a plant restart" in state["msg"]
+
+    state = {"scram": False, "turbine_trip": True, "turbine_load": 0.9, "msg": ""}
+    assert console.process_command(state, "untrip")
+    assert state["turbine_trip"] is False
+    assert state["turbine_load"] == 0.0
+    assert "idealized signal release" in state["msg"]
+    assert "not a plant restart" in state["msg"]
+
+
 @pytest.mark.parametrize("name", ["run_core", "report_core"])
 def test_standalone_core_examples_start_in_equilibrium(name):
     """The core drivers advertise t = 0..10 s as steady state, so their

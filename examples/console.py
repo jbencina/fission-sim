@@ -14,16 +14,22 @@ Commands:
     <number>        set rod_command to value in [0, 1]  (e.g. "0.6";
                     12 pcm per 0.01, ±600 pcm about the 0.5 design point)
     s               engage scram
-    r               release scram
+    r               idealized scram signal release; leaves turbine admission
+                    demand at 0, so re-admission is an explicit operator action
     h <0-1>         set heater override to fraction in [0, 1]  (e.g. "h 0.3")
     h auto          return heater to automatic control
     y <0-1>         set spray override to fraction in [0, 1]  (e.g. "y 0.1")
     y auto          return spray to automatic control
     p <MPa>         set pressure setpoint in MPa  (e.g. "p 15.6")
     p reset         restore default pressure setpoint (15.5 MPa)
-    turbine_load <0-1>
-                    set turbine valve-admission demand (1 = full load)
-    trip / untrip   trip or reset the turbine stop-valve demand
+    admission <0-1> / turbine_load <0-1>
+                    set turbine admission demand (valve admission, not MW);
+                    gross electrical MW is displayed separately
+    trip            Unprotected turbine trip: automatic reactor trip on
+                    turbine trip omitted; ideal feedwater and combined
+                    dump/relief available
+    untrip          idealized turbine-trip signal release; leaves turbine
+                    admission demand at 0 and is not a plant restart
     auto / manual   enable/disable automatic Tavg rod control
     q               quit (also: Ctrl-C)
 
@@ -47,6 +53,7 @@ import argparse
 import select
 import sys
 import termios
+import textwrap
 import time
 import tty
 from collections import deque
@@ -64,6 +71,16 @@ PCM = 1e5
 WALL_TICK_S = 1.0
 # Default pressure setpoint [Pa], the controller's design setpoint (15.5 MPa).
 P_SETPOINT_DEFAULT = PressurizerControllerParams().P_setpoint_default
+# The console layout is intentionally narrow enough for a default terminal.
+DISPLAY_WIDTH = 92
+UNPROTECTED_TURBINE_TRIP_LABEL = (
+    "Unprotected turbine trip: automatic reactor trip on turbine trip omitted; "
+    "ideal feedwater and combined dump/relief available"
+)
+SIGNAL_RELEASE_NOTE = (
+    "idealized signal release; turbine admission demand held at 0.000. "
+    "This is not a plant restart; command admission to re-admit steam."
+)
 
 
 def format_row(snap: dict) -> str:
@@ -90,7 +107,7 @@ def format_row(snap: dict) -> str:
     Q_htr = pzr["Q_heater"] / 1e6  # W → MW
 
     return (
-        f"   {t:6.1f}  {n:9.3e}  {T_fuel:7.2f}  {T_avg:6.2f}"
+        f" {t:6.1f}  {n:9.3e}  {T_fuel:7.2f}  {T_avg:6.2f}"
         f"  {rod_pos:7.4f}  {rho_rod_v:+7.1f}  {Q_core:6.3f}  {Q_sg:6.3f}"
         f"  {P_MPa:6.3f}  {level:5.1f}  {Q_htr:6.2f}"
     )
@@ -103,53 +120,118 @@ def header_lines(speed: float) -> list[str]:
         speed_str = "1 sim-s = 1 wall-s"
     else:
         speed_str = f"{speed:g} sim-s/wall-s ({speed:g}x real-time)"
-    title = f"  PWR Reactor Console — Interactive Primary Plant   ({speed_str}, last {window_s:g} s)"
+    title = f"  PWR Reactor Console — Interactive P/S Plant   ({speed_str}, last {window_s:g} s)"
     return [
-        "=" * 92,
+        "=" * DISPLAY_WIDTH,
         title,
-        "=" * 92,
+        "=" * DISPLAY_WIDTH,
         "",
-        f"   {'t[s]':>6}  {'n':>9}  {'T_fuel':>7}  {'T_avg':>6}"
+        f" {'t[s]':>6}  {'n':>9}  {'T_fuel':>7}  {'T_avg':>6}"
         f"  {'rod_pos':>7}  {'rho_rod':>7}  {'Q_core':>6}  {'Q_sg':>6}"
-        f"  {'P[MPa]':>6}  {'level':>5}  {'Q_htr':>6}",
-        f"   {'':>6}  {'':>9}  {'[K]':>7}  {'[K]':>6}"
+        f"  {'P[MPa]':>6}  {'pzr%':>5}  {'Q_htr':>6}",
+        f" {'':>6}  {'':>9}  {'[K]':>7}  {'[K]':>6}"
         f"  {'':>7}  {'[pcm]':>7}  {'[GW]':>6}  {'[GW]':>6}"
         f"  {'':>6}  {'[%]':>5}  {'[MW]':>6}",
         "   " + "-" * 89,
     ]
 
 
-def status_line(state: dict) -> str:
-    scram_str = "ON " if state["scram"] else "OFF"
-    trip_str = "ON " if state["turbine_trip"] else "OFF"
-    mode_str = "auto" if state["rod_auto"] else "manual"
+def _on_off(value: bool) -> str:
+    """Return a fixed-width operator-style on/off label."""
+    return "ON " if value else "OFF"
+
+
+def _turbine_trip_status(snap: dict) -> str:
+    """Return the effective turbine-trip state and cause for display."""
+    turbine = snap["turbine"]
+    if not turbine.get("trip_active"):
+        return "OFF"
+
+    causes: list[str] = []
+    if turbine.get("turbine_trip"):
+        causes.append("explicit trip")
+    if turbine.get("scram"):
+        causes.append("SCRAM via P-4")
+    cause = " + ".join(causes) if causes else "trip active"
+    return f"ON ({cause})"
+
+
+def _rod_control_status(snap: dict, state: dict) -> str:
+    """Return MANUAL / AUTO ACTIVE / AUTO SUSPENDED from controller telemetry."""
+    ctrl = snap["tavg_ctrl"]
+    if not bool(ctrl.get("rod_auto", state["rod_auto"])):
+        return "MANUAL"
+    return "AUTO ACTIVE" if ctrl.get("acting") else "AUTO SUSPENDED"
+
+
+def _fmt_optional_fraction(value: float | None) -> str:
+    """Format a manual fraction, or ``auto`` when automatic control owns it."""
+    return f"{value:.2f}" if value is not None else "auto"
+
+
+def _message_lines(message: str) -> list[str]:
+    """Wrap the current acknowledgement without exceeding the console width."""
+    if not message:
+        return []
+    return textwrap.wrap(f"   msg: {message}", width=DISPLAY_WIDTH, subsequent_indent="   msg: ")
+
+
+def status_lines(state: dict) -> list[str]:
+    """Return terminal-width-aware operator status rows.
+
+    The rows distinguish physical positions from demands, command state from
+    effective trip state, and the SG collapsed liquid fraction from real
+    indicated level. Keeping this formatting as a pure function makes the
+    operator-facing labels regression-testable without running a terminal.
+    """
     htr = state.get("heater_manual")
-    htr_str = f"{htr:.2f}" if htr is not None else "auto"
     spr = state.get("spray_manual")
-    spr_str = f"{spr:.2f}" if spr is not None else "auto"
     P_set_MPa = state.get("P_setpoint", P_SETPOINT_DEFAULT) / 1e6
     snap = state["last_snap"]
+    rod = snap["rod"]
+    ctrl = snap["tavg_ctrl"]
+    turbine = snap["turbine"]
+    fw = snap["fw_ctrl"]
+    loop = snap["loop"]
+    sg_sec = snap["sg_sec"]
+
+    rod_actual = float(rod["rod_position"])
+    rod_demand = float(ctrl.get("rod_demand", snap["signals"]["rod_demand"]))
+    manual_cmd = float(state["rod_command"])
+    rod_status = _rod_control_status(snap, state)
+
+    admission_demand = float(state.get("turbine_load", turbine["load_demand"]))
+    admission_actual = float(turbine["load"])
+    P_electric = float(turbine["P_electric"]) / 1e6
+    T_err = float(ctrl["T_err"] if ctrl.get("T_err") is not None else loop["T_avg"] - turbine["T_ref"])
     P_steam = snap["sg_sec"]["P_steam"] / 1e6
-    level_sg = snap["sg_sec"]["level_sg"] * 100.0
-    load = snap["turbine"]["load"]
-    P_electric = snap["turbine"]["P_electric"] / 1e6
-    T_ref = snap["turbine"]["T_ref"]
-    return (
-        f"   sim_t = {state['sim_t']:7.1f} s    "
-        f"rod = {state['rod_command']:.4f}    "
-        f"rods = {mode_str}    "
-        f"scram = {scram_str}    "
-        f"trip = {trip_str}    "
-        f"htr = {htr_str}    "
-        f"spr = {spr_str}    "
-        f"P_set = {P_set_MPa:.2f} MPa    "
-        f"P_steam = {P_steam:.3f} MPa    "
-        f"level_sg = {level_sg:5.1f}%    "
-        f"load = {load:.3f}    "
-        f"P_e = {P_electric:.0f} MW    "
-        f"T_ref = {T_ref:.2f} K    "
-        f"{state.get('msg', '')}"
-    )
+    level_sg = float(sg_sec["level_sg"]) * 100.0
+    m_fw = float(fw["m_fw"])
+    m_steam = float(turbine["m_steam"])
+    m_dump = float(turbine["m_dump"])
+    flow_mismatch = m_fw - (m_steam + m_dump)
+
+    lines = [
+        f"   sim_t = {state['sim_t']:7.1f} s  scram = {_on_off(state['scram'])}  "
+        f"turbine trip = {_turbine_trip_status(snap)}",
+        f"   rod control = {rod_status}  rod actual = {rod_actual:.4f}  active demand = {rod_demand:.4f}",
+        f"   retained manual cmd = {manual_cmd:.4f}  htr = {_fmt_optional_fraction(htr)}  "
+        f"spr = {_fmt_optional_fraction(spr)}  P_set = {P_set_MPa:.2f} MPa",
+        f"   turbine admission demand/actual = {100.0 * admission_demand:5.1f}% / "
+        f"{100.0 * admission_actual:5.1f}%  gross electrical = {P_electric:.0f} MW",
+        f"   T_avg - T_ref = {T_err:+.2f} K  P_steam = {P_steam:.3f} MPa  "
+        f"SG collapsed frac = {level_sg:5.1f}%",
+        f"   secondary flows: feed = {m_fw:7.1f} kg/s  steam = {m_steam:7.1f} kg/s  "
+        f"dump = {m_dump:7.1f} kg/s",
+        f"   flow mismatch feed - (steam + dump) = {flow_mismatch:+.3f} kg/s",
+    ]
+    lines.extend(_message_lines(state.get("msg", "")))
+    return lines
+
+
+def status_line(state: dict) -> str:
+    """Return a one-line status string for older callers."""
+    return "  ".join(status_lines(state))
 
 
 def render(state: dict) -> None:
@@ -165,13 +247,18 @@ def render(state: dict) -> None:
     for i in range(BUFFER_LEN):
         lines.append(format_row(rows[i]) if i < len(rows) else "")
     lines.append("   " + "-" * 89)
-    lines.append(status_line(state))
+    lines.extend(status_lines(state))
     lines.append("")
     lines.append(
-        "   Commands:  <num>=rod  s=scram  r=release"
-        "  h <0-1>/auto=heater  y <0-1>/auto=spray  p <MPa>/reset=setpoint"
+        "   SG collapsed frac = 4 SGs lumped; no shrink/swell. "
+        "Use --speed 1 to watch trips."
     )
-    lines.append("              turbine_load <0-1>  trip/untrip  auto/manual rods  q=quit")
+    lines.append("   Commands: <num>=rod  auto/manual rods  s=scram  r=idealized release")
+    lines.append("             admission <0-1> (or turbine_load) = turbine admission demand")
+    lines.append("             trip: Unprotected turbine trip — automatic reactor trip on turbine trip")
+    lines.append("                   omitted; ideal feedwater and combined dump/relief available")
+    lines.append("             untrip=idealized release  q=quit")
+    lines.append("             h <0-1>/auto=heater  y <0-1>/auto=spray  p <MPa>/reset=setpoint")
     lines.append(f"   > {state['input']}")
 
     # ANSI: \033[H = move cursor to (0, 0); \033[K = clear to end of line;
@@ -195,15 +282,17 @@ def process_command(state: dict, cmd: str) -> bool:
         return True
     if cmd == "r" or cmd == "release":
         state["scram"] = False
-        state["msg"] = "Scram released."
+        state["turbine_load"] = 0.0
+        state["msg"] = f"Scram {SIGNAL_RELEASE_NOTE}"
         return True
     if cmd == "trip":
         state["turbine_trip"] = True
-        state["msg"] = "Turbine trip demanded."
+        state["msg"] = UNPROTECTED_TURBINE_TRIP_LABEL
         return True
     if cmd == "untrip":
         state["turbine_trip"] = False
-        state["msg"] = "Turbine trip reset."
+        state["turbine_load"] = 0.0
+        state["msg"] = f"Turbine trip {SIGNAL_RELEASE_NOTE}"
         return True
     if cmd == "auto":
         state["rod_auto"] = True
@@ -278,19 +367,20 @@ def process_command(state: dict, cmd: str) -> bool:
             state["msg"] = f"Pressure setpoint set to {val_mpa:.3f} MPa"
         return True
 
-    # --- turbine load: "turbine_load <0-1>" ---
-    if cmd.startswith("turbine_load ") or cmd == "turbine_load":
-        arg = cmd[len("turbine_load") :].strip()
+    # --- turbine admission demand: "admission <0-1>" or "turbine_load <0-1>" ---
+    if cmd.startswith("admission ") or cmd == "admission" or cmd.startswith("turbine_load ") or cmd == "turbine_load":
+        keyword = "admission" if cmd.startswith("admission") else "turbine_load"
+        arg = cmd[len(keyword) :].strip()
         try:
             val = float(arg)
         except ValueError:
-            state["msg"] = f"ERROR: 'turbine_load' expects a number in [0,1], got {arg!r}"
+            state["msg"] = f"ERROR: '{keyword}' expects a turbine admission demand in [0,1], got {arg!r}"
             return True
         if not (0.0 <= val <= 1.0):
-            state["msg"] = "ERROR: turbine_load must be in [0, 1]"
+            state["msg"] = "ERROR: turbine admission demand must be in [0, 1]"
             return True
         state["turbine_load"] = val
-        state["msg"] = f"turbine_load set to {val:.3f}"
+        state["msg"] = f"Turbine admission demand set to {val:.3f} (valve admission, not MW)."
         return True
 
     # --- numeric rod command ---
