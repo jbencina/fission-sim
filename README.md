@@ -183,7 +183,7 @@ domain checks), `boil_off_time_s`, and `time_to_level_floor_s`.
 | `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
 | `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
-| `P_steam`, `level_sg`, `level_margin_low`, `boil_off_time_s`, `time_to_level_floor_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin, total-liquid turnover cue, frozen-flow time-to-floor trend estimate, turbine/dump flows, gross electric power, and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
+| `P_steam`, `level_sg`, `level_margin_low`, `time_to_level_floor_s`, `boil_off_time_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin; frozen-property trend estimate to the 0.30 model floor when net outflow is draining; total-liquid turnover cue (`M_l / (m_steam + m_dump)`, not time to a model limit or trip); turbine/dump flows; gross electric-power proxy; and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
 | `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual`, `fw_ctrl.mode`, `fw_ctrl.saturated` | Actual feedwater actuator flow, controller demand, operator level setpoint, optional manual feedwater override, and whether the controller is automatic/manual or clipped at a flow limit. Watch `m_fw_demand − m_fw` during fast transients: the actuator lags the controller by `tau_fw = 5 s`. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
 | `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
@@ -218,11 +218,22 @@ checked against these limits (`src/fission_sim/physics/domain.py`):
 | The pressurizer holds both steam and water (steam quality strictly between 0 and 1) | At 0 it has filled solid with water, at 1 it has boiled dry. Its pressure comes from the steam bubble. |
 | Steam pressure stays between the feedwater-flash floor and 12 MPa | The shell energy balance assumes liquid feedwater at 500 K. The default floor is a 3.00 MPa simulation guard band, above `P_fw_flash = P_sat(500 K) ≈ 2.64 MPa`; lower pressure approaches the configured feedwater flashing boundary. The 12 MPa ceiling is also a simulation validity limit, not a plant protection setpoint. |
 | `sg_tubes_uncovered`: steam-generator collapsed liquid fraction stays at or above 30 % | `0.30` is a conservative surrogate model limit, not a plant elevation or protection setpoint. Below it, the constant-`UA` tube heat-transfer picture no longer applies because the model treats the tube bundle as uncovered. A real plant would normally trip and start auxiliary feedwater before this educational validity edge. |
-| `sg_overfill`: steam-generator collapsed liquid fraction stays at or below 95 % | `0.95` is a conservative surrogate model limit, not a plant elevation or protection setpoint. Above it, the steam space is nearly gone and liquid carryover into steam lines is outside the saturated-shell model. |
+| `sg_overfill`: steam-generator collapsed liquid fraction stays at or below 95 % | `0.95` is a conservative surrogate model limit, not a plant elevation or protection setpoint. Above it, the steam space is nearly gone and liquid carryover into steam lines is outside the saturated-shell model. A real plant would normally trip the turbine and isolate main feedwater on high-high level before this educational validity edge. |
 | `sg_dry`: shell quality stays below 1 | At quality 1 no liquid remains on the SG shell side, so the boiling heat-transfer picture no longer applies. This is a simulation validity limit, not a plant protection setpoint. |
 | `sg_solid`: shell quality stays above 0 | At quality 0 the steam space is gone; pressure would be set by compressing liquid water, which this saturated-shell model does not include. This is a simulation validity limit, not a plant protection setpoint. |
 | Primary pressure between 1 and 21 MPa | Below, far outside pressurized-water-reactor operation; above, close to water's critical point (22.064 MPa), where liquid and steam stop being distinct. |
 | Positive loop inventory, finite numbers, and water-property lookups that succeed | Otherwise the equations cannot be evaluated at all. |
+
+Two SG inventory telemetry cues are deliberately diagnostic, not protective
+countdowns. `boil_off_time_s` is total current liquid inventory divided by
+present turbine-plus-dump steam outflow; it counts liquid below the 0.30
+surrogate floor and assumes the present outflow persists. `time_to_level_floor_s`
+uses only liquid inventory above the 0.30 floor and present net outflow, so it
+is `None` when the shell is not draining and still omits future pressure,
+property, controller, and actuator changes. Neither value is a trip setpoint,
+crew-action clock, or validated safety margin; near negligible steam outflow
+the turnover cue should be read as unavailable/unbounded rather than
+reassuring.
 
 If a step breaks a limit, the simulation stops at the last valid state and
 explains which assumption failed: a notice in the dashboard (the
@@ -1212,6 +1223,11 @@ T_ref      = T_ref_noload + (T_ref_full − T_ref_noload) · load
 - `load` is valve admission. At 90 % admission, the measured acceptance
   endpoint is `n ≈ 0.972`, `T_avg ≈ 587.8 K`, and `P_steam ≈ 7.48 MPa`, not
   90 % reactor power.
+- `P_electric` is a fixed-efficiency gross electrical proxy, not a transient
+  turbine work balance. In the unprotected loss-of-feedwater exercise,
+  pressure-driven steam-flow growth at fixed admission can raise the proxy
+  from 990 MW to about 1,071 MW even while `h_g − h_fw` falls slightly and the
+  SG shell is consuming stored inventory/energy.
 - An unprotected turbine trip without SCRAM settles near `n ≈ 0.941`, `T_avg ≈ 593.2 K`,
   and `P_steam ≈ 8.17 MPa`, because the feedwater train and the one combined
   dump/relief path remain available. This is an unprotected experiment:
@@ -1394,6 +1410,11 @@ learned the manual output.
 - `level_error_integral` is the tracked PI integral state. It is the literal
   accumulated level error only during unsaturated automatic control; saturation
   and manual-output tracking also move it.
+- Feedwater is one-way. At zero demand the controller can stop adding water
+  but cannot drain the shell. The measured turbine-trip-plus-SCRAM case
+  therefore leaves a persistent collapsed-level offset of `0.0163898` above
+  setpoint: no drain path, decay heat, low-power feedwater mode, or feedwater
+  isolation logic is modeled in M4.
 
 ### TavgController (`src/fission_sim/control/tavg_controller.py`)
 
@@ -1734,12 +1755,20 @@ worths, and the design/critical position.
   saturation. When feedwater demand is clipped at zero or maximum flow, the
   integral state is pulled back toward the value that would have produced the
   clipped demand instead of accumulating an impossible correction.
+- **Tracked PI integral state.** `fw_ctrl.level_error_integral` is the
+  feedwater controller's stored PI state. It equals the accumulated level
+  error only while automatic control is unsaturated; saturation
+  back-calculation and manual-output tracking also move it so the stored state
+  remains consistent with achievable feedwater demand.
 - **Boil-off time.** `boil_off_time_s` is `M_l / (m_steam + m_dump)` at the
   current snapshot: total liquid inventory divided by present steam outflow.
-  It is not time to the lower model limit, a plant trip setpoint, or a
-  validated safety margin. `time_to_level_floor_s` is the separate telemetry
-  key for a frozen-property, present-net-outflow estimate to the 0.30
-  surrogate floor; it is `None` when the shell is not draining.
+  It counts liquid below the 0.30 collapsed-level floor and assumes the
+  current steam outflow persists, so it is not time to the lower model limit,
+  a plant trip setpoint, or a validated safety margin. If steam outflow is
+  negligible, treat the cue as unavailable/unbounded rather than reassuring.
+  `time_to_level_floor_s` is the separate telemetry key for a frozen-property,
+  present-net-outflow estimate to the 0.30 surrogate floor; it is `None` when
+  the shell is not draining.
 - **Hot leg / cold leg.** Primary water leaving the core (hot, 597.7 K at design) vs returning (cold, 568.3 K). Their difference is ΔT = 29.5 K and their mean is T_avg = 583.0 K. The model's parameters are generic Westinghouse 4-loop values, with the design power rounded to 3,000 MWth.
 - **Steady state.** Power, temperatures, and reactivity all constant; ρ_total = 0; energy in = energy out.
 - **Stiff ODE.** A system whose characteristic timescales span many orders of magnitude. Neutron kinetics has a fastest scale of ~Λ = 40 µs; the fuel and loop thermal time constants are ~5 s; the longest-lived precursor group decays over ~80 s (1/λ₁). Total span ~10⁶. We use BDF (implicit, adaptive step) — explicit Euler/RK4 would need µs steps for the whole simulation.
@@ -1771,10 +1800,10 @@ worths, and the design/critical position.
 | `feedwater_manual` | Manual feedwater demand fraction; `None` selects automatic control | — |
 | `K_p`, `K_i`, `I`, `T_t` | Feedwater level proportional gain, integral gain, tracked PI integral state, anti-windup/manual tracking time | kg/s, kg/s², s, s |
 | `τ_fw` | Feedwater actuator time constant | s |
-| `boil_off_time_s` | Total SG liquid inventory divided by present steam outflow; not time to the lower model limit | s |
-| `time_to_level_floor_s` | Frozen-property estimate of time to the 0.30 collapsed-level floor at present net outflow | s or None |
+| `boil_off_time_s` | Total SG liquid inventory divided by present turbine-plus-dump steam outflow; not time to the lower model limit | s |
+| `time_to_level_floor_s` | Frozen-property estimate of time to the 0.30 collapsed-level floor at present net outflow; `None` when not draining | s or None |
 | `load`, `load_demand` | Turbine admission state / demand | — |
-| `P_electric` | Gross turbine-generator electric power | W |
+| `P_electric` | Gross fixed-efficiency electric-power proxy, not a transient turbine work balance | W |
 | `T_ref` | Average primary-temperature reference from turbine-admission proxy | K |
 | `rod_demand_auto`, `rod_demand` | Automatic rod demand state / demand sent to RodController | — |
 | `ṁ` | Primary mass flow rate | kg/s |
@@ -2063,12 +2092,15 @@ program.
 
 ### Feedwater actuator and level control — `feedwater.py`, `feedwater_controller.py`
 
-State: `m_fw` in the feedwater actuator and `I = ∫(level_setpoint − level_sg)dt`
-in the controller. Public cross-checks: Yan §5.2 for mass conservation, NRC
-Westinghouse Technology Systems Manual §11.1 for three-element SG water-level
-control signals, and Åström/Murray §11.4 for back-calculation anti-windup.
-The gains and limits below are M4 L1 tuning choices, not plant-specific
-settings.
+State: `m_fw` in the feedwater actuator and `I`, the tracked PI integral state
+[s], in the controller. `I` is the literal time integral of
+`level_setpoint − level_sg` only during unsaturated automatic operation;
+back-calculation saturation correction and manual-output tracking also move
+it. Public cross-checks: Yan §5.2 for mass conservation, NRC Westinghouse
+Technology Systems Manual §11.1 for three-element SG water-level control
+signals, and Åström/Murray §11.4 for back-calculation anti-windup and manual
+tracking. The gains and limits below are M4 L1 tuning choices, not
+plant-specific settings.
 
 **Feedwater actuator lag** (one pump/valve train with a hard capacity limit):
 
@@ -2097,15 +2129,25 @@ before the integral term acts.
 m_fw,demand = clip(feedwater_manual, 0, 1) · m_fw,max
 ```
 
-**Back-calculation anti-windup** (automatic mode only):
+**Back-calculation anti-windup** (automatic mode):
 
 ```
 dI/dt = e + (m_fw,demand − u_raw) / (K_i · T_t)
 ```
 
 `T_t = 30 s` by default. When the actuator is not saturated,
-`m_fw,demand = u_raw`, so the correction vanishes and `dI/dt = e`. In manual
-mode the controller freezes `I`.
+`m_fw,demand = u_raw`, so the correction vanishes and `dI/dt = e`.
+
+**Manual-output tracking** (for bumpless manual→AUTO transfer after the state
+has tracked):
+
+```
+dI/dt = (m_fw,demand − (m_steam + m_dump + K_p · e + K_i · I)) / (K_i · T_t)
+```
+
+The same `T_t = 30 s` tracking time is used. In manual mode the demanded flow
+comes from the operator fraction, while the stored PI state tracks the value
+that would make the automatic law produce that manual demand.
 
 **Level validity limits** (checked after each accepted step):
 
@@ -2263,9 +2305,9 @@ m4` check the level dynamics added by M4. Validation measured on this branch:
 2. **Integrated shell balances during a 100 % → 80 % admission ramp** — mass-accumulation residual `3.07e-4` of the observed inventory change (`|ΔM_sec|max ≈ 3,184.6 kg`, allowed residual ≈31.8 kg), and shell-energy accumulation residual `3.04e-4`.
 3. **10 percentage-point admission reduction at 5 points/min, rods automatic** — max collapsed-level excursion `0.00180`; final residual from the 0.50 setpoint `1.99e-6`.
 4. **Collapsed-level setpoint step 0.50 → 0.55 at t = 10 s** — final residual `9.84e-5`; maximum level `0.559884` (< 0.57).
-5. **Loss of feedwater at t = 10 s** — manual feedwater at 0 reaches `sg_tubes_uncovered` at about `t = 64 s` (30..600 s acceptance band). In a real plant, low-low SG level would trip the reactor and start auxiliary feedwater before this model validity limit; M5 adds that protection behavior.
-6. **Manual feedwater held at maximum after t = 10 s** — reaches `sg_overfill` at about `t = 543 s` (200..2000 s acceptance band).
-7. **Turbine trip plus SCRAM under automatic feedwater control** — collapsed level stays between `0.500` and `0.520867`; final bounded one-way-feedwater offset from setpoint is `0.0163898` (< 0.02).
+5. **Unprotected loss-of-feedwater inventory-depletion boundary exercise at t = 10 s** — manual feedwater at 0 reaches `sg_tubes_uncovered` at about `t = 64 s` (30..600 s acceptance band). In a real plant, low-low SG level would trip the reactor and start auxiliary feedwater before this model validity limit; those protective actions are omitted until M5. The gross `P_electric` proxy can rise from 990 MW to about 1,071 MW because fixed turbine admission passes more steam as pressure rises while stored secondary inventory/energy is consumed; `h_g − h_fw` falls slightly, so this is pressure-driven flow growth, not a transient turbine-work balance.
+6. **Unprotected overfill inventory-boundary exercise at t = 10 s** — manual feedwater held at maximum reaches `sg_overfill` at about `t = 543 s` (200..2000 s acceptance band). In a real plant, high-high SG level would trip the turbine and isolate main feedwater (including feed-pump trips in the cited reference system) before this surrogate overfill edge; those protective actions are omitted until M5.
+7. **Turbine trip plus SCRAM under automatic feedwater control** — collapsed level stays between `0.500` and `0.520867`; final bounded one-way-feedwater offset from setpoint is `0.0163898` (< 0.02). The residual is persistent because feedwater can only add water, not drain it, and the M4 plant has no decay heat, sustained post-trip steaming, low-power feedwater mode, or feedwater-isolation logic.
 
 Factory regressions also check that non-default `SGSecondaryParams` derive
 matching feedwater-controller and actuator defaults, that an explicit
@@ -2323,14 +2365,26 @@ Added:
   --milestone m4`, including measured loss-of-feedwater halt near 64 s and
   manual-overfill halt near 543 s
 
-Loss of feedwater now ends at the tube-uncovering model limit. A real plant
-would normally trip the reactor and start auxiliary feedwater before that
-point; modeling that response is M5's job.
+Loss of feedwater now ends at the tube-uncovering model limit, and sustained
+maximum manual feed reaches the overfill model limit. A real plant would
+normally trip the reactor and start auxiliary feedwater on low-low SG level
+before the low boundary, and would trip the turbine and isolate main feedwater
+on high-high SG level before the high boundary; modeling those protected
+responses is M5's job.
 
 **Milestone 5 — Reactor Protection and Auxiliary Feedwater** — next. Planned
-scope: reactor-protection logic around trips and low-low SG level, trip
-latching/reset behavior, and an auxiliary-feedwater heat-removal path that can
-respond before M4's SG level validity limits.
+scope: SG low-low-level trip logic with reactor trip and auxiliary-feedwater
+start; SG high-high-level trip logic with turbine trip, main-feedwater
+isolation, and feed-pump trip behavior; trip latching/reset behavior;
+delivered auxiliary-feedwater heat removal; a low-power feedwater mode; and
+normal-feedwater isolation logic that can override manual demand before M4's
+SG level validity limits.
+
+Phase D dashboard controls that arrive before or alongside M5 must keep
+ordinary level setpoints inside an operating band within the validity limits
+(0.35–0.90, not the full 0.30–0.95 domain). Dashboard feedwater mode
+transfers rely on the controller's tracked PI/manual-output state; a
+mode-only transfer should not silently discard that tracking.
 
 **Planned after M5.** Items are planned, not built:
 
@@ -2343,6 +2397,15 @@ respond before M4's SG level validity limits.
   P-7/P-9 variants and detailed turbine-trip reset/re-admission sequencing.
 - L2 SG level indication with shrink/swell and geometry/instrument mapping, so
   collapsed fraction is no longer mistaken for narrow-range indicated level.
+  The preferred L2 path separates conserved inventory from indicated level:
+  resolve at least boiling-region/risers and dome/downcomer inventories or an
+  entrained-vapor balance such as
+  `dM_b/dt = Gamma_evap − Gamma_cond − m_sep`, convert
+  `V_b = M_b / rho_v(P)` through geometry, and map the result to the
+  instrument taps. Phase-change and interregion-transfer terms must be equal
+  and opposite in companion mass/energy balances. A pressure-washout
+  indication-only shrink/swell term is only an explicitly empirical
+  intermediate.
 - Rod-control fidelity: lock-up hysteresis, discrete step quantization, and
   nuclear-power/turbine-power mismatch anticipation.
 - Decay heat and post-trip secondary cooling, including residual-heat removal

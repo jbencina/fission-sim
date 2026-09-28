@@ -26,6 +26,9 @@ permissives, and reset behavior.
 # SIMPLIFICATION: no turbine rotor inertia, condenser pressure, moisture
 separation/reheat, extraction feedwater heating, or generator losses are
 modeled.
+# SIMPLIFICATION: ``P_electric`` is a fixed cycle-efficiency proxy. It is not
+a transient turbine work balance with inlet/exhaust states, moisture, cycle
+extractions, or generator controls.
 # SIMPLIFICATION: the ``T_ref`` signal is an admission-based proxy for the
 first-stage impulse-pressure turbine-power program used by the reference
 rod-control system.
@@ -254,7 +257,11 @@ class Turbine:
     m_dump : float
         Steam mass flow through the lumped dump/relief path [kg/s].
     P_electric : float
-        Gross electric power produced by the turbine-generator [W].
+        Gross electric-power proxy produced by the turbine-generator [W].
+        This is ``eta * m_steam * (h_g - h_fw)``, not a transient turbine
+        work balance. During unprotected loss of feedwater it can rise because
+        fixed admission passes more steam as pressure rises while stored shell
+        inventory/energy is depleted.
     T_ref : float
         Reactor coolant average-temperature reference for rod control [K].
 
@@ -460,8 +467,14 @@ class Turbine:
         h_g = coolprop.sat_vapor_enthalpy(P=P_steam)
         h_fw = feedwater_enthalpy(P=P_steam, T_fw=sg.T_fw)
 
-        # Gross electrical power from the steam heat rate (DOE-HDBK-1012/1-92):
+        # Gross electrical power proxy from the steam heat rate
+        # (DOE-HDBK-1012/1-92):
         #     P_electric = η · ṁ_steam · (h_g(P_steam) − h_fw(P_steam, T_fw))
+        #
+        # SIMPLIFICATION: this fixed-efficiency proxy is not a transient
+        # turbine work balance. In loss of feedwater, pressure-driven steam
+        # flow growth can raise P_electric even while h_g − h_fw falls
+        # slightly and the shell consumes stored inventory/energy.
         P_electric = p.eta * m_steam * (h_g - h_fw)
 
         # Linear admission-based proxy for the Westinghouse average-

@@ -20,11 +20,13 @@ dynamics are modeled.
 
 References
 ----------
-Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed.,
-CRC Press, 2012. Ch. 7 describes PWR steam generators and secondary-side
-feedwater/steam systems.
+Public PWR system references:
 
-Public PWR system reference:
+- U.S. NRC Technical Training Center, *Westinghouse Technology Systems
+  Manual*, §11.1 "Steam Generator Water Level Control System", Rev. 0706,
+  describes main-feedwater regulating equipment and level/flow control
+  context:
+  https://www.nrc.gov/docs/ML1122/ML11223A293.pdf
 
 - U.S. NRC Technical Training Center, *Reactor Concepts Manual: Pressurized
   Water Reactor Systems*, describes the PWR steam generator, main feedwater,
@@ -107,8 +109,7 @@ class FeedwaterParams:
 
         Notes
         -----
-        Governing calibration equations (Todreas & Kazimi Ch. 7 secondary
-        plant context):
+        L1 constitutive calibration equations:
 
             m_fw,max = m_fw,max,frac · m_steam,design
             m_fw,initial = m_steam,design
@@ -240,7 +241,7 @@ class FeedwaterSystem:
 
         Notes
         -----
-        Governing equation (Todreas & Kazimi Ch. 7 feedwater system context):
+        Governing equation (L1 constitutive actuator model):
 
             dm_fw/dt = (clip(m_fw,demand, 0, m_fw,max) − m_fw) / tau_fw
 
@@ -251,8 +252,8 @@ class FeedwaterSystem:
         demand = self._finite_flow_demand(inputs["m_fw_demand"])
 
         # SIMPLIFICATION: pump curves and valve travel are collapsed to one
-        # capacity-limited first-order target (NRC Reactor Concepts Manual PWR
-        # feedwater-system context).
+        # capacity-limited first-order L1 target (NRC WTSM §11.1 / Reactor
+        # Concepts Manual feedwater-system context).
         target = float(np.clip(demand, 0.0, p.m_fw_max))
         return np.array([(target - float(state[0])) / p.tau_fw], dtype=float)
 

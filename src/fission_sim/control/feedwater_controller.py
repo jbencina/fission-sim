@@ -48,10 +48,6 @@ flow.
 
 References
 ----------
-Todreas, N. E. and Kazimi, M. S. *Nuclear Systems Vol. 1*, 2nd ed.,
-CRC Press, 2012. Ch. 7 describes PWR steam generators and secondary-side
-inventory/level control needs.
-
 Yan, J. *Introduction to Engineering Thermodynamics*, §5.2.2 "Mass
 Conservation Equations in a Control Volume", for the inlet-minus-outlet mass
 balance behind the steam-flow feed-forward term:
@@ -328,8 +324,9 @@ class FeedwaterController:
         m_fw_max = self._m_fw_max()
         level_error = level_setpoint - level_sg
 
-        # Governing automatic three-element demand equation (Todreas &
-        # Kazimi Ch. 7; NRC WTSM §11.1 real SG level-control signals):
+        # Governing automatic three-element demand equation (NRC WTSM §11.1
+        # real SG level/steam/feedwater signals; Åström & Murray §11.4 for
+        # PI/back-calculation/tracking structure):
         #
         #     e = level_setpoint − level_sg
         #     u_raw,auto = m_steam + m_dump + K_p · e + K_i · I
