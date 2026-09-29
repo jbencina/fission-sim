@@ -10,6 +10,7 @@
  */
 
 import { type FC, useRef } from 'react'
+import { deriveFeedwaterModeStatus } from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { InfoTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
@@ -84,11 +85,16 @@ const PlantMimic: FC = () => {
   const mDump = latest?.m_dump ?? null
   const dumpOpen = (mDump ?? 0) > 1
   const mFeedwater = latest?.m_fw ?? null
-  const feedwaterManual = latest ? latest.feedwater_manual !== null : false
+  const feedwaterStatus = latest ? deriveFeedwaterModeStatus(latest) : null
+  const feedwaterManualEffective = feedwaterStatus?.effectiveMode === 'manual'
+  const feedwaterLabel = feedwaterManualEffective ? 'FW MAN' : 'FEED'
+  const feedwaterPendingSelection =
+    feedwaterStatus?.pending === true ? `${feedwaterStatus.selectedMode.toUpperCase()} PEND` : null
   const trip = turbineTripStatus(latest)
   const tripActive = trip?.kind === 'active'
   const tripPending = trip?.kind === 'pending-trip'
   const tripResetPending = trip?.kind === 'pending-reset'
+  const tripTransient = trip?.kind === 'trip-transient'
   const valveClosed = tripActive || tripResetPending
   const turbineStatusSummary = trip
     ? trip.kind === 'active'
@@ -96,10 +102,15 @@ const PlantMimic: FC = () => {
       : `turbine ${trip.label}`
     : 'turbine not tripped'
   const dumpSummary = dumpOpen ? `steam dump open at ${formatNumber(mDump, 0)} kilograms per second` : 'steam dump closed'
-  const feedwaterSummary = `${feedwaterManual ? 'manual' : 'automatic'} feedwater ${formatNumber(
+  const feedwaterModeWord = feedwaterManualEffective ? 'manual' : 'automatic'
+  const feedwaterPendingSummary =
+    feedwaterStatus?.pending === true
+      ? `; selected ${feedwaterStatus.selectedMode} feedwater ${feedwaterStatus.detail}`
+      : ''
+  const feedwaterSummary = `effective ${feedwaterModeWord} feedwater ${formatNumber(
     mFeedwater,
     0,
-  )} kilograms per second`
+  )} kilograms per second${feedwaterPendingSummary}`
   const tripDetailLines = turbineTripLines(trip?.label)
 
   const summary =
@@ -289,12 +300,30 @@ const PlantMimic: FC = () => {
               </text>
             </>
           )}
+          {tripTransient && (
+            <>
+              <text x="319" y="302" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+                TRIP CMD
+              </text>
+              <text
+                x="319"
+                y="326"
+                textAnchor="middle"
+                data-font-role="status"
+                fontSize="13.6"
+                fill="var(--warn-ink)"
+                letterSpacing="0.4"
+              >
+                NEXT STEP
+              </text>
+            </>
+          )}
 
           {/* feedwater return into the SG shell */}
           <path d="M356 418 H272" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
           <path d="M272 418 l8 -4 v8z" fill="var(--series-blue)" />
           <text x="356" y="362" textAnchor="end" data-font-role="label" {...LABEL} fill="var(--series-blue)">
-            {feedwaterManual ? 'FW MAN' : 'FEED'}
+            {feedwaterLabel}
           </text>
           <text x="356" y="386" textAnchor="end" data-font-role="value" {...VALUE}>
             {formatNumber(mFeedwater, 0)}
@@ -302,6 +331,11 @@ const PlantMimic: FC = () => {
           <text x="356" y="412" textAnchor="end" data-font-role="unit" {...UNIT}>
             kg/s
           </text>
+          {feedwaterPendingSelection && (
+            <text x="356" y="438" textAnchor="end" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+              {feedwaterPendingSelection}
+            </text>
+          )}
           {/* reactor vessel and core */}
           <rect x="58" y="382" width="110" height="128" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
           <rect x="72" y="400" width="82" height="78" fill="none" stroke="var(--line)" strokeWidth="1" />

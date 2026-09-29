@@ -135,6 +135,19 @@ describe('turbineTripStatus', () => {
     expect(turbineTripStatus(operatorTrip)).toEqual({ kind: 'active', label: 'operator trip' })
     expect(turbineTripStatus(scramTrip)).toEqual({ kind: 'active', label: 'SCRAM (P-4)' })
   })
+
+  it('uses neutral running-transient wording before the effective trip updates', () => {
+    const f = makeFrame(1, {
+      running: true,
+      turbine_trip_active: false,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    expect(turbineTripStatus(f)).toEqual({
+      kind: 'trip-transient',
+      label: 'trip command accepted; valves update on the next step',
+    })
+  })
 })
 
 describe('describeSecondaryState', () => {
@@ -155,6 +168,16 @@ describe('describeSecondaryState', () => {
       scrammed: false,
     })
     expect(describeSecondaryState(f)).toEqual(['trip pending — applies when the simulation runs'])
+  })
+
+  it('adds neutral running trip transient wording while the command is taking effect', () => {
+    const f = makeFrame(1, {
+      running: true,
+      turbine_trip_active: false,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    expect(describeSecondaryState(f)).toEqual(['trip command accepted; valves update on the next step'])
   })
 
   it('adds pending reset wording while paused', () => {
@@ -193,5 +216,20 @@ describe('describeSchematicState', () => {
       level_sg: 0.38,
     })
     expect(describeSchematicState(f)).toBe('critical, steady · turbine tripped · steam dump open · SG level low')
+  })
+
+  it('appends running trip-transient wording without paused pending copy', () => {
+    const f = makeFrame(1, {
+      rho_total: 0,
+      power_thermal: 3e9,
+      Q_sg: 3e9,
+      running: true,
+      turbine_trip_active: false,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    expect(describeSchematicState(f)).toBe(
+      'critical, steady · trip command accepted; valves update on the next step',
+    )
   })
 })

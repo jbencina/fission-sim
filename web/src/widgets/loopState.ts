@@ -25,8 +25,8 @@ export const TRIP_RESET_PENDING = `trip reset ${PENDING_DETAIL}`
 
 /** Turbine trip state shown by the schematic. */
 export interface TurbineTripStatus {
-  /** Whether the label is an effective trip or a paused command waiting to apply. */
-  kind: 'active' | 'pending-trip' | 'pending-reset'
+  /** Whether the label is an effective trip, paused pending state, or running transient. */
+  kind: 'active' | 'pending-trip' | 'pending-reset' | 'trip-transient'
   /** Short user-facing label for the cause or pending action. */
   label: string
 }
@@ -59,7 +59,11 @@ export function describeLoop(frame: Frame | null): string {
 export function turbineTripStatus(frame: Frame | null): TurbineTripStatus | null {
   if (frame === null) return null
   const status = deriveTurbineTripStatus(frame)
-  if (status.kind === 'trip-pending') return { kind: 'pending-trip', label: TRIP_PENDING }
+  if (status.kind === 'trip-pending') {
+    return status.pending
+      ? { kind: 'pending-trip', label: TRIP_PENDING }
+      : { kind: 'trip-transient', label: `trip ${status.cause}` }
+  }
   if (status.kind === 'reset-pending') return { kind: 'pending-reset', label: TRIP_RESET_PENDING }
   if (!status.active) return null
   return {
@@ -85,7 +89,9 @@ export function describeSecondaryState(frame: Frame | null): string[] {
   const phrases: string[] = []
   const trip = turbineTripStatus(frame)
   if (trip?.kind === 'active') phrases.push('turbine tripped')
-  if (trip?.kind === 'pending-trip' || trip?.kind === 'pending-reset') phrases.push(trip.label)
+  if (trip?.kind === 'pending-trip' || trip?.kind === 'pending-reset' || trip?.kind === 'trip-transient') {
+    phrases.push(trip.label)
+  }
   if (deriveDumpStatus(frame).open) phrases.push('steam dump open')
 
   const level = deriveLevelStatus(frame)
