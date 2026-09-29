@@ -10,6 +10,7 @@
  */
 
 import type { Frame } from '../types/telemetry'
+import { deriveTurbineTripStatus, type StatusTone } from './plantStatus'
 
 /** Actual turbine admission at or below this fraction is treated as closed. */
 export const TURBINE_ADMISSION_CLOSED_FRACTION = 0.005
@@ -47,6 +48,22 @@ export interface AdmissionStatus {
   resetBlocked: boolean
   /** Motion/closed/pending classification for the trip indication. */
   tripState: AdmissionTripState
+}
+
+/** Compact turbine-trip status display used by the persistent toolbar. */
+export interface ToolbarTurbineTripDisplay {
+  /** Human-readable toolbar text. */
+  label: string
+  /** Tooltip/explainer text for the toolbar item. */
+  cause: string
+  /** Whether an effective turbine trip is active. */
+  active: boolean
+  /** Whether a paused selected command is waiting for the plant to step. */
+  pending: boolean
+  /** True when actual turbine admission is within the closed-valve tolerance. */
+  closed: boolean
+  /** Severity tone inherited from the shared trip classifier. */
+  tone: StatusTone
 }
 
 /**
@@ -122,5 +139,48 @@ export function deriveAdmissionStatus(frame: AdmissionStatusFrame): AdmissionSta
     admissionClosed,
     resetBlocked: !admissionClosed,
     tripState,
+  }
+}
+
+/**
+ * Derive the persistent toolbar's compact turbine-trip display.
+ *
+ * Parameters
+ * ----------
+ * frame:
+ *   Telemetry fields for selected/effective turbine trip, SCRAM, admission
+ *   demand, actual admission and run state.
+ *
+ * Returns
+ * -------
+ * ToolbarTurbineTripDisplay
+ *   Text, closed flag and severity for the toolbar status chip.
+ */
+export function deriveToolbarTurbineTripDisplay(frame: AdmissionStatusFrame): ToolbarTurbineTripDisplay {
+  const tripStatus = deriveTurbineTripStatus(frame)
+  const admissionStatus = deriveAdmissionStatus(frame)
+  const cause =
+    admissionStatus.tripState === 'trip-active-closed'
+      ? `${tripStatus.cause}; admission closed at ≤ ${TURBINE_ADMISSION_CLOSED_FRACTION * 100} %`
+      : tripStatus.cause
+
+  let label: string
+  if (tripStatus.pending) {
+    label = `Turbine ${tripStatus.label} · ${tripStatus.cause}`
+  } else if (admissionStatus.tripState === 'available') {
+    label = 'Turbine not tripped'
+  } else if (admissionStatus.tripState === 'trip-active-closed') {
+    label = `Turbine trip active · ${tripStatus.cause}`
+  } else {
+    label = `Turbine ${tripStatus.label.toLowerCase()} · ${tripStatus.cause}`
+  }
+
+  return {
+    label,
+    cause,
+    active: tripStatus.active,
+    pending: tripStatus.pending,
+    closed: admissionStatus.admissionClosed,
+    tone: tripStatus.tone,
   }
 }

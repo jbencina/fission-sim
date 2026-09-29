@@ -3,6 +3,7 @@ import { makeFrame } from '../test/makeFrame'
 import {
   TURBINE_ADMISSION_CLOSED_FRACTION,
   deriveAdmissionStatus,
+  deriveToolbarTurbineTripDisplay,
   isTurbineAdmissionClosed,
 } from './admissionStatus'
 
@@ -27,6 +28,44 @@ describe('deriveAdmissionStatus', () => {
       selectedDemand: 0,
       effectiveDemand: 1,
       demandPending: true,
+    })
+  })
+
+  describe('deriveToolbarTurbineTripDisplay', () => {
+    it('prioritizes a paused accepted turbine trip over available admission', () => {
+      const display = deriveToolbarTurbineTripDisplay(
+        makeFrame(1, {
+          running: false,
+          turbine_trip: true,
+          turbine_trip_active: false,
+          turbine_load: 1,
+        }),
+      )
+
+      expect(display).toMatchObject({
+        label: 'Turbine TRIP PENDING · pending — applies when the simulation runs',
+        pending: true,
+        active: false,
+        closed: false,
+        tone: 'warn',
+      })
+    })
+
+    it('still reports closed admission for an effective trip after valve closure', () => {
+      expect(
+        deriveToolbarTurbineTripDisplay(
+          makeFrame(1, {
+            turbine_trip: true,
+            turbine_trip_active: true,
+            turbine_load: TURBINE_ADMISSION_CLOSED_FRACTION,
+          }),
+        ),
+      ).toMatchObject({
+        label: 'Turbine trip active · operator trip',
+        cause: 'operator trip; admission closed at ≤ 0.5 %',
+        active: true,
+        closed: true,
+      })
     })
   })
 

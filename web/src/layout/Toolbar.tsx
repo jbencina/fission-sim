@@ -11,8 +11,8 @@
 
 import { type FC, useCallback, useState } from 'react'
 import ConfirmDialog from '../controls/ConfirmDialog'
-import { TURBINE_ADMISSION_CLOSED_FRACTION, deriveAdmissionStatus } from '../state/admissionStatus'
-import { deriveRodModeStatus, deriveTurbineTripStatus, type StatusTone } from '../state/plantStatus'
+import { deriveToolbarTurbineTripDisplay } from '../state/admissionStatus'
+import { deriveRodModeStatus, type StatusTone } from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import type { ConnectionStatus } from '../types/telemetry'
 import { HelpTip, InfoTip } from '../ui/InfoTip'
@@ -117,30 +117,18 @@ const TurbineTripChip: FC = () => {
   const latest = useTelemetryStore((s) => s.latest)
   if (!latest) return null
 
-  const tripStatus = deriveTurbineTripStatus(latest)
-  const admissionStatus = deriveAdmissionStatus(latest)
-  const closed = admissionStatus.admissionClosed
-  const cause =
-    admissionStatus.tripState === 'trip-active-closed'
-      ? `${tripStatus.cause}; admission closed at ≤ ${TURBINE_ADMISSION_CLOSED_FRACTION * 100} %`
-      : tripStatus.cause
-  const label =
-    admissionStatus.tripState === 'available'
-      ? 'Turbine not tripped'
-      : admissionStatus.tripState === 'trip-active-closed'
-        ? `Turbine trip active · ${tripStatus.cause}`
-        : `Turbine ${tripStatus.label.toLowerCase()} · ${tripStatus.cause}`
+  const display = deriveToolbarTurbineTripDisplay(latest)
 
   return (
     <InfoTip
       title="Turbine trip status"
-      body={cause}
-      label={label}
-      className={`${item} ${toneClass(tripStatus.tone)}`}
+      body={display.cause}
+      label={display.label}
+      className={`${item} ${toneClass(display.tone)}`}
     >
-      <span className={`${dot} ${tripStatus.active || tripStatus.pending ? 'bg-warn' : 'bg-ink-3'}`} />
-      <span className="tabular-nums">{label}</span>
-      {tripStatus.active && closed && <span className="text-ink-3">closed</span>}
+      <span className={`${dot} ${display.active || display.pending ? 'bg-warn' : 'bg-ink-3'}`} />
+      <span className="tabular-nums">{display.label}</span>
+      {display.active && display.closed && <span className="text-ink-3">closed</span>}
     </InfoTip>
   )
 }
