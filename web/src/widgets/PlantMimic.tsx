@@ -158,6 +158,7 @@ const PlantMimic: FC = () => {
           <path d="M156 278 H178 V300 H184" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
           <rect x="112" y="242" width="44" height="72" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
           <rect x="114" y="285" width="40" height="27" fill="var(--line)" />
+          <path d="M112 303 H94" fill="none" stroke={BAND_FILL[band]} strokeWidth="1" />
           <text x="66" y="226" textAnchor="middle" data-font-role="label" {...LABEL}>
             PRESSURIZER
           </text>
@@ -182,6 +183,12 @@ const PlantMimic: FC = () => {
           </text>
           <text x="226" y="138" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(pSteamMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
+          </text>
+          <text x="218" y="456" textAnchor="middle" data-font-role="label" {...LABEL}>
+            SG LEVEL
+          </text>
+          <text x="218" y="480" textAnchor="middle" data-font-role="value" {...VALUE} fill={sgLevelInk}>
+            {formatNumber(sgLevelPercent, 0)} <tspan data-font-role="unit" {...UNIT}>%</tspan>
           </text>
 
           {/* steam line, turbine admission and dump branch */}

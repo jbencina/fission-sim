@@ -349,14 +349,14 @@ const viewports: ViewportCase[] = [
 ]
 
 const screenshotNames = new Map<string, string>([
-  ['1440:steady', 'd6-v4-steady-1440.png'],
-  ['1440:turbine-trip-dump', 'd6-v4-turbine-trip-dump-1440.png'],
-  ['1440:scram', 'd6-v4-scram-1440.png'],
-  ['1440:feedwater-manual', 'd6-v4-feedwater-manual-1440.png'],
-  ['1440:trip-pending', 'd6-v4-trip-pending-1440.png'],
-  ['1440:trip-reset-pending', 'd6-v4-trip-reset-pending-1440.png'],
-  ['1024:steady', 'd6-v4-steady-1024.png'],
-  ['390:steady', 'd6-v4-steady-390.png'],
+  ['1440:steady', 'd6-v5-steady-1440.png'],
+  ['1440:turbine-trip-dump', 'd6-v5-turbine-trip-dump-1440.png'],
+  ['1440:scram', 'd6-v5-scram-1440.png'],
+  ['1440:feedwater-manual', 'd6-v5-feedwater-manual-1440.png'],
+  ['1440:trip-pending', 'd6-v5-trip-pending-1440.png'],
+  ['1440:trip-reset-pending', 'd6-v5-trip-reset-pending-1440.png'],
+  ['1024:steady', 'd6-v5-steady-1024.png'],
+  ['390:steady', 'd6-v5-steady-390.png'],
 ])
 
 test('plant schematic text clears strokes and keeps legible font sizes', async ({ browser }: { browser: Browser }) => {
