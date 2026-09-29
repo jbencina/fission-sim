@@ -9,9 +9,12 @@
 
 import type { Frame } from '../types/telemetry'
 
-type RodStatusFrame = Pick<Frame, 'running' | 'rod_auto' | 'rod_auto_acting' | 'scrammed' | 'turbine_trip_active'>
+type RodStatusFrame = Pick<
+  Frame,
+  'running' | 'rod_auto' | 'rod_auto_acting' | 'scrammed' | 'turbine_trip' | 'turbine_trip_active'
+>
 type TripStatusFrame = Pick<Frame, 'running' | 'turbine_trip_active' | 'turbine_trip' | 'scrammed'>
-type FeedwaterStatusFrame = Pick<Frame, 'feedwater_manual' | 'fw_saturated' | 'm_fw_demand' | 'm_fw_max'>
+type FeedwaterStatusFrame = Pick<Frame, 'running' | 'feedwater_manual' | 'fw_saturated' | 'm_fw_demand' | 'm_fw_max'>
 
 export type StatusTone = 'normal' | 'warn' | 'danger'
 
@@ -41,16 +44,25 @@ export interface TurbineTripStatus {
 
 export interface FeedwaterModeStatus {
   /** Stable identifier for tests and conditional styling. */
-  kind: 'auto' | 'manual' | 'auto-saturated-zero' | 'auto-saturated-maximum' | 'auto-saturated'
+  kind: 'auto' | 'manual' | 'pending' | 'auto-saturated-zero' | 'auto-saturated-maximum' | 'auto-saturated'
   /** Short status tag shown in the feedwater section. */
   label: string
   /** Learner-readable explanation for HelpTips or aria labels. */
   detail: string
   /** Visual severity for the existing dark-console palette. */
   tone: StatusTone
+  /** Selected command mode from the latest frame. */
+  selectedMode: 'auto' | 'manual'
+  /** Last-stepped effective command mode when known. */
+  effectiveMode: 'auto' | 'manual'
+  /** Selected manual demand [kg/s], or null when AUTO is selected. */
+  selectedDemandKgS: number | null
+  /** Last-stepped effective feedwater demand [kg/s]. */
+  effectiveDemandKgS: number
 }
 
 const FLOW_EPS = 1e-6
+const FEEDWATER_DEMAND_TOL_KG_S = 1e-3
 
 /**
  * Clamp a fractional command to the backend's command range [0, 1].
@@ -71,6 +83,31 @@ export function clampFraction(value: number): number {
 }
 
 /**
+ * Find the newest frame that was produced while simulation time was running.
+ *
+ * Parameters
+ * ----------
+ * history:
+ *   Telemetry history, oldest to newest.
+ * latest:
+ *   Latest telemetry frame, or null before the first frame arrives.
+ *
+ * Returns
+ * -------
+ * Frame | null
+ *   `latest` while running; otherwise the newest running frame in `history`,
+ *   falling back to `latest` when the UI has only paused frames.
+ */
+export function findLastRunningFrame(history: readonly Frame[], latest: Frame | null): Frame | null {
+  if (latest === null) return null
+  if (latest.running) return latest
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].running) return history[i]
+  }
+  return latest
+}
+
+/**
  * Derive the control-bank AUTO/MANUAL status line.
  *
  * Parameters
@@ -84,10 +121,9 @@ export function clampFraction(value: number): number {
  *   The label, explanation and severity for the status line.
  */
 export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
-  const modeDisagrees = frame.rod_auto !== frame.rod_auto_acting
-  const hasSuspendingCause = frame.scrammed || frame.turbine_trip_active
+  const expectedActing = frame.rod_auto && !frame.scrammed && !frame.turbine_trip
 
-  if (!frame.running && modeDisagrees && !hasSuspendingCause) {
+  if (!frame.running && frame.rod_auto_acting !== expectedActing) {
     return {
       kind: 'pending',
       label: 'PENDING',
@@ -114,7 +150,11 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
     }
   }
 
-  const suspendedBy = frame.scrammed ? 'SCRAM' : frame.turbine_trip_active ? 'turbine trip' : 'controller logic'
+  const suspendedBy = frame.scrammed
+    ? 'SCRAM'
+    : frame.turbine_trip || frame.turbine_trip_active
+      ? 'turbine trip'
+      : 'controller logic'
   return {
     kind: 'auto-suspended',
     label: 'AUTO SUSPENDED',
@@ -223,6 +263,19 @@ export function feedwaterDemandFraction(frame: Pick<Frame, 'm_fw_demand' | 'm_fw
   return clampFraction(frame.m_fw_demand / frame.m_fw_max)
 }
 
+function feedwaterSelectedDemand(frame: FeedwaterStatusFrame): number | null {
+  return frame.feedwater_manual === null ? null : clampFraction(frame.feedwater_manual) * frame.m_fw_max
+}
+
+function feedwaterMode(frame: FeedwaterStatusFrame): 'auto' | 'manual' {
+  return frame.feedwater_manual === null ? 'auto' : 'manual'
+}
+
+function demandChanged(a: number | null, b: number | null): boolean {
+  if (a === null || b === null) return a !== b
+  return Math.abs(a - b) > FEEDWATER_DEMAND_TOL_KG_S
+}
+
 /**
  * Derive the feedwater AUTO/MANUAL status tag.
  *
@@ -236,13 +289,44 @@ export function feedwaterDemandFraction(frame: Pick<Frame, 'm_fw_demand' | 'm_fw
  * FeedwaterModeStatus
  *   The label, explanation and severity for the feedwater mode tag.
  */
-export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): FeedwaterModeStatus {
+export function deriveFeedwaterModeStatus(
+  frame: FeedwaterStatusFrame,
+  effectiveFrame: FeedwaterStatusFrame = frame,
+): FeedwaterModeStatus {
+  const selectedMode = feedwaterMode(frame)
+  const effectiveMode = feedwaterMode(effectiveFrame)
+  const selectedDemandKgS = feedwaterSelectedDemand(frame)
+  const effectiveCommandDemandKgS = feedwaterSelectedDemand(effectiveFrame)
+  const effectiveDemandKgS = effectiveFrame.m_fw_demand
+  const demandMismatch =
+    selectedMode === 'manual' &&
+    Math.abs((selectedDemandKgS ?? 0) - effectiveDemandKgS) > FEEDWATER_DEMAND_TOL_KG_S
+  const commandMismatch =
+    selectedMode !== effectiveMode || demandChanged(selectedDemandKgS, effectiveCommandDemandKgS)
+
+  if (!frame.running && (commandMismatch || demandMismatch)) {
+    return {
+      kind: 'pending',
+      label: 'PENDING',
+      detail: 'pending — applies when the simulation runs',
+      tone: 'warn',
+      selectedMode,
+      effectiveMode,
+      selectedDemandKgS,
+      effectiveDemandKgS,
+    }
+  }
+
   if (frame.feedwater_manual !== null) {
     return {
       kind: 'manual',
       label: 'MANUAL',
       detail: 'Operator manual feedwater demand is active.',
       tone: 'warn',
+      selectedMode,
+      effectiveMode,
+      selectedDemandKgS,
+      effectiveDemandKgS,
     }
   }
 
@@ -252,6 +336,10 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
       label: 'AUTO',
       detail: 'Automatic SG level control is active.',
       tone: 'normal',
+      selectedMode,
+      effectiveMode,
+      selectedDemandKgS,
+      effectiveDemandKgS,
     }
   }
 
@@ -261,6 +349,10 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
       label: 'AUTO · saturated at zero',
       detail: 'Automatic level control wants less than zero feedwater, so demand is clipped at 0 kg/s.',
       tone: 'warn',
+      selectedMode,
+      effectiveMode,
+      selectedDemandKgS,
+      effectiveDemandKgS,
     }
   }
 
@@ -270,6 +362,10 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
       label: 'AUTO · saturated at maximum',
       detail: 'Automatic level control wants more feedwater than the actuator can provide.',
       tone: 'warn',
+      selectedMode,
+      effectiveMode,
+      selectedDemandKgS,
+      effectiveDemandKgS,
     }
   }
 
@@ -278,5 +374,9 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
     label: 'AUTO · saturated',
     detail: 'Automatic level control is clipped at a feedwater-flow limit.',
     tone: 'warn',
+    selectedMode,
+    effectiveMode,
+    selectedDemandKgS,
+    effectiveDemandKgS,
   }
 }

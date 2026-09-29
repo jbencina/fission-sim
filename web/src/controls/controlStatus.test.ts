@@ -5,6 +5,7 @@ import {
   deriveRodModeStatus,
   deriveTurbineTripStatus,
   feedwaterDemandFraction,
+  findLastRunningFrame,
 } from './controlStatus'
 
 describe('deriveRodModeStatus', () => {
@@ -35,7 +36,7 @@ describe('deriveRodModeStatus', () => {
 
     expect(
       deriveRodModeStatus(
-        makeFrame(1, { rod_auto: true, rod_auto_acting: false, turbine_trip_active: true }),
+        makeFrame(1, { rod_auto: true, rod_auto_acting: false, turbine_trip: true, turbine_trip_active: true }),
       ),
     ).toMatchObject({
       kind: 'auto-suspended',
@@ -59,6 +60,70 @@ describe('deriveRodModeStatus', () => {
 
     expect(status.kind).toBe('pending')
     expect(status.detail).toBe('pending — applies when the simulation runs')
+  })
+
+  it('uses pending wording for paused turbine trip and reset sequences', () => {
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: true,
+          turbine_trip: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+    })
+
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: false,
+          turbine_trip: false,
+          turbine_trip_active: true,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+    })
+  })
+
+  it('uses pending wording for paused SCRAM and reset SCRAM sequences', () => {
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: true,
+          scrammed: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+    })
+
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: false,
+          scrammed: false,
+          turbine_trip_active: true,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+    })
   })
 })
 
@@ -162,11 +227,111 @@ describe('feedwater status helpers', () => {
   it('reports manual feedwater mode separately from AUTO saturation', () => {
     expect(
       deriveFeedwaterModeStatus(
-        makeFrame(1, { feedwater_manual: 0.4, fw_saturated: true, m_fw_demand: 2_002.8 }),
+        makeFrame(1, { feedwater_manual: 1, fw_saturated: true, m_fw_demand: 2_002.8 }),
       ),
     ).toMatchObject({
       kind: 'manual',
       label: 'MANUAL',
     })
+  })
+
+  it('uses pending wording for paused AUTO to MANUAL feedwater selection', () => {
+    const effective = makeFrame(1, {
+      running: true,
+      feedwater_manual: null,
+      m_fw_demand: 1_600,
+      m_fw_max: 2_000,
+    })
+    const selectedManual = makeFrame(2, {
+      running: false,
+      feedwater_manual: 0.8,
+      m_fw_demand: 1_600,
+      m_fw_max: 2_000,
+    })
+
+    expect(deriveFeedwaterModeStatus(selectedManual, effective)).toMatchObject({
+      kind: 'pending',
+      label: 'PENDING',
+      detail: 'pending — applies when the simulation runs',
+      selectedMode: 'manual',
+      effectiveMode: 'auto',
+      selectedDemandKgS: 1_600,
+      effectiveDemandKgS: 1_600,
+    })
+  })
+
+  it('uses pending wording for paused manual feedwater demand changes', () => {
+    const effective = makeFrame(1, {
+      running: true,
+      feedwater_manual: 0.8,
+      m_fw_demand: 1_600,
+      m_fw_max: 2_000,
+    })
+    const changedDemand = makeFrame(2, {
+      running: false,
+      feedwater_manual: 0.5,
+      m_fw_demand: 1_600,
+      m_fw_max: 2_000,
+    })
+
+    expect(deriveFeedwaterModeStatus(changedDemand, effective)).toMatchObject({
+      kind: 'pending',
+      selectedMode: 'manual',
+      effectiveMode: 'manual',
+      selectedDemandKgS: 1_000,
+      effectiveDemandKgS: 1_600,
+    })
+  })
+
+  it('uses pending wording for paused MANUAL to AUTO feedwater selection', () => {
+    const effective = makeFrame(1, {
+      running: true,
+      feedwater_manual: 0.5,
+      m_fw_demand: 1_000,
+      m_fw_max: 2_000,
+    })
+    const selectedAuto = makeFrame(2, {
+      running: false,
+      feedwater_manual: null,
+      m_fw_demand: 1_000,
+      m_fw_max: 2_000,
+    })
+
+    expect(deriveFeedwaterModeStatus(selectedAuto, effective)).toMatchObject({
+      kind: 'pending',
+      selectedMode: 'auto',
+      effectiveMode: 'manual',
+      selectedDemandKgS: null,
+      effectiveDemandKgS: 1_000,
+    })
+  })
+
+  it('keeps paused feedwater MANUAL active when command and last-stepped demand match', () => {
+    const effective = makeFrame(1, {
+      running: true,
+      feedwater_manual: 0.5,
+      m_fw_demand: 1_000,
+      m_fw_max: 2_000,
+    })
+    const pausedSame = makeFrame(2, {
+      running: false,
+      feedwater_manual: 0.5,
+      m_fw_demand: 1_000,
+      m_fw_max: 2_000,
+    })
+
+    expect(deriveFeedwaterModeStatus(pausedSame, effective)).toMatchObject({
+      kind: 'manual',
+      label: 'MANUAL',
+    })
+  })
+
+  it('finds the newest running frame for paused pending comparisons', () => {
+    const runningAuto = makeFrame(1, { running: true, feedwater_manual: null })
+    const pausedManual = makeFrame(2, { running: false, feedwater_manual: 0.8 })
+
+    expect(findLastRunningFrame([runningAuto, pausedManual], pausedManual)).toBe(runningAuto)
+    expect(findLastRunningFrame([runningAuto], runningAuto)).toBe(runningAuto)
+    expect(findLastRunningFrame([], null)).toBeNull()
   })
 })

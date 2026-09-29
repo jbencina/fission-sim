@@ -19,6 +19,7 @@ import {
   deriveFeedwaterModeStatus,
   deriveTurbineTripStatus,
   feedwaterDemandFraction,
+  findLastRunningFrame,
   type StatusTone,
 } from './controlStatus'
 import { useCommittedRange } from './useCommittedRange'
@@ -39,6 +40,15 @@ function rangePercent(value: number, min: number, max: number): number {
   return clampFraction((value - min) / (max - min)) * 100
 }
 
+function formatFeedwaterSelection(
+  mode: 'auto' | 'manual',
+  demandKgS: number | null,
+  mFwMax: number,
+): string {
+  if (mode === 'auto' || demandKgS === null || mFwMax <= 0) return 'AUTO'
+  return `${formatNumber((demandKgS / mFwMax) * 100, 0)} % max (${formatNumber(demandKgS, 0)} kg/s)`
+}
+
 const Readout: FC<{ label: string; value: string; unit: string }> = ({ label, value, unit }) => (
   <div>
     <div className="text-[11.5px] tracking-[0.04em] text-ink-2">{label}</div>
@@ -57,6 +67,7 @@ const Divider: FC = () => <div className="-mx-4 my-4 h-px bg-line" />
 const SecondaryControls: FC = () => {
   const status = useTelemetryStore((s) => s.status)
   const latest = useTelemetryStore((s) => s.latest)
+  const history = useTelemetryStore((s) => s.history)
   const sendCommand = useTelemetryStore((s) => s.sendCommand)
 
   const connected = status === 'connected'
@@ -80,13 +91,18 @@ const SecondaryControls: FC = () => {
         active: false,
         tone: 'normal' as const,
       }
+  const lastRunning = findLastRunningFrame(history, latest)
   const feedwaterStatus = latest
-    ? deriveFeedwaterModeStatus(latest)
+    ? deriveFeedwaterModeStatus(latest, lastRunning ?? latest)
     : {
         kind: 'auto' as const,
         label: 'AUTO',
         detail: 'Waiting for first telemetry frame.',
         tone: 'normal' as const,
+        selectedMode: 'auto' as const,
+        effectiveMode: 'auto' as const,
+        selectedDemandKgS: null,
+        effectiveDemandKgS: 0,
       }
 
   const handleTurbineCommit = useCallback(
@@ -147,6 +163,24 @@ const SecondaryControls: FC = () => {
     levelSg === null ? 50 : rangePercent(levelSg, LEVEL_SETPOINT_MIN, LEVEL_SETPOINT_MAX)
   const manualFlow = latest === null ? null : feedwaterSlider.value * mFwMax
   const manualDesignPct = designFeedwater > 0 && manualFlow !== null ? (manualFlow / designFeedwater) * 100 : null
+  const turbineResetCopy =
+    latest?.turbine_trip === true
+      ? 'Reset Turbine Trip sets it to 0 %.'
+      : latest?.scrammed === true
+        ? 'Reset Scram sets it to 0 %.'
+        : 'Demand remains retained until the trip clears.'
+  const turbineContext =
+    tripStatus.active || tripStatus.kind === 'clear-pending'
+      ? `Valves closing — demand ${formatNumber(turbineSlider.value * 100, 0)} % retained; ${turbineResetCopy}`
+      : tripStatus.kind === 'trip-pending'
+        ? `Trip pending — demand ${formatNumber(turbineSlider.value * 100, 0)} % is retained until the simulation runs.`
+        : 'Admission demand ramps at 5 %/min; the marker shows actual valve admission.'
+  const feedwaterPending = feedwaterStatus.kind === 'pending'
+  const feedwaterSelectedText = formatFeedwaterSelection(
+    feedwaterStatus.selectedMode,
+    feedwaterStatus.selectedDemandKgS,
+    mFwMax,
+  )
 
   return (
     <>
@@ -177,7 +211,6 @@ const SecondaryControls: FC = () => {
                 </div>
                 <div className="text-[10.5px] text-ink-3">{tripStatus.cause}</div>
               </div>
-              <div className="text-right text-[11.5px] text-ink-2">ramps at 5 %/min</div>
             </div>
 
             <div className="mt-3 grid grid-cols-3 gap-3">
@@ -189,6 +222,9 @@ const SecondaryControls: FC = () => {
               />
               <Readout label="Gross elec." value={formatNumber(grossMw, 0)} unit="MW" />
             </div>
+            <p className={`mt-2 text-[11px] leading-snug ${tripStatus.active ? 'text-warn' : 'text-ink-2'}`}>
+              {turbineContext}
+            </p>
 
             <HelpTip tip="Turbine admission demand, not electrical load. The actual admission valve ramps toward this demand at 5 percentage-points per minute and is forced closed by an effective turbine trip. The white marker is actual admission.">
               {(tipId) => (
@@ -371,6 +407,12 @@ const SecondaryControls: FC = () => {
               <Readout label="Demand" value={formatNumber(manualFlow, 0)} unit="kg/s" />
               <Readout label="Design" value={formatNumber(manualDesignPct, 0)} unit="%" />
             </div>
+            {feedwaterPending && (
+              <p className="mt-2 text-[11px] leading-snug text-warn">
+                Selected {feedwaterSelectedText}; effective demand frozen at{' '}
+                {formatNumber(feedwaterStatus.effectiveDemandKgS, 0)} kg/s until the simulation runs.
+              </p>
+            )}
 
             <HelpTip tip="Manual feedwater demand is a percent of maximum feedwater flow. Maximum is 120 % of design flow, so 83 % max is about 100 % design. The slider is disabled in AUTO; use MANUAL to take direct control.">
               {(tipId) => (
