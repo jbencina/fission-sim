@@ -30,11 +30,16 @@ const EventLog: FC = () => {
           <span>Now</span>
         </li>
         {shown.map((e, i) => (
-          <li key={`${e.t}-${i}`} className={`grid grid-cols-[62px_1fr] gap-2.5 py-1 ${LEVEL_CLASS[e.level]}`}>
+          <li
+            key={`${e.t}-${i}`}
+            className={`grid min-w-0 grid-cols-[62px_minmax(0,1fr)] gap-2.5 py-1 ${LEVEL_CLASS[e.level]}`}
+          >
             <span className={`font-mono text-[11.5px] ${e.level === 'info' ? 'text-ink-3' : ''}`}>
               {formatClock(e.t)}
             </span>
-            <span>{e.text}</span>
+            <span className="truncate" title={e.fullText}>
+              {e.text}
+            </span>
           </li>
         ))}
         {shown.length === 0 && <li className="py-1 text-ink-3">No events yet.</li>}
