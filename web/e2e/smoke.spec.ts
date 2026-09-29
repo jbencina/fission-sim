@@ -1,19 +1,33 @@
 /**
- * Smoke test: SCRAM drops thermal power.
+ * Smoke tests for the operator dashboard.
  *
  * Pre-condition: the dev stack must already be running (`make dev`).
  * The test does NOT start the stack itself.
  *
- * A second check confirms that an operator-control explanation and a status
- * explanation can both be revealed with the keyboard alone.
- *
- * SCRAM check:
- *   Navigate to the app, wait for "Connected", reset the sim to ensure
- *   a clean steady-state start, read the initial thermal power, click SCRAM +
- *   confirm the modal, wait 12 s, assert power dropped by ≥50%.
+ * The checks reset the persistent backend before plant transients, then use
+ * polling against live readouts or telemetry frames instead of fixed sleeps.
  */
 
 import { test, expect, type Locator, type Page } from '@playwright/test'
+
+type Command = Record<string, boolean | number | null | string>
+
+interface FrameSnapshot {
+  feedwater_manual?: number | null
+  level_setpoint?: number
+  rod_auto?: boolean
+  rod_auto_acting?: boolean
+  rod_command?: number
+  rod_position?: number
+  running?: boolean
+  scrammed?: boolean
+  speed?: number
+  t?: number
+  turbine_load_demand?: number
+  turbine_trip?: boolean
+}
+
+test.setTimeout(180_000)
 
 /** Parse a readout such as "3,000.0" or "−5,528.9" (typographic minus). */
 async function numericText(locator: Locator): Promise<number> {
@@ -21,11 +35,106 @@ async function numericText(locator: Locator): Promise<number> {
   return parseFloat(text.trim().replace(/,/g, '').replace('\u2212', '-'))
 }
 
-async function resumeIfPaused(page: Page): Promise<void> {
-  const resume = page.getByRole('button', { name: /^resume$/i })
-  if (await resume.isVisible().catch(() => false)) {
-    await resume.click()
-  }
+async function waitForConsole(page: Page): Promise<void> {
+  await page.goto('/')
+  await expect(page.getByText('Connected')).toBeVisible({ timeout: 20_000 })
+  await expect(page.getByText(/personal learning project/i)).toBeVisible()
+}
+
+async function sendCommand(page: Page, command: Command): Promise<void> {
+  await page.evaluate(
+    (cmd) =>
+      new Promise<void>((resolve, reject) => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/telemetry`)
+        let finished = false
+        const timer = window.setTimeout(() => {
+          finished = true
+          ws.close()
+          reject(new Error(`Timed out waiting for ack for ${cmd.type}`))
+        }, 8_000)
+        const finish = (error?: Error) => {
+          if (finished) return
+          finished = true
+          window.clearTimeout(timer)
+          ws.close()
+          if (error) reject(error)
+          else resolve()
+        }
+
+        ws.onopen = () => ws.send(JSON.stringify(cmd))
+        ws.onerror = () => finish(new Error(`WebSocket error sending ${cmd.type}`))
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data) as { command?: string; detail?: string; type?: string }
+          if (data.type === 'ack' && data.command === cmd.type) finish()
+          else if (data.type === 'error') finish(new Error(data.detail ?? `Command ${cmd.type} failed`))
+        }
+      }),
+    command,
+  )
+}
+
+async function readLatestFrame(page: Page): Promise<FrameSnapshot> {
+  return page.evaluate(
+    () =>
+      new Promise<FrameSnapshot>((resolve, reject) => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/telemetry`)
+        let finished = false
+        const timer = window.setTimeout(() => {
+          finished = true
+          ws.close()
+          reject(new Error('Timed out waiting for telemetry frame'))
+        }, 8_000)
+        const finish = (frame: FrameSnapshot) => {
+          if (finished) return
+          finished = true
+          window.clearTimeout(timer)
+          ws.close()
+          resolve(frame)
+        }
+
+        ws.onerror = () => {
+          if (finished) return
+          finished = true
+          window.clearTimeout(timer)
+          reject(new Error('WebSocket error reading telemetry frame'))
+        }
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data) as FrameSnapshot & { type?: string }
+          if (typeof data.t === 'number') finish(data)
+        }
+      }),
+  )
+}
+
+async function resetToDesignFixture(page: Page, speed: 1 | 2 | 5 | 10 = 1): Promise<void> {
+  await sendCommand(page, { type: 'reset' })
+  await sendCommand(page, { type: 'resume' })
+  await sendCommand(page, { type: 'set_speed', value: speed })
+  await sendCommand(page, { type: 'set_turbine_load', value: 1 })
+  await sendCommand(page, { type: 'set_rod_auto', value: false })
+  await sendCommand(page, { type: 'set_level_setpoint', value: 0.5 })
+  await sendCommand(page, { type: 'set_feedwater_manual', value: null })
+
+  await expect
+    .poll(
+      async () => {
+        const frame = await readLatestFrame(page)
+        return (
+          frame.running === true &&
+          frame.speed === speed &&
+          frame.turbine_load_demand === 1 &&
+          frame.rod_auto === false &&
+          frame.scrammed === false &&
+          frame.turbine_trip === false &&
+          frame.feedwater_manual === null &&
+          Math.abs((frame.level_setpoint ?? 0) - 0.5) < 1e-9
+        )
+      },
+      { timeout: 20_000, intervals: [250, 500, 1_000] },
+    )
+    .toBe(true)
 }
 
 /** Press Tab until `target` has focus, failing if it is never reached. */
@@ -47,8 +156,7 @@ async function expectHelpShownFor(page: Page, control: Locator): Promise<void> {
 }
 
 test('educational help is reachable with the keyboard', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
+  await waitForConsole(page)
 
   // Operator explanation: Reset Simulation is enabled whether or not the
   // reactor is scrammed, so this check does not depend on test order. The
@@ -70,11 +178,7 @@ test('educational help is reachable with the keyboard', async ({ page }) => {
 })
 
 test('SCRAM drops thermal power', async ({ page }) => {
-  await page.goto('/')
-
-  // Wait for the WebSocket to connect — the toolbar shows "Connected".
-  await expect(page.getByText('Connected')).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByText(/personal learning project/i)).toBeVisible()
+  await waitForConsole(page)
 
   // ── Reset to a clean steady-state before reading initial power ─────────────
   //
@@ -82,18 +186,9 @@ test('SCRAM drops thermal power', async ({ page }) => {
   // the power is already near zero. We send a Reset Simulation command up front
   // so this test always starts from the same known state (t=0, n=1, full power).
   //
-  // Reset Simulation button text is "Reset Simulation" — click it, then confirm.
-  await resumeIfPaused(page)
-  await page.getByRole('button', { name: /reset simulation/i }).click()
-  // Confirm modal: the dialog has a confirm button with label "Reset".
-  await page.getByRole('dialog').getByRole('button', { name: /reset/i }).click()
-
-  // Reset preserves run/speed state, so force a known running 1× baseline.
-  await resumeIfPaused(page)
-  await page.getByRole('button', { name: /^1×$/ }).click()
-
-  // Give the simulator a moment to rebuild state and emit a fresh telemetry frame.
-  await page.waitForTimeout(2_000)
+  // Use backend commands for the fixture so the shared persistent simulator is
+  // in a known state before the UI SCRAM action under test.
+  await resetToDesignFixture(page, 1)
 
   // ── Read the initial thermal power ─────────────────────────────────────────
   //
@@ -140,4 +235,64 @@ test('SCRAM drops thermal power', async ({ page }) => {
     async () => numericText(powerValueSpan),
     { timeout: 20_000, intervals: [500] },
   ).toBeLessThan(initialMW * 0.5)
+})
+
+test('turbine trip raises steam pressure and opens the dump', async ({ page }) => {
+  await waitForConsole(page)
+  await resetToDesignFixture(page, 10)
+
+  const steamPressure = page.getByTestId('status-P_steam_MPa-value')
+  await expect(steamPressure).toBeVisible()
+  await expect
+    .poll(async () => (Number.isFinite(await numericText(steamPressure)) ? await numericText(steamPressure) : null), {
+      timeout: 20_000,
+      intervals: [250, 500, 1_000],
+    })
+    .not.toBeNull()
+  const initialSteamPressure = await numericText(steamPressure)
+  expect(initialSteamPressure).toBeGreaterThan(5)
+
+  const secondaryControls = page.locator('section[aria-label="Secondary-side controls"]')
+  await secondaryControls.getByRole('button', { name: /^trip turbine$/i }).click()
+  await page.getByRole('dialog').getByRole('button', { name: /^trip turbine$/i }).click()
+
+  await expect
+    .poll(async () => numericText(steamPressure), {
+      timeout: 60_000,
+      intervals: [500, 1_000, 2_000],
+    })
+    .toBeGreaterThan(initialSteamPressure + 0.6)
+  await expect(page.locator('section[aria-label="Events"]').getByText(/Steam dump opened/i).first()).toBeVisible({
+    timeout: 60_000,
+  })
+
+  await secondaryControls.getByRole('button', { name: /reset turbine trip/i }).click()
+  await expect(page.getByTestId('status-turbine_load').getByText(/demand 0 %/i)).toBeVisible({
+    timeout: 20_000,
+  })
+})
+
+test('rod AUTO mode displays status and returns to MANUAL bumplessly', async ({ page }) => {
+  await waitForConsole(page)
+  await resetToDesignFixture(page, 1)
+
+  const operatorControls = page.locator('section[aria-label="Operator controls"]')
+  const rodMode = operatorControls.getByRole('group', { name: /rod control mode/i })
+
+  await rodMode.getByRole('button', { name: /^auto$/i }).click()
+  await expect(operatorControls.getByText(/AUTO ACTIVE/i)).toBeVisible({ timeout: 20_000 })
+
+  await rodMode.getByRole('button', { name: /^manual$/i }).click()
+  await expect
+    .poll(
+      async () => {
+        const frame = await readLatestFrame(page)
+        if (frame.rod_auto !== false || frame.rod_command === undefined || frame.rod_position === undefined) {
+          return Number.POSITIVE_INFINITY
+        }
+        return Math.abs(frame.rod_command - frame.rod_position)
+      },
+      { timeout: 20_000, intervals: [250, 500, 1_000] },
+    )
+    .toBeLessThan(0.002)
 })
