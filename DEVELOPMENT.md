@@ -129,37 +129,60 @@ wall-clock second, each advancing simulated time by 0.1 s × `speed`.
 #### Telemetry Frame
 
 Each frame is one JSON object. All numeric fields use SI units internally;
-`P_primary_MPa` is a convenience conversion provided for display. The example
-is a real frame from the design steady state:
+`P_primary_MPa` and `P_steam_MPa` are convenience conversions provided for
+display. Nullable numeric fields are explicitly `null` when not applicable.
+The example is a real frame from the design steady state:
 
 ```json
 {
-  "t": 42.7,
+  "t": 0.0,
   "power_thermal": 3000000000.0,
-  "T_hot": 597.742,
-  "T_cold": 568.258,
+  "T_hot": 597.7420147420147,
+  "T_cold": 568.2579852579853,
   "T_avg": 583.0,
   "T_fuel": 1100.0,
   "rod_position": 0.5,
-  "P_primary_Pa": 15499345.2,
-  "P_primary_MPa": 15.4993,
+  "P_primary_Pa": 15499345.236082302,
+  "P_primary_MPa": 15.499345236082302,
   "Q_sg": 3000000000.0,
   "rho_rod": 0.0,
-  "rho_doppler": 0.0,
-  "rho_moderator": 0.0,
+  "rho_doppler": -0.0,
+  "rho_moderator": -0.0,
   "rho_total": 0.0,
+  "P_steam_Pa": 6899179.981585782,
+  "P_steam_MPa": 6.899179981585782,
+  "T_secondary": 558.0,
+  "level_sg": 0.49999999999999856,
+  "time_to_level_floor_s": null,
+  "m_steam": 1669.012362331777,
+  "m_dump": 0.0,
+  "P_electric": 989999999.9999962,
+  "turbine_load": 1.0,
+  "T_ref": 583.0,
+  "turbine_trip_active": false,
+  "m_fw": 1669.0123623317777,
+  "m_fw_max": 2002.8148347981332,
+  "m_fw_demand": 1669.0123623317818,
+  "fw_saturated": false,
+  "rod_demand": 0.5,
+  "rod_auto_acting": false,
   "running": true,
   "speed": 1.0,
   "scrammed": false,
   "rod_command": 0.5,
+  "turbine_load_demand": 1.0,
+  "turbine_trip": false,
+  "rod_auto": false,
+  "level_setpoint": 0.5,
+  "feedwater_manual": null,
   "model_limit": null
 }
 ```
 
-The design pressure reads about 0.65 kPa below 15.5 MPa because the initial
-pressurizer inventory is derived with one CoolProp backend (IAPWS-IF97) and
-converted back to a pressure with another (Helmholtz EOS); see
-[README.md → Pressurizer](README.md#pressurizer-srcfission_simphysicspressurizerpy).
+The design primary pressure reads about 0.65 kPa below 15.5 MPa because the
+initial pressurizer inventory is derived with one CoolProp backend
+(IAPWS-IF97) and converted back to a pressure with another (Helmholtz EOS);
+see [README.md → Pressurizer](README.md#pressurizer-srcfission_simphysicspressurizerpy).
 
 | Key | Type | Units | Description |
 |---|---|---|---|
@@ -171,16 +194,38 @@ converted back to a pressure with another (Helmholtz EOS); see
 | `T_fuel` | float | K | Lumped (average) fuel temperature, not the centerline |
 | `rod_position` | float | dimensionless | Actual control-bank position (0 = inserted, 1 = withdrawn). The shutdown bank is not in the frame. |
 | `P_primary_Pa` | float | Pa | Primary system pressure from pressurizer |
-| `P_primary_MPa` | float | MPa | Same pressure, converted for display |
+| `P_primary_MPa` | float | MPa | Same primary pressure, converted for display |
 | `Q_sg` | float | W | Heat removed by the steam generator |
 | `rho_rod` | float | dimensionless | Rod reactivity, control bank + shutdown bank |
 | `rho_doppler` | float | dimensionless | Doppler fuel-temperature reactivity feedback |
 | `rho_moderator` | float | dimensionless | Moderator coolant-temperature reactivity feedback |
 | `rho_total` | float | dimensionless | Total reactivity |
+| `P_steam_Pa` | float | Pa | Steam-generator secondary pressure |
+| `P_steam_MPa` | float | MPa | Same steam pressure, converted for display |
+| `T_secondary` | float | K | Secondary saturation temperature read by the primary-side SG heat exchanger |
+| `level_sg` | float | dimensionless | SG collapsed liquid fraction (4 SGs lumped, no shrink/swell) |
+| `time_to_level_floor_s` | float or null | s | Frozen-property estimate of time until the SG collapsed level reaches the model floor; `null` when not draining |
+| `m_steam` | float | kg/s | Turbine steam flow |
+| `m_dump` | float | kg/s | Steam dump / relief flow |
+| `P_electric` | float | W | Gross electric output proxy from the turbine model |
+| `turbine_load` | float | dimensionless | Actual turbine admission fraction after governor ramp/trip dynamics |
+| `T_ref` | float | K | Load-dependent Tavg reference from the turbine program |
+| `turbine_trip_active` | bool | dimensionless | Effective turbine-trip status: operator trip latch or SCRAM/P-4 interlock |
+| `m_fw` | float | kg/s | Actual feedwater actuator flow |
+| `m_fw_max` | float | kg/s | Maximum feedwater actuator flow (120 % of design steam flow) |
+| `m_fw_demand` | float | kg/s | Feedwater-controller demand before actuator lag |
+| `fw_saturated` | bool | dimensionless | Whether the feedwater controller demand is clamped at an actuator limit |
+| `rod_demand` | float | dimensionless | Rod demand actually sent to the rod actuator (manual command, automatic demand, or suspended hold) |
+| `rod_auto_acting` | bool | dimensionless | Whether automatic Tavg rod control is actively moving rods (not merely selected) |
 | `running` | bool | dimensionless | Whether simulated time is advancing (false while paused or halted at a model limit) |
 | `speed` | float | dimensionless | Simulation speed multiplier (1.0 = real time) |
 | `scrammed` | bool | dimensionless | Whether the SCRAM latch is set |
-| `rod_command` | float | dimensionless | Operator's requested control-bank position (fraction withdrawn) |
+| `rod_command` | float | dimensionless | Retained manual control-bank command (fraction withdrawn) |
+| `turbine_load_demand` | float | dimensionless | Operator turbine-admission demand; actual admission ramps toward it at 5 %/min |
+| `turbine_trip` | bool | dimensionless | Operator turbine-trip latch (does not include SCRAM/P-4) |
+| `rod_auto` | bool | dimensionless | Operator-selected rod mode: true = automatic Tavg control, false = manual |
+| `level_setpoint` | float | dimensionless | Feedwater-controller SG collapsed-level setpoint |
+| `feedwater_manual` | float or null | dimensionless | Manual feedwater demand as a fraction of `m_fw_max`; `null` = AUTO |
 | `model_limit` | string or null | — | Why the simulation halted at the edge of the model, or `null`. A halt caused by an unexpected step failure instead starts with `Simulation error: `. |
 
 #### Command Messages
@@ -191,8 +236,11 @@ success, or an error frame `{"type": "error", "detail": "..."}` on failure.
 Text that is not valid JSON, and binary WebSocket frames, are also answered
 with an error frame. Errors do not disconnect the WebSocket.
 
-While the simulation is paused or halted, a command that changes what the
-frame reports (rod command, SCRAM latch, speed, pause state) is published as
+Every numeric `value` must be a JSON number (not a string or boolean) and
+finite; non-standard JSON literals accepted by Python such as `NaN` and
+`Infinity` are rejected. While the simulation is paused or halted, a command
+that changes what the frame reports (rod command, SCRAM latch, speed, pause
+state, turbine/load mode, level setpoint, or feedwater mode) is published as
 one new frame with `t` unchanged, so every client sees it. A command that
 changes nothing visible publishes nothing.
 
@@ -208,6 +256,18 @@ controller drives the control bank toward this position at 1 %/s (100 s for
 the full stroke, 50 s from the design position to either end). Each 1 % of
 travel is worth 12 pcm, so the whole range is ±600 pcm about the design
 position. While a SCRAM is latched the command is stored but has no effect.
+
+**`set_rod_auto`** - select automatic Tavg rod control or manual rods.
+
+```json
+{"type": "set_rod_auto", "value": true}
+```
+
+`value`: JSON boolean. `true` lets the load-dependent Tavg controller drive
+`rod_demand`; `false` returns to manual `rod_command`. On an automatic-to-manual
+transfer the runtime first copies the actual `rod_position` into `rod_command`,
+so the transfer is bumpless: a stale manual command cannot immediately move the
+bank after automatic control has repositioned it.
 
 **`scram`** - emergency shutdown; drops the control bank and the shutdown
 bank into the core.
@@ -226,8 +286,8 @@ precursors keep decaying and emitting neutrons, which sustain a shrinking
 level of fission for tens of seconds to minutes. Fission-product decay heat
 is not modeled.
 
-**`reset_scram`** - clear the SCRAM latch and return the control bank to the
-operator.
+**`reset_scram`** - clear the SCRAM latch and require explicit turbine
+re-admission.
 
 ```json
 {"type": "reset_scram"}
@@ -241,7 +301,41 @@ stays below about −4,300 pcm even with the control bank fully withdrawn
 about +1,480 pcm), against the shutdown bank's −6,400 pcm. Returning to power
 takes a `reset`; the procedure-driven reactor startup that would withdraw the
 shutdown banks in a real plant is not modeled. In the simulator clearing the
-latch is unconditional (no interlock logic is modeled).
+latch is unconditional (no interlock logic is modeled). Clearing SCRAM also
+sets `turbine_load_demand` to 0 because the SCRAM tripped the turbine through
+P-4; re-admission is an explicit operator action.
+
+**`set_turbine_load`** - set turbine admission demand.
+
+```json
+{"type": "set_turbine_load", "value": 0.75}
+```
+
+`value`: float in `[0, 1]`, the requested turbine admission fraction. Actual
+`turbine_load` ramps toward the demand at 5 %/min while no trip is active.
+This is valve admission, not electrical load; gross electric output is
+reported separately as `P_electric`.
+
+**`turbine_trip`** - set the operator turbine-trip latch.
+
+```json
+{"type": "turbine_trip"}
+```
+
+No extra fields. Closes turbine admission through the turbine model. This is
+an unprotected exercise in the current simulator: a real plant would normally
+trip the reactor on a turbine trip above roughly half power (P-9), but that
+interlock is not modeled.
+
+**`reset_turbine_trip`** - clear the operator turbine-trip latch.
+
+```json
+{"type": "reset_turbine_trip"}
+```
+
+No extra fields. Also sets `turbine_load_demand` to 0, so clearing the latch
+cannot silently re-open the turbine to an old admission demand. Re-admission
+is an explicit operator action through `set_turbine_load`.
 
 **`pause`** - stop advancing simulated time. The background loop keeps
 running.
@@ -252,8 +346,9 @@ running.
 
 No extra fields. The runtime publishes one frame with `running = false`.
 While paused, a frame is published only when an accepted command changes the
-command state (rod command, SCRAM, speed), with `t` unchanged, or when a
-`reset` publishes its t = 0 frame; otherwise no frames are emitted. Resume
+command state (for example rod command, SCRAM, speed, turbine admission,
+rod mode, level setpoint, or feedwater mode), with `t` unchanged, or when
+a `reset` publishes its t = 0 frame; otherwise no frames are emitted. Resume
 with `resume`.
 
 **`resume`** - resume stepping after a `pause`.
@@ -272,11 +367,14 @@ No extra fields. Refused with an error frame while a model limit is active
 ```
 
 No extra fields. The physical state (neutron population, temperatures,
-pressurizer inventory, both rod banks) returns to the full-power design
-state, `rod_command` returns to 0.5, and the SCRAM latch is cleared. A
-model-limit halt is cleared and the simulation runs again. `P_setpoint` and
-`speed` are kept, and so is a pause the operator chose. One frame at t = 0 is
-published. Calling `SimRuntime.reset()` directly does exactly the same.
+pressurizer and SG inventory, turbine admission, and both rod banks) is
+rebuilt at t = 0 using the kept admission demand and rod-control mode.
+`rod_command` returns to 0.5; the SCRAM latch, operator turbine-trip latch,
+and manual feedwater override are cleared. A model-limit halt is cleared and
+the simulation runs again. `P_setpoint`, `speed`, `turbine_load_demand`,
+`rod_auto`, and `level_setpoint` are kept, and so is a pause the operator
+chose. One frame at t = 0 is published. Calling `SimRuntime.reset()` directly
+does exactly the same.
 
 **`set_speed`** - change the simulation speed multiplier.
 
@@ -299,6 +397,28 @@ setpoint. The setpoint is not a frame field, so this command publishes no
 frame while paused. A very low setpoint makes the controller spray
 continuously; the pressurizer can then fill with water, which ends the
 simulation at a model limit.
+
+**`set_level_setpoint`** - adjust the SG level controller target.
+
+```json
+{"type": "set_level_setpoint", "value": 0.5}
+```
+
+`value`: float in `[0.35, 0.90]`, the SG collapsed liquid fraction target.
+This operating band stays inside the model validity limits (0.30 floor and
+0.95 overfill ceiling). The displayed level is the SG collapsed liquid
+fraction (4 SGs lumped, no shrink/swell).
+
+**`set_feedwater_manual`** - select feedwater manual demand or AUTO.
+
+```json
+{"type": "set_feedwater_manual", "value": 0.5}
+```
+
+`value`: float in `[0, 1]` or `null`. A number is a manual demand as a
+fraction of `m_fw_max`; `null` returns to automatic three-element level
+control. The frame reports both actual feedwater flow (`m_fw`) and controller
+demand (`m_fw_demand`) in kg/s.
 
 #### Model-Limit Halt
 

@@ -48,13 +48,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from typing import Any
 
+from fission_sim.control.feedwater_controller import FeedwaterControllerParams
 from fission_sim.control.pressurizer_controller import PressurizerControllerParams
 from fission_sim.engine import SimEngine
 from fission_sim.physics.domain import ModelDomainError, check_snapshot
 from fission_sim.physics.rod_controller import RodParams
+from fission_sim.physics.turbine import TurbineParams
 from fission_sim.plant import build_standard_plant
 
 logger = logging.getLogger(__name__)
@@ -94,16 +97,49 @@ SIM_ERROR_PREFIX = "Simulation error: "
 # Appended to every halt explanation and to the refused-resume reply:
 # reset keeps the settings that may have caused the halt.
 _RESET_KEEPS_SETTINGS = (
-    "Reset keeps your pressure setpoint and speed (the rod command returns "
-    f"to {_DESIGN_ROD_COMMAND * 100:.0f} %), so change the setting that caused this, "
+    "Reset keeps your pressure setpoint, speed, turbine admission demand, "
+    "rod-control mode, SG level setpoint, and pause state; it clears SCRAM, "
+    "the turbine trip latch, and manual feedwater, and the rod command returns "
+    f"to {_DESIGN_ROD_COMMAND * 100:.0f} %. Change the setting that caused this, "
     "or the same thing will happen again."
 )
 
 
 def _is_number(value: Any) -> bool:
-    """True for a JSON number. ``bool`` is excluded: Python treats ``True``
-    as the int 1, but a JSON ``true`` is not a valid numeric command value."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    """True for a finite JSON number.
+
+    ``bool`` is excluded: Python treats ``True`` as the int 1, but a JSON
+    ``true`` is not a valid numeric command value. ``json.loads`` accepts the
+    non-standard literals ``NaN`` and ``Infinity`` as floats, so the finite
+    check is part of the command boundary rather than the JSON parser.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _plain_float(value: Any) -> float | None:
+    """Return ``value`` as a plain Python ``float``, preserving ``None``."""
+    if value is None:
+        return None
+    return float(value)
+
+
+def _plain_bool(value: Any) -> bool | None:
+    """Return ``value`` as a plain Python ``bool``, preserving ``None``."""
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _command_number(msg: dict[str, Any], cmd_type: str) -> tuple[float | None, dict[str, str] | None]:
+    """Extract a finite numeric command value or an error reply."""
+    value = msg.get("value")
+    if not _is_number(value):
+        return None, {"type": "error", "detail": f"{cmd_type} requires a finite numeric 'value'"}
+    return float(value), None
 
 
 def _build_telemetry_frame(snap: dict[str, Any], cmd: "_CommandState") -> dict[str, Any]:
@@ -132,50 +168,80 @@ def _build_telemetry_frame(snap: dict[str, Any], cmd: "_CommandState") -> dict[s
     rod_tele = snap.get("rod", {})
     pzr_tele = snap.get("pzr", {})
     sg_tele = snap.get("sg", {})
+    sg_sec_tele = snap.get("sg_sec", {})
+    turbine_tele = snap.get("turbine", {})
+    feedwater_tele = snap.get("feedwater", {})
+    fw_ctrl_tele = snap.get("fw_ctrl", {})
+    tavg_ctrl_tele = snap.get("tavg_ctrl", {})
 
     # Raw temperatures needed for reactivity decomposition.
-    T_fuel = core_tele.get("T_fuel")
-    T_hot = loop_tele.get("T_hot")
-    T_cold = loop_tele.get("T_cold")
+    T_fuel = _plain_float(core_tele.get("T_fuel"))
+    T_hot = _plain_float(loop_tele.get("T_hot"))
+    T_cold = _plain_float(loop_tele.get("T_cold"))
     # T_avg = (T_hot + T_cold) / 2  [K]; the loop module also provides this
     # but we compute it locally to be explicit about what the UI gets.
-    T_avg = (T_hot + T_cold) / 2 if (T_hot is not None and T_cold is not None) else loop_tele.get("T_avg")
+    T_avg = (
+        (T_hot + T_cold) / 2
+        if (T_hot is not None and T_cold is not None)
+        else _plain_float(loop_tele.get("T_avg"))
+    )
 
     # Rod reactivity [dimensionless] — produced by the rod controller output.
-    rho_rod = rod_tele.get("rho_rod")
+    rho_rod = _plain_float(rod_tele.get("rho_rod"))
 
     # Doppler feedback: α_f * (T_fuel − T_fuel_ref), read from the core's
     # telemetry. Negative for hotter fuel (more resonance absorption).
-    rho_doppler = core_tele.get("rho_doppler")
+    rho_doppler = _plain_float(core_tele.get("rho_doppler"))
 
     # Moderator feedback: α_m * (T_cool − T_cool_ref), also from the core.
     # Negative when the coolant is hotter than its reference.
-    rho_moderator = core_tele.get("rho_moderator")
+    rho_moderator = _plain_float(core_tele.get("rho_moderator"))
 
     # Total reactivity = rod + Doppler + moderator.
     # A reactor is critical when rho_total = 0.
-    rho_total = core_tele.get("rho_total")
+    rho_total = _plain_float(core_tele.get("rho_total"))
 
     # Primary-side pressure from the pressurizer output [Pa].
-    P_pa = pzr_tele.get("P")
+    P_pa = _plain_float(pzr_tele.get("P"))
     # Convert to MPa for dashboard convenience (1 Pa = 1e-6 MPa).
     P_mpa = P_pa / 1e6 if P_pa is not None else None
 
+    # Secondary-side pressure from the steam-generator shell [Pa].
+    P_steam_pa = _plain_float(sg_sec_tele.get("P_steam"))
+    P_steam_mpa = P_steam_pa / 1e6 if P_steam_pa is not None else None
+
     return {
-        "t": snap.get("t"),
-        "power_thermal": core_tele.get("power_thermal"),
+        "t": _plain_float(snap.get("t")),
+        "power_thermal": _plain_float(core_tele.get("power_thermal")),
         "T_hot": T_hot,
         "T_cold": T_cold,
         "T_avg": T_avg,
         "T_fuel": T_fuel,
-        "rod_position": rod_tele.get("rod_position"),
+        "rod_position": _plain_float(rod_tele.get("rod_position")),
         "P_primary_Pa": P_pa,
         "P_primary_MPa": P_mpa,
-        "Q_sg": sg_tele.get("Q_sg"),
+        "Q_sg": _plain_float(sg_tele.get("Q_sg")),
         "rho_rod": rho_rod,
         "rho_doppler": rho_doppler,
         "rho_moderator": rho_moderator,
         "rho_total": rho_total,
+        "P_steam_Pa": P_steam_pa,
+        "P_steam_MPa": P_steam_mpa,
+        "T_secondary": _plain_float(sg_sec_tele.get("T_secondary")),
+        "level_sg": _plain_float(sg_sec_tele.get("level_sg")),
+        "time_to_level_floor_s": _plain_float(sg_sec_tele.get("time_to_level_floor_s")),
+        "m_steam": _plain_float(turbine_tele.get("m_steam")),
+        "m_dump": _plain_float(turbine_tele.get("m_dump")),
+        "P_electric": _plain_float(turbine_tele.get("P_electric")),
+        "turbine_load": _plain_float(turbine_tele.get("load")),
+        "T_ref": _plain_float(turbine_tele.get("T_ref")),
+        "turbine_trip_active": _plain_bool(turbine_tele.get("trip_active")),
+        "m_fw": _plain_float(feedwater_tele.get("m_fw")),
+        "m_fw_max": _plain_float(feedwater_tele.get("m_fw_max")),
+        "m_fw_demand": _plain_float(fw_ctrl_tele.get("m_fw_demand")),
+        "fw_saturated": _plain_bool(fw_ctrl_tele.get("saturated")),
+        "rod_demand": _plain_float(tavg_ctrl_tele.get("rod_demand")),
+        "rod_auto_acting": _plain_bool(tavg_ctrl_tele.get("acting")),
         **_command_fields(cmd),
     }
 
@@ -188,12 +254,17 @@ def _command_fields(cmd: "_CommandState") -> dict[str, Any]:
     update the latest frame without rebuilding its physics values.
     """
     return {
-        "running": cmd.running,
-        "speed": cmd.speed,
-        "scrammed": cmd.scrammed,
-        "rod_command": cmd.rod_command,
+        "running": bool(cmd.running),
+        "speed": float(cmd.speed),
+        "scrammed": bool(cmd.scrammed),
+        "rod_command": float(cmd.rod_command),
+        "turbine_load_demand": float(cmd.turbine_load_demand),
+        "turbine_trip": bool(cmd.turbine_trip),
+        "rod_auto": bool(cmd.rod_auto),
+        "level_setpoint": float(cmd.level_setpoint),
+        "feedwater_manual": _plain_float(cmd.feedwater_manual),
         # Why the simulation halted at the edge of the model, or None.
-        "model_limit": cmd.model_limit,
+        "model_limit": None if cmd.model_limit is None else str(cmd.model_limit),
     }
 
 
@@ -227,15 +298,39 @@ class _CommandState:
         unexpected step failure instead starts with ``SIM_ERROR_PREFIX``.
         While set, the engine holds the last valid state, ``resume`` is
         refused, and only ``reset()`` clears it.
+    turbine_load_demand : float
+        Operator turbine-admission demand [0..1]. The turbine governor ramps
+        actual admission toward it at 5 %/min unless a trip is active.
+    turbine_trip : bool
+        Operator turbine-trip latch. The effective trip reported in telemetry
+        also includes the reactor-trip P-4 interlock (`scram`).
+    rod_auto : bool
+        True when the load-dependent Tavg controller drives the control bank;
+        False when `rod_command` is passed through manually.
+    level_setpoint : float
+        Steam-generator collapsed liquid level setpoint [0..1].
+    feedwater_manual : float or None
+        Manual feedwater demand as a fraction of maximum actuator flow [0..1],
+        or None for automatic three-element level control.
     """
 
-    def __init__(self, P_setpoint_default: float) -> None:
+    def __init__(
+        self,
+        P_setpoint_default: float,
+        turbine_load_default: float,
+        level_setpoint_default: float,
+    ) -> None:
         self.rod_command: float = _DESIGN_ROD_COMMAND
         self.scrammed: bool = False
         self.P_setpoint: float = P_setpoint_default
         self.speed: float = 1.0
         self.running: bool = True  # True = not paused
         self.model_limit: str | None = None
+        self.turbine_load_demand: float = turbine_load_default
+        self.turbine_trip: bool = False
+        self.rod_auto: bool = False
+        self.level_setpoint: float = level_setpoint_default
+        self.feedwater_manual: float | None = None
 
 
 class SimRuntime:
@@ -249,7 +344,9 @@ class SimRuntime:
        time by ``dt * speed`` where ``dt = 1 / cadence_hz``.
     3. Publishes telemetry frames to all subscribed asyncio queues.
     4. Accepts command changes (rod position, scram, pressure setpoint,
-       speed) through plain setter methods or ``handle_command``.
+       speed, turbine admission/trip, rod auto/manual mode, SG level
+       setpoint and feedwater mode) through plain setter methods or
+       ``handle_command``.
 
     Lifecycle
     ---------
@@ -301,8 +398,14 @@ class SimRuntime:
     Telemetry frame keys: ``t``, ``power_thermal``, ``T_hot``, ``T_cold``,
     ``T_avg``, ``T_fuel``, ``rod_position``, ``P_primary_Pa``,
     ``P_primary_MPa``, ``Q_sg``, ``rho_rod``, ``rho_doppler``,
-    ``rho_moderator``, ``rho_total``, ``running``, ``speed``, ``scrammed``,
-    ``rod_command``, ``model_limit``.
+    ``rho_moderator``, ``rho_total``, ``P_steam_Pa``, ``P_steam_MPa``,
+    ``T_secondary``, ``level_sg``, ``time_to_level_floor_s``, ``m_steam``,
+    ``m_dump``, ``P_electric``, ``turbine_load``, ``T_ref``,
+    ``turbine_trip_active``, ``m_fw``, ``m_fw_max``, ``m_fw_demand``,
+    ``fw_saturated``, ``rod_demand``, ``rod_auto_acting``, ``running``,
+    ``speed``, ``scrammed``, ``rod_command``, ``turbine_load_demand``,
+    ``turbine_trip``, ``rod_auto``, ``level_setpoint``,
+    ``feedwater_manual`` and ``model_limit``.
 
     Model limit
     -----------
@@ -319,7 +422,11 @@ class SimRuntime:
         self._dt = 1.0 / cadence_hz  # wall-clock seconds between steps [s]
 
         # Mutable command state (no lock needed; see "Concurrency" above).
-        self._cmd = _CommandState(P_setpoint_default=PressurizerControllerParams().P_setpoint_default)
+        self._cmd = _CommandState(
+            P_setpoint_default=PressurizerControllerParams().P_setpoint_default,
+            turbine_load_default=TurbineParams().load_initial,
+            level_setpoint_default=FeedwaterControllerParams().level_setpoint_default,
+        )
 
         # Serialises start/stop/reset, the only operations that await.
         self._lifecycle_lock = asyncio.Lock()
@@ -350,15 +457,22 @@ class SimRuntime:
         """Build a fresh design-default plant with the current commands.
 
         Called once at construction and again by ``reset()`` to rebuild
-        the engine from t = 0. Only the operator's rod command and pressure
-        setpoint carry over, as the externals' defaults.
+        the engine from t = 0. The operator's rod command, pressure setpoint,
+        turbine-admission demand and rod-control mode carry over as externals'
+        defaults; level setpoint and feedwater mode are still passed on every
+        step.
 
         Returns
         -------
         SimEngine
             Finalized engine at t = 0.
         """
-        return build_standard_plant(rod_command=self._cmd.rod_command, P_setpoint=self._cmd.P_setpoint)
+        return build_standard_plant(
+            rod_command=self._cmd.rod_command,
+            P_setpoint=self._cmd.P_setpoint,
+            turbine_load=self._cmd.turbine_load_demand,
+            rod_auto=self._cmd.rod_auto,
+        )
 
     async def _step_loop(self) -> None:
         """Main background loop — steps the engine at ``cadence_hz`` Hz.
@@ -413,6 +527,11 @@ class SimRuntime:
                         # heater_manual and spray_manual left at engine defaults (None).
                         heater_manual=None,
                         spray_manual=None,
+                        turbine_load=cmd.turbine_load_demand,
+                        turbine_trip=cmd.turbine_trip,
+                        rod_auto=cmd.rod_auto,
+                        level_setpoint=cmd.level_setpoint,
+                        feedwater_manual=cmd.feedwater_manual,
                     )
                     check_snapshot(snap)
                 except Exception as err:
@@ -548,16 +667,18 @@ class SimRuntime:
             await self._stop_task()
 
     async def reset(self) -> None:
-        """Rebuild the plant at t = 0 and return the operator's rods to 50 %.
+        """Rebuild the plant at t = 0 and reset transient command latches.
 
         The physical state (temperatures, neutron population, pressurizer
-        inventory, rod positions) returns to its initial conditions, and so
-        do the rod commands: ``rod_command`` goes back to its initial 0.5
-        and the SCRAM latch is cleared. ``P_setpoint`` and ``speed`` are
-        kept, and so is a pause the operator chose. A model-limit halt is
-        cleared and the simulation runs again, since the halt was the only
-        reason it stopped. The WebSocket ``reset`` command calls this
-        method, so both behave the same way.
+        inventory, SG inventory, turbine admission, rod positions) is rebuilt
+        at t = 0 using the kept admission demand and rod-control mode.
+        ``rod_command`` goes back to its initial 0.5;
+        SCRAM, the operator turbine-trip latch and manual feedwater are
+        cleared. ``P_setpoint``, ``speed``, ``turbine_load_demand``,
+        ``rod_auto`` and ``level_setpoint`` are kept, and so is a pause the
+        operator chose. A model-limit halt is cleared and the simulation runs
+        again, since the halt was the only reason it stopped. The WebSocket
+        ``reset`` command calls this method, so both behave the same way.
 
         One frame at t = 0 is published, so every client sees the rollback
         even while paused.
@@ -578,6 +699,8 @@ class SimRuntime:
             # applied after the reset instead of being overwritten by it.
             self._cmd.rod_command = _DESIGN_ROD_COMMAND
             self._cmd.scrammed = False
+            self._cmd.turbine_trip = False
+            self._cmd.feedwater_manual = None
             await self._stop_task()
 
             if self._cmd.model_limit is not None:
@@ -681,7 +804,7 @@ class SimRuntime:
         self._command_state_changed()
 
     def reset_scram(self) -> None:
-        """Clear the SCRAM latch — returns the control bank to the operator.
+        """Clear the SCRAM latch and require explicit turbine re-admission.
 
         Only the control bank comes back: it moves toward ``rod_command``
         at normal drive speed. The shutdown bank stays inserted, so the
@@ -689,13 +812,20 @@ class SimRuntime:
         stays below about −4,300 pcm even with the control bank fully
         withdrawn (+600 pcm) and the plant cooled to the secondary
         temperature (feedback up to about +1,480 pcm), against the shutdown
-        bank's −6,400 pcm (see ``RodParams.rho_shutdown_worth``). Returning to power requires a full simulation reset
-        (``reset()``); the procedure-driven reactor startup that would
-        withdraw the shutdown banks in a real plant is not modeled. In the
-        simulator clearing the latch is unconditional (no interlock logic
-        is modeled).
+        bank's −6,400 pcm (see ``RodParams.rho_shutdown_worth``).
+        Returning to power requires a full simulation reset (``reset()``);
+        the procedure-driven reactor startup that would withdraw the
+        shutdown banks in a real plant is not modeled. In the simulator
+        clearing the latch is unconditional (no interlock logic is
+        modeled).
+
+        Clearing SCRAM also sets ``turbine_load_demand`` to zero. A SCRAM
+        trips the turbine through the P-4 interlock, and resetting that trip
+        must not silently re-open the admission valves to an old demand;
+        re-admission is an explicit operator action.
         """
         self._cmd.scrammed = False
+        self._cmd.turbine_load_demand = 0.0
         self._command_state_changed()
 
     def set_speed(self, x: float) -> None:
@@ -736,6 +866,86 @@ class SimRuntime:
         self._cmd.P_setpoint = float(p)
         # The setpoint is not a frame field, so this publishes nothing; the
         # call keeps every setter on the same path.
+        self._command_state_changed()
+
+    def set_turbine_load(self, v: float) -> None:
+        """Set turbine admission demand.
+
+        Parameters
+        ----------
+        v : float
+            Turbine stop/governor-valve admission demand [0..1]. The turbine
+            component ramps actual admission toward this demand at 5 %/min.
+        """
+        self._cmd.turbine_load_demand = float(v)
+        self._command_state_changed()
+
+    def trip_turbine(self) -> None:
+        """Set the operator turbine-trip latch.
+
+        The turbine component closes admission whenever this latch is true
+        or SCRAM is active through the P-4 reactor-trip interlock. The
+        command latch records the operator trip cause; the telemetry key
+        ``turbine_trip_active`` reports the effective trip status.
+        """
+        self._cmd.turbine_trip = True
+        self._command_state_changed()
+
+    def reset_turbine_trip(self) -> None:
+        """Clear the operator turbine-trip latch and zero admission demand.
+
+        Resetting the trip does not restore the previous admission demand:
+        ``turbine_load_demand`` is set to 0 so re-admission is an explicit
+        operator action, matching the M3 operator-review requirement.
+        """
+        self._cmd.turbine_trip = False
+        self._cmd.turbine_load_demand = 0.0
+        self._command_state_changed()
+
+    def set_rod_auto(self, enabled: bool) -> None:
+        """Switch between automatic Tavg rod control and manual rod command.
+
+        Parameters
+        ----------
+        enabled : bool
+            True enables the automatic Tavg controller. False returns control
+            to the manual ``rod_command``.
+
+        Notes
+        -----
+        On an AUTO→MANUAL transfer, ``rod_command`` is synchronized to the
+        actual control-bank position from the latest accepted frame. Without
+        that bumpless transfer, a stale manual command would immediately
+        drive the bank after automatic control had moved it.
+        """
+        enabled = bool(enabled)
+        if self._cmd.rod_auto and not enabled:
+            self._cmd.rod_command = float(self._latest_frame["rod_position"])
+        self._cmd.rod_auto = enabled
+        self._command_state_changed()
+
+    def set_level_setpoint(self, v: float) -> None:
+        """Set the steam-generator collapsed-level setpoint.
+
+        Parameters
+        ----------
+        v : float
+            Desired SG collapsed liquid fraction [0.35..0.90]. This operator
+            band stays inside the model validity limits at 0.30 and 0.95.
+        """
+        self._cmd.level_setpoint = float(v)
+        self._command_state_changed()
+
+    def set_feedwater_manual(self, v: float | None) -> None:
+        """Set or clear manual feedwater demand.
+
+        Parameters
+        ----------
+        v : float or None
+            Manual feedwater demand as a fraction of maximum feedwater flow
+            [0..1], or ``None`` to return to automatic level control.
+        """
+        self._cmd.feedwater_manual = None if v is None else float(v)
         self._command_state_changed()
 
     # ------------------------------------------------------------------
@@ -805,8 +1015,9 @@ class SimRuntime:
         scram
             No extra fields.  Drops both rod banks (see ``scram()``).
         reset_scram
-            No extra fields.  Clears the scram latch, returning the control
-            bank to the operator (see ``reset_scram()``).
+            No extra fields.  Clears the scram latch, returns the control
+            bank to the operator, and sets turbine admission demand to 0
+            (see ``reset_scram()``).
         pause
             No extra fields.  Suspends engine stepping (wall-clock loop keeps running).
         resume
@@ -815,12 +1026,28 @@ class SimRuntime:
             ``model_limit`` in the frame); a ``reset`` is required.
         reset
             No extra fields.  Calls ``reset()``: rebuilds the plant at
-            t = 0, returns ``rod_command`` to 0.5 and clears the scram
-            latch, and keeps ``P_setpoint`` and ``speed``.
+            t = 0, returns ``rod_command`` to 0.5, clears the SCRAM and
+            turbine-trip latches and manual feedwater, and keeps
+            ``P_setpoint``, ``speed``, ``turbine_load_demand``,
+            ``rod_auto`` and ``level_setpoint``.
         set_speed
             ``value: float`` — must be one of ``{1, 2, 5, 10}``.
         set_pressure_setpoint
             ``value: float`` [Pa] — must be in ``[10e6, 20e6]``.
+        set_turbine_load
+            ``value: float`` in ``[0, 1]``. Sets turbine admission demand.
+        turbine_trip
+            No extra fields. Sets the operator turbine-trip latch.
+        reset_turbine_trip
+            No extra fields. Clears the latch and sets turbine admission
+            demand to 0, so re-admission is explicit.
+        set_rod_auto
+            ``value: bool``. Enables/disables automatic Tavg rod control;
+            AUTO→MANUAL synchronizes ``rod_command`` to actual bank position.
+        set_level_setpoint
+            ``value: float`` in ``[0.35, 0.90]``.
+        set_feedwater_manual
+            ``value: float`` in ``[0, 1]`` or ``null`` for automatic control.
 
         Parameters
         ----------
@@ -847,10 +1074,9 @@ class SimRuntime:
 
         if cmd_type == "set_rod_command":
             # Validate: rod command must be a number in [0, 1].
-            value = msg.get("value")
-            if not _is_number(value):
-                return {"type": "error", "detail": "set_rod_command requires a numeric 'value'"}
-            value = float(value)
+            value, error = _command_number(msg, cmd_type)
+            if error is not None:
+                return error
             if not (0.0 <= value <= 1.0):
                 return {
                     "type": "error",
@@ -865,6 +1091,63 @@ class SimRuntime:
 
         elif cmd_type == "reset_scram":
             self.reset_scram()
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "set_turbine_load":
+            value, error = _command_number(msg, cmd_type)
+            if error is not None:
+                return error
+            if not (0.0 <= value <= 1.0):
+                return {
+                    "type": "error",
+                    "detail": f"set_turbine_load value {value!r} is out of range [0, 1]",
+                }
+            self.set_turbine_load(value)
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "turbine_trip":
+            self.trip_turbine()
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "reset_turbine_trip":
+            self.reset_turbine_trip()
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "set_rod_auto":
+            value = msg.get("value")
+            if not isinstance(value, bool):
+                return {"type": "error", "detail": "set_rod_auto requires a JSON boolean 'value'"}
+            self.set_rod_auto(value)
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "set_level_setpoint":
+            value, error = _command_number(msg, cmd_type)
+            if error is not None:
+                return error
+            if not (0.35 <= value <= 0.90):
+                return {
+                    "type": "error",
+                    "detail": f"set_level_setpoint value {value!r} is out of range [0.35, 0.90]",
+                }
+            self.set_level_setpoint(value)
+            return {"type": "ack", "command": cmd_type}
+
+        elif cmd_type == "set_feedwater_manual":
+            if "value" not in msg:
+                return {"type": "error", "detail": "set_feedwater_manual requires 'value' (number or null)"}
+            value = msg["value"]
+            if value is None:
+                self.set_feedwater_manual(None)
+                return {"type": "ack", "command": cmd_type}
+            if not _is_number(value):
+                return {"type": "error", "detail": "set_feedwater_manual requires a finite numeric 'value' or null"}
+            value = float(value)
+            if not (0.0 <= value <= 1.0):
+                return {
+                    "type": "error",
+                    "detail": f"set_feedwater_manual value {value!r} is out of range [0, 1]",
+                }
+            self.set_feedwater_manual(value)
             return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "pause":
@@ -890,9 +1173,9 @@ class SimRuntime:
             return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "set_speed":
-            value = msg.get("value")
-            if not _is_number(value):
-                return {"type": "error", "detail": "set_speed requires a numeric 'value'"}
+            value, error = _command_number(msg, cmd_type)
+            if error is not None:
+                return error
             try:
                 self.set_speed(value)
             except ValueError as err:
@@ -901,13 +1184,9 @@ class SimRuntime:
 
         elif cmd_type == "set_pressure_setpoint":
             # Validate: must be within [10 MPa, 20 MPa] = [10e6, 20e6] Pa.
-            value = msg.get("value")
-            if not _is_number(value):
-                return {
-                    "type": "error",
-                    "detail": "set_pressure_setpoint requires a numeric 'value'",
-                }
-            value = float(value)
+            value, error = _command_number(msg, cmd_type)
+            if error is not None:
+                return error
             if not (_P_MIN_PA <= value <= _P_MAX_PA):
                 return {
                     "type": "error",
