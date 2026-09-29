@@ -25,6 +25,8 @@ export interface ReadoutProps {
   band?: Band
   /** Whether to append tooltip.units after the value. */
   showUnits?: boolean
+  /** Stack the value below the label for long readouts that need full width. */
+  stackValue?: boolean
   /** Popover alignment; 'end' opens leftward from the right edge. */
   align?: 'start' | 'end'
   'data-testid'?: string
@@ -36,15 +38,31 @@ export const InfoRow: FC<ReadoutProps> = ({
   secondary,
   band = 'green',
   showUnits = true,
+  stackValue = false,
   align = 'start',
   'data-testid': testId,
 }) => {
   const ref = useRef<HTMLDivElement>(null)
+  const valueBlock = (
+    <div className="flex shrink-0 items-baseline justify-end gap-2 whitespace-nowrap tabular-nums">
+      <span className={`font-mono text-[13px] ${ROW_BAND[band]}`}>
+        <span data-testid={testId ? `${testId}-value` : undefined}>{value}</span>
+        {showUnits && tooltip.units && value !== EMPTY_VALUE && (
+          <span className="ml-1 font-sans text-[11px] text-ink-2">{tooltip.units}</span>
+        )}
+      </span>
+    </div>
+  )
+
   return (
     <div
       ref={ref}
       data-testid={testId}
-      className="grid min-h-[40px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-line py-1.5 first:border-t-0"
+      className={
+        stackValue
+          ? 'grid min-h-[50px] grid-cols-1 gap-1 border-t border-line py-1.5 first:border-t-0'
+          : 'grid min-h-[40px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-line py-1.5 first:border-t-0'
+      }
     >
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
@@ -53,14 +71,7 @@ export const InfoRow: FC<ReadoutProps> = ({
         </div>
         {secondary && <div className="mt-0.5 text-[10.5px] leading-tight text-ink-3">{secondary}</div>}
       </div>
-      <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap tabular-nums">
-        <span className={`font-mono text-[13px] ${ROW_BAND[band]}`}>
-          <span data-testid={testId ? `${testId}-value` : undefined}>{value}</span>
-          {showUnits && tooltip.units && value !== EMPTY_VALUE && (
-            <span className="ml-1 font-sans text-[11px] text-ink-2">{tooltip.units}</span>
-          )}
-        </span>
-      </div>
+      {valueBlock}
     </div>
   )
 }

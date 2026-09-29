@@ -167,6 +167,16 @@ const PlantMimic: FC = () => {
           className="mx-auto block h-full w-full"
           fontFamily="'IBM Plex Mono', ui-monospace, monospace"
         >
+          {shutdownInserted && (
+            <>
+              <text x="14" y="22" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+                shutdown bank inserted
+              </text>
+              <text x="14" y="40" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+                Reset Simulation required
+              </text>
+            </>
+          )}
           {/* hot leg: core outlet to steam generator primary tubes */}
           <path
             d="M168 418 H184 V220 H188"
@@ -386,24 +396,6 @@ const PlantMimic: FC = () => {
           >
             control bank {formatNumber(rodWithdrawnFraction * 100, 0)} % withdrawn
           </text>
-          {shutdownInserted && (
-            <>
-              <text x="113" y="632" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
-                shutdown bank inserted
-              </text>
-              <text
-                x="113"
-                y="650"
-                textAnchor="middle"
-                data-font-role="status"
-                fontSize="12"
-                fill="var(--warn-ink)"
-                letterSpacing="0.2"
-              >
-                Reset Simulation required
-              </text>
-            </>
-          )}
 
           {/* pump on the cold leg */}
           <circle cx="278" cy="618" r="15" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />

@@ -147,10 +147,10 @@ describe('deriveRodModeStatus', () => {
         }),
       ),
     ).toMatchObject({
-      kind: 'auto-suspended',
+      kind: 'pending',
       label: 'AUTO INACTIVE',
       detail: 'AUTO selected; inactive; the queued trip inhibits it on resume.',
-      pending: false,
+      pending: true,
     })
   })
 

@@ -42,9 +42,15 @@ export interface PlantEvent {
   text: string
   level: EventLevel
   category: EventCategory
+  /** Same-key command events replace the previous one when consecutive. */
+  coalesceKey?: CommandCoalesceKey
 }
 
-type CommandCoalesceKey = 'rod-command' | 'turbine-admission-demand' | 'level-setpoint' | 'feedwater-manual-demand'
+export type CommandCoalesceKey =
+  | 'rod-command'
+  | 'turbine-admission-demand'
+  | 'level-setpoint'
+  | 'feedwater-manual-demand'
 
 /** Explicit state carried by the store between pure event detections. */
 export interface EventTracker {
@@ -58,8 +64,6 @@ export interface EventTracker {
   feedwaterSaturationCandidate: FeedwaterSaturation
   /** Simulation time when the candidate saturation state first appeared [s]. */
   feedwaterSaturationCandidateSince: number | null
-  /** Last emitted time for routine command events that should not flood the log. */
-  commandCoalesceTimes: Partial<Record<CommandCoalesceKey, number>>
 }
 
 /** Result of pure event detection: new events plus the next tracker. */
@@ -76,9 +80,6 @@ const FULLY_IN = 0.005
 
 /** Dwell required before feedwater saturation enter/leave events are logged [s]. */
 export const FEEDWATER_SATURATION_DWELL_S = 0.3
-
-/** Simulated-time window within which repeated demand changes are one command event [s]. */
-export const COMMAND_COALESCE_WINDOW_S = 0.75
 
 const BAND_LEVEL: Record<Band, EventLevel> = { green: 'info', amber: 'warn', red: 'alarm' }
 
@@ -128,7 +129,6 @@ export function initialEventTracker(frame: Frame | null = null): EventTracker {
     feedwaterSaturation: frame === null ? null : deriveFeedwaterModeStatus(frame).saturation,
     feedwaterSaturationCandidate: null,
     feedwaterSaturationCandidateSince: null,
-    commandCoalesceTimes: {},
   }
 }
 
@@ -165,33 +165,6 @@ function pendingSuffix(pending: boolean): string {
 
 function turbineAdmissionPending(frame: Frame): boolean {
   return !frame.running && Math.abs(frame.turbine_load_demand - frame.turbine_load_demand_effective) > 1e-6
-}
-
-function commandEventShouldEmit(tracker: EventTracker, key: CommandCoalesceKey, t: number): boolean {
-  const last = tracker.commandCoalesceTimes[key]
-  return last === undefined || t - last > COMMAND_COALESCE_WINDOW_S
-}
-
-function recordCommandEventTime(tracker: EventTracker, key: CommandCoalesceKey, t: number): EventTracker {
-  return {
-    ...tracker,
-    commandCoalesceTimes: {
-      ...tracker.commandCoalesceTimes,
-      [key]: t,
-    },
-  }
-}
-
-function pushCoalescedCommandEvent(
-  tracker: EventTracker,
-  key: CommandCoalesceKey,
-  t: number,
-  out: PlantEvent[],
-  event: PlantEvent,
-): EventTracker {
-  const nextTracker = recordCommandEventTime(tracker, key, t)
-  if (commandEventShouldEmit(tracker, key, t)) out.push(event)
-  return nextTracker
 }
 
 function updateFeedwaterSaturationTracker(
@@ -232,6 +205,37 @@ function updateFeedwaterSaturationTracker(
 }
 
 /**
+ * Append new events, replacing only consecutive same-kind routine commands.
+ *
+ * Parameters
+ * ----------
+ * existing:
+ *   Retained event history, oldest first.
+ * fresh:
+ *   Newly detected events for the current frame.
+ *
+ * Returns
+ * -------
+ * PlantEvent[]
+ *   Event history where consecutive demand changes with the same
+ *   `coalesceKey` keep only the final value. Distinct actions, mode
+ *   transfers, alarms and commands separated by any other event are never
+ *   merged.
+ */
+export function mergeCoalescedEvents(existing: PlantEvent[], fresh: PlantEvent[]): PlantEvent[] {
+  const merged = [...existing]
+  for (const event of fresh) {
+    const last = merged[merged.length - 1]
+    if (event.coalesceKey !== undefined && last?.coalesceKey === event.coalesceKey) {
+      merged[merged.length - 1] = event
+    } else {
+      merged.push(event)
+    }
+  }
+  return merged
+}
+
+/**
  * Events revealed by `next` following `prev`, plus updated hysteresis state.
  *
  * Parameters
@@ -255,11 +259,17 @@ export function detectEvents(
   next: Frame,
   tracker: EventTracker = initialEventTracker(prev),
 ): EventDetection {
-  const at = (text: string, level: EventLevel, category: EventCategory = level === 'alarm' ? 'alarm' : 'plant'): PlantEvent => ({
+  const at = (
+    text: string,
+    level: EventLevel,
+    category: EventCategory = level === 'alarm' ? 'alarm' : 'plant',
+    coalesceKey?: CommandCoalesceKey,
+  ): PlantEvent => ({
     t: next.t,
     text,
     level,
     category,
+    coalesceKey,
   })
 
   if (prev === null) return { events: [at('Telemetry link established', 'info')], tracker: initialEventTracker(next) }
@@ -314,36 +324,28 @@ export function detectEvents(
   if (!prev.running && next.running) out.push(at('Resumed', 'info', 'command'))
   if (prev.speed !== next.speed) out.push(at(`Speed set to ${next.speed}×`, 'info', 'command'))
   if (prev.rod_command !== next.rod_command) {
-    nextTracker = pushCoalescedCommandEvent(
-      nextTracker,
-      'rod-command',
-      next.t,
-      out,
-      at(`Rod command set to ${formatNumber(next.rod_command * 100, 0)} %`, 'info', 'command'),
-    )
+    out.push(at(`Rod command set to ${formatNumber(next.rod_command * 100, 0)} %`, 'info', 'command', 'rod-command'))
   }
   if (prev.turbine_load_demand !== next.turbine_load_demand) {
-    nextTracker = pushCoalescedCommandEvent(
-      nextTracker,
-      'turbine-admission-demand',
-      next.t,
-      out,
+    out.push(
       at(
         `Turbine admission demand set to ${formatNumber(next.turbine_load_demand * 100, 0)} %${pendingSuffix(
           turbineAdmissionPending(next),
         )}`,
         'info',
         'command',
+        'turbine-admission-demand',
       ),
     )
   }
   if (prev.level_setpoint !== next.level_setpoint) {
-    nextTracker = pushCoalescedCommandEvent(
-      nextTracker,
-      'level-setpoint',
-      next.t,
-      out,
-      at(`SG level setpoint set to ${formatNumber(next.level_setpoint * 100, 0)} %`, 'info', 'command'),
+    out.push(
+      at(
+        `SG level setpoint set to ${formatNumber(next.level_setpoint * 100, 0)} %`,
+        'info',
+        'command',
+        'level-setpoint',
+      ),
     )
   }
   if (!prev.rod_auto && next.rod_auto) {
@@ -368,11 +370,7 @@ export function detectEvents(
   nextTracker.rodAutoActing = next.rod_auto_acting
 
   if (prev.feedwater_manual === null && next.feedwater_manual !== null) {
-    nextTracker = pushCoalescedCommandEvent(
-      nextTracker,
-      'feedwater-manual-demand',
-      next.t,
-      out,
+    out.push(
       at(
         `Feedwater set to MANUAL; ${feedwaterManualDemandText(next.feedwater_manual, next.m_fw_max)}${pendingSuffix(
           feedwaterStatus.pending,
@@ -390,17 +388,14 @@ export function detectEvents(
     next.feedwater_manual !== null &&
     prev.feedwater_manual !== next.feedwater_manual
   ) {
-    nextTracker = pushCoalescedCommandEvent(
-      nextTracker,
-      'feedwater-manual-demand',
-      next.t,
-      out,
+    out.push(
       at(
         `Feedwater manual demand set to ${feedwaterManualDemandValueText(next.feedwater_manual, next.m_fw_max)}${pendingSuffix(
           feedwaterStatus.pending,
         )}`,
         'info',
         'command',
+        'feedwater-manual-demand',
       ),
     )
   }

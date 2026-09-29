@@ -13,7 +13,14 @@
 
 import { create } from 'zustand';
 import type { AppErrorSource, Command, ConnectionStatus, Frame } from '../types/telemetry';
-import { EVENTS_CAP, type EventTracker, type PlantEvent, detectEvents, initialEventTracker } from './events';
+import {
+  EVENTS_CAP,
+  type EventTracker,
+  type PlantEvent,
+  detectEvents,
+  initialEventTracker,
+  mergeCoalescedEvents,
+} from './events';
 
 /**
  * Simulated time kept for chart history [s].
@@ -176,7 +183,7 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
       const fresh = detectEvents(state.eventBaseline, frame, state.eventTracker);
       let events = state.events;
       if (timeRolledBack) events = fresh.events;
-      else if (fresh.events.length > 0) events = [...state.events, ...fresh.events].slice(-EVENTS_CAP);
+      else if (fresh.events.length > 0) events = mergeCoalescedEvents(state.events, fresh.events).slice(-EVENTS_CAP);
       return { latest: frame, history, events, eventTracker: fresh.tracker, eventBaseline: frame };
     }),
 

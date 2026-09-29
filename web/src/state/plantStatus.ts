@@ -362,10 +362,10 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
   if (!frame.running && frame.rod_auto && !frame.rod_auto_acting) {
     if (frame.turbine_trip && tripStatus.pending) {
       return {
-        kind: 'auto-suspended',
+        kind: 'pending',
         label: 'AUTO INACTIVE',
         detail: 'AUTO selected; inactive; the queued trip inhibits it on resume.',
-        pending: false,
+        pending: true,
         effectiveActing: false,
         tone: 'warn',
       }
@@ -373,10 +373,10 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
 
     if (frame.scrammed && tripStatus.pending) {
       return {
-        kind: 'auto-suspended',
+        kind: 'pending',
         label: 'AUTO INACTIVE',
         detail: 'AUTO selected; inactive; the queued SCRAM inhibits it on resume.',
-        pending: false,
+        pending: true,
         effectiveActing: false,
         tone: 'warn',
       }

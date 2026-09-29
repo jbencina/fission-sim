@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { Frame } from '../types/telemetry'
 import { makeFrame } from '../test/makeFrame'
-import { EVENT_CATEGORIES, type EventTracker, detectEvents, initialEventTracker } from './events'
+import {
+  EVENT_CATEGORIES,
+  type EventTracker,
+  type PlantEvent,
+  detectEvents,
+  initialEventTracker,
+  mergeCoalescedEvents,
+} from './events'
 
 function detectionTexts(prev: Frame | null, next: Frame, tracker?: EventTracker): string[] {
   return detectEvents(prev, next, tracker).events.map((e) => `${e.level}:${e.text}`)
@@ -22,6 +29,19 @@ function runFrames(frames: Frame[]): { texts: string[]; tracker: EventTracker } 
     prev = frame
   }
   return { texts, tracker }
+}
+
+function runMergedFrames(frames: Frame[]): { texts: string[]; tracker: EventTracker } {
+  let prev: Frame | null = null
+  let tracker = initialEventTracker()
+  let events: PlantEvent[] = []
+  for (const frame of frames) {
+    const result = detectEvents(prev, frame, tracker)
+    events = mergeCoalescedEvents(events, result.events)
+    tracker = result.tracker
+    prev = frame
+  }
+  return { texts: events.map((event) => `${event.level}:${event.text}`), tracker }
 }
 
 describe('detectEvents', () => {
@@ -239,6 +259,27 @@ describe('detectEvents', () => {
     ).toEqual(['info:Rod control set to MANUAL (pending — applies when the simulation runs)'])
   })
 
+  it('labels paused MANUAL to queued-trip AUTO as pending', () => {
+    expect(
+      detectionTexts(
+        makeFrame(1, {
+          running: false,
+          rod_auto: false,
+          rod_auto_acting: false,
+          turbine_trip: true,
+          turbine_trip_active: false,
+        }),
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: false,
+          turbine_trip: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toEqual(['info:Rod control set to AUTO (pending — applies when the simulation runs)'])
+  })
+
   it('does not mark paused AUTO during SCRAM as pending and does not duplicate suspension on resume', () => {
     expect(
       detectionTexts(
@@ -374,12 +415,27 @@ describe('detectEvents', () => {
       makeFrame(0.1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }),
       makeFrame(0.2, { turbine_load_demand: 0.98, turbine_load_demand_effective: 0.98 }),
       makeFrame(0.3, { turbine_load_demand: 0.97, turbine_load_demand_effective: 0.97 }),
-      makeFrame(1.2, { turbine_load_demand: 0.9, turbine_load_demand_effective: 0.9 }),
     ]
-    expect(runFrames(frames).texts).toEqual([
+    expect(runMergedFrames(frames).texts).toEqual([
       'info:Telemetry link established',
-      'info:Turbine admission demand set to 99 %',
-      'info:Turbine admission demand set to 90 %',
+      'info:Turbine admission demand set to 97 %',
+    ])
+  })
+
+  it('keeps distinct paused feedwater actions while coalescing same-kind manual demand changes', () => {
+    const frames = [
+      makeFrame(1, { running: false, feedwater_manual: null, feedwater_manual_effective: null }),
+      makeFrame(1, { running: false, feedwater_manual: 0.8, feedwater_manual_effective: null }),
+      makeFrame(1, { running: false, feedwater_manual: 0, feedwater_manual_effective: null }),
+      makeFrame(1, { running: false, feedwater_manual: null, feedwater_manual_effective: null }),
+      makeFrame(1, { running: false, feedwater_manual: 0.4, feedwater_manual_effective: null }),
+    ]
+    expect(runMergedFrames(frames).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Feedwater set to MANUAL; manual demand 80 % max (1,602 kg/s) (pending — applies when the simulation runs)',
+      'info:Feedwater manual demand set to 0 % max (0 kg/s) (pending — applies when the simulation runs)',
+      'info:Feedwater set to AUTO',
+      'info:Feedwater set to MANUAL; manual demand 40 % max (801 kg/s) (pending — applies when the simulation runs)',
     ])
   })
 

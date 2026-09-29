@@ -89,6 +89,34 @@ async function waitForSchematic(page: Page, pattern: RegExp, timeout = 20_000): 
   await expect.poll(async () => (await schematic.textContent()) ?? '', { timeout, intervals: [250, 500, 1_000] }).toMatch(pattern)
 }
 
+async function waitForPzrLevelAtLeast(page: Page, level: number, timeout = 60_000): Promise<void> {
+  await page.evaluate(
+    ({ level, timeout }) =>
+      new Promise<void>((resolve, reject) => {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const ws = new WebSocket(`${protocol}//${window.location.host}/ws/telemetry`)
+        const timer = window.setTimeout(() => {
+          ws.close()
+          reject(new Error(`Timed out waiting for pressurizer level >= ${level}`))
+        }, timeout)
+
+        ws.onerror = () => {
+          window.clearTimeout(timer)
+          reject(new Error('WebSocket error waiting for pressurizer level'))
+        }
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data) as { pzr_level?: number }
+          if (typeof data.pzr_level === 'number' && data.pzr_level >= level) {
+            window.clearTimeout(timer)
+            ws.close()
+            resolve()
+          }
+        }
+      }),
+    { level, timeout },
+  )
+}
+
 async function resetToDesign(page: Page): Promise<void> {
   await sendCommand(page, { type: 'reset' })
   await sendCommand(page, { type: 'resume' })
@@ -141,6 +169,24 @@ async function setTripResetPending(page: Page): Promise<void> {
   await sendCommand(page, { type: 'pause' })
   await sendCommand(page, { type: 'reset_turbine_trip' })
   await waitForBody(page, /trip reset pending/i, 20_000)
+  await page.waitForTimeout(300)
+}
+
+async function setScramResetShutdownInserted(page: Page): Promise<void> {
+  await resetToDesign(page)
+  await sendCommand(page, { type: 'set_speed', value: 10 })
+  await sendCommand(page, { type: 'scram' })
+  await waitForBody(page, /SCRAM \(P-4\)|shutdown bank inserted/i, 20_000)
+  await sendCommand(page, { type: 'reset_scram' })
+  await waitForBody(page, /shutdown bank inserted/i, 20_000)
+  await page.waitForTimeout(300)
+}
+
+async function setPressurizerHighLevel(page: Page): Promise<void> {
+  await resetToDesign(page)
+  await sendCommand(page, { type: 'set_speed', value: 10 })
+  await sendCommand(page, { type: 'set_pressure_setpoint', value: 10_000_000 })
+  await waitForPzrLevelAtLeast(page, 0.75)
   await page.waitForTimeout(300)
 }
 
@@ -340,6 +386,8 @@ const scenarios: Scenario[] = [
   { name: 'feedwater-manual', setup: setFeedwaterManual },
   { name: 'trip-pending', setup: setTripPending },
   { name: 'trip-reset-pending', setup: setTripResetPending },
+  { name: 'scram-reset-shutdown-inserted', setup: setScramResetShutdownInserted },
+  { name: 'pressurizer-high-level', setup: setPressurizerHighLevel },
 ]
 
 const viewports: ViewportCase[] = [
@@ -355,6 +403,8 @@ const screenshotNames = new Map<string, string>([
   ['1440:feedwater-manual', 'd6-v5-feedwater-manual-1440.png'],
   ['1440:trip-pending', 'd6-v5-trip-pending-1440.png'],
   ['1440:trip-reset-pending', 'd6-v5-trip-reset-pending-1440.png'],
+  ['1440:scram-reset-shutdown-inserted', 'd12d-fix-scram-reset-shutdown-inserted-1440.png'],
+  ['1440:pressurizer-high-level', 'd12d-fix-pressurizer-high-level-1440.png'],
   ['1024:steady', 'd6-v5-steady-1024.png'],
   ['390:steady', 'd6-v5-steady-390.png'],
 ])

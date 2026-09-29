@@ -250,4 +250,17 @@ describe('events', () => {
       'Telemetry link established',
     ]);
   });
+
+  it('updates consecutive routine demand events to the final value in the store', () => {
+    const { pushFrame } = useTelemetryStore.getState();
+    pushFrame(makeFrame(0, { turbine_load_demand: 1, turbine_load_demand_effective: 1 }));
+    pushFrame(makeFrame(0.1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }));
+    pushFrame(makeFrame(0.2, { turbine_load_demand: 0.98, turbine_load_demand_effective: 0.98 }));
+    pushFrame(makeFrame(0.3, { turbine_load_demand: 0.97, turbine_load_demand_effective: 0.97 }));
+
+    expect(useTelemetryStore.getState().events.map((event) => event.text)).toEqual([
+      'Telemetry link established',
+      'Turbine admission demand set to 97 %',
+    ]);
+  });
 });

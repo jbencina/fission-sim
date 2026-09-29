@@ -172,6 +172,7 @@ const StatusPanel: FC = () => {
           tooltip={TOOLTIPS.time_to_level_floor_s}
           value={levelFloorEstimate.value}
           showUnits={levelFloorEstimate.showUnits}
+          stackValue={latest?.time_to_level_floor_s != null}
           secondary={latest?.time_to_level_floor_s == null ? undefined : 'current-flow estimate'}
         />
       </Group>
