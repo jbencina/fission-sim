@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { makeFrame } from '../test/makeFrame'
-import { criticalityWord, describeLoop, describeSchematicState, describeSecondaryState, turbineTripCause } from './loopState'
+import {
+  criticalityWord,
+  describeLoop,
+  describeSchematicState,
+  describeSecondaryState,
+  turbineTripCause,
+  turbineTripStatus,
+} from './loopState'
 
 describe('criticalityWord', () => {
   it('names the sign of the displayed reactivity', () => {
@@ -59,6 +66,77 @@ describe('turbineTripCause', () => {
   })
 })
 
+describe('turbineTripStatus', () => {
+  it('shows an operator trip selected while paused as pending', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: false,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    expect(turbineTripStatus(f)).toEqual({
+      kind: 'pending-trip',
+      label: 'trip pending — applies when the simulation runs',
+    })
+  })
+
+  it('shows SCRAM selected while paused as a pending turbine trip', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: false,
+      turbine_trip: false,
+      scrammed: true,
+    })
+    expect(turbineTripStatus(f)).toEqual({
+      kind: 'pending-trip',
+      label: 'trip pending — applies when the simulation runs',
+    })
+  })
+
+  it('shows an operator trip reset while paused as pending', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: true,
+      turbine_trip: false,
+      scrammed: false,
+    })
+    expect(turbineTripStatus(f)).toEqual({
+      kind: 'pending-reset',
+      label: 'trip reset pending — applies when the simulation runs',
+    })
+  })
+
+  it('shows SCRAM reset while paused as a pending trip reset', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: true,
+      turbine_trip: false,
+      scrammed: false,
+    })
+    expect(turbineTripStatus(f)).toEqual({
+      kind: 'pending-reset',
+      label: 'trip reset pending — applies when the simulation runs',
+    })
+  })
+
+  it('keeps effective trip causes when running', () => {
+    const operatorTrip = makeFrame(1, {
+      running: true,
+      turbine_trip_active: true,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    const scramTrip = makeFrame(1, {
+      running: true,
+      turbine_trip_active: true,
+      turbine_trip: false,
+      scrammed: true,
+    })
+    expect(turbineTripStatus(operatorTrip)).toEqual({ kind: 'active', label: 'operator trip' })
+    expect(turbineTripStatus(scramTrip)).toEqual({ kind: 'active', label: 'SCRAM (P-4)' })
+  })
+})
+
 describe('describeSecondaryState', () => {
   it('has no secondary phrases at steady full-power design conditions', () => {
     expect(describeSecondaryState(makeFrame())).toEqual([])
@@ -67,6 +145,26 @@ describe('describeSecondaryState', () => {
   it('adds turbine trip, steam dump and low SG level phrases', () => {
     const f = makeFrame(1, { turbine_trip_active: true, m_dump: 25, level_sg: 0.39 })
     expect(describeSecondaryState(f)).toEqual(['turbine tripped', 'steam dump open', 'SG level low'])
+  })
+
+  it('adds pending turbine trip wording while paused', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: false,
+      turbine_trip: true,
+      scrammed: false,
+    })
+    expect(describeSecondaryState(f)).toEqual(['trip pending — applies when the simulation runs'])
+  })
+
+  it('adds pending reset wording while paused', () => {
+    const f = makeFrame(1, {
+      running: false,
+      turbine_trip_active: true,
+      turbine_trip: false,
+      scrammed: false,
+    })
+    expect(describeSecondaryState(f)).toEqual(['trip reset pending — applies when the simulation runs'])
   })
 
   it('adds a high SG level phrase outside the illustrative 40-60 percent band', () => {

@@ -20,6 +20,20 @@ const SG_LEVEL_LOW = 0.4
 /** Illustrative upper edge of the normal SG collapsed-liquid-fraction band [fraction]. */
 const SG_LEVEL_HIGH = 0.6
 
+/** User-facing pending text when a paused trip command has not affected the plant yet. */
+export const TRIP_PENDING = 'trip pending — applies when the simulation runs'
+
+/** User-facing pending text when a paused trip reset has not affected the plant yet. */
+export const TRIP_RESET_PENDING = 'trip reset pending — applies when the simulation runs'
+
+/** Turbine trip state shown by the schematic. */
+export interface TurbineTripStatus {
+  /** Whether the label is an effective trip or a paused command waiting to apply. */
+  kind: 'active' | 'pending-trip' | 'pending-reset'
+  /** Short user-facing label for the cause or pending action. */
+  label: string
+}
+
 /** Word for the sign of the displayed (one-decimal) reactivity in pcm. */
 export function criticalityWord(pcm: number): string {
   if (Math.abs(pcm) < 0.05) return 'critical'
@@ -38,17 +52,31 @@ export function describeLoop(frame: Frame | null): string {
 }
 
 /**
- * Human wording for an effective turbine trip cause.
+ * Turbine trip status, including paused command/effective-state disagreement.
  *
  * The runtime can publish a command latch that disagrees with the last
- * effective turbine state while paused or clearing. The wording mirrors the
- * Phase D P1 rule: operator trip wins, then SCRAM (P-4), then trip clearing.
+ * effective turbine state while paused. The wording mirrors the Phase D P1
+ * rule: show pending while paused, then operator trip, SCRAM (P-4), or trip
+ * clearing when the effective trip is active.
  */
+export function turbineTripStatus(frame: Frame | null): TurbineTripStatus | null {
+  if (frame === null) return null
+  const selectedTrip = frame.turbine_trip || frame.scrammed
+  if (!frame.running && selectedTrip !== frame.turbine_trip_active) {
+    return selectedTrip
+      ? { kind: 'pending-trip', label: TRIP_PENDING }
+      : { kind: 'pending-reset', label: TRIP_RESET_PENDING }
+  }
+  if (!frame.turbine_trip_active) return null
+  if (frame.turbine_trip) return { kind: 'active', label: 'operator trip' }
+  if (frame.scrammed) return { kind: 'active', label: 'SCRAM (P-4)' }
+  return { kind: 'active', label: 'trip clearing' }
+}
+
+/** Human wording for an effective turbine trip cause, excluding pending states. */
 export function turbineTripCause(frame: Frame | null): string | null {
-  if (frame === null || !frame.turbine_trip_active) return null
-  if (frame.turbine_trip) return 'operator trip'
-  if (frame.scrammed) return 'SCRAM (P-4)'
-  return 'trip clearing'
+  const status = turbineTripStatus(frame)
+  return status?.kind === 'active' ? status.label : null
 }
 
 /**
@@ -60,7 +88,9 @@ export function describeSecondaryState(frame: Frame | null): string[] {
   if (frame === null) return []
 
   const phrases: string[] = []
-  if (frame.turbine_trip_active) phrases.push('turbine tripped')
+  const trip = turbineTripStatus(frame)
+  if (trip?.kind === 'active') phrases.push('turbine tripped')
+  if (trip?.kind === 'pending-trip' || trip?.kind === 'pending-reset') phrases.push(trip.label)
   if (frame.m_dump > DUMP_OPEN_KG_PER_S) phrases.push('steam dump open')
   if (frame.level_sg < SG_LEVEL_LOW) {
     phrases.push('SG level low')

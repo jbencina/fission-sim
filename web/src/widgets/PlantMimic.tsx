@@ -13,7 +13,7 @@ import { type FC, useRef } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { InfoTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
-import { describeSchematicState, turbineTripCause } from './loopState'
+import { describeSchematicState, turbineTripStatus } from './loopState'
 import { type Band, getBand } from './thresholds'
 
 const LABEL = { fontSize: 9.5, letterSpacing: 1, fill: 'var(--ink-2)' } as const
@@ -57,8 +57,8 @@ const PlantMimic: FC = () => {
   const sgLevel = latest?.level_sg ?? null
   const sgLevelFraction = Math.min(1, Math.max(0, sgLevel ?? 0.5))
   const sgLevelPercent = sgLevel === null ? null : sgLevel * 100
-  const sgFillHeight = 196 * sgLevelFraction
-  const sgFillY = 62 + (196 - sgFillHeight)
+  const sgFillHeight = 236 * sgLevelFraction
+  const sgFillY = 132 + (236 - sgFillHeight)
   // thresholds.ts is owned by D.5; this local colour mirrors its illustrative 0.40-0.60 band
   // and 0.35-0.90 operating band for the schematic only. These are not trip setpoints.
   const sgLevelInk =
@@ -78,9 +78,16 @@ const PlantMimic: FC = () => {
   const dumpOpen = (mDump ?? 0) > 1
   const mFeedwater = latest?.m_fw ?? null
   const feedwaterManual = latest ? latest.feedwater_manual !== null : false
-  const tripCause = turbineTripCause(latest)
-  const turbineTripped = tripCause !== null
-  const turbineTripSummary = turbineTripped ? `turbine tripped: ${tripCause}` : 'turbine not tripped'
+  const trip = turbineTripStatus(latest)
+  const tripActive = trip?.kind === 'active'
+  const tripPending = trip?.kind === 'pending-trip'
+  const tripResetPending = trip?.kind === 'pending-reset'
+  const valveClosed = tripActive || tripResetPending
+  const turbineStatusSummary = trip
+    ? trip.kind === 'active'
+      ? `turbine tripped: ${trip.label}`
+      : `turbine ${trip.label}`
+    : 'turbine not tripped'
   const dumpSummary = dumpOpen ? `steam dump open at ${formatNumber(mDump, 0)} kilograms per second` : 'steam dump closed'
   const feedwaterSummary = `${feedwaterManual ? 'manual' : 'automatic'} feedwater ${formatNumber(
     mFeedwater,
@@ -96,7 +103,7 @@ const PlantMimic: FC = () => {
     )} MPa. Turbine admission ${formatNumber(admissionPercent, 0)} %, gross electric ${formatNumber(
       electricMW,
       0,
-    )} MW; ${turbineTripSummary}; ${dumpSummary}; ${feedwaterSummary}.`
+    )} MW; ${turbineStatusSummary}; ${dumpSummary}; ${feedwaterSummary}.`
 
   return (
     <section aria-label="Primary and secondary plant schematic" className="flex min-h-0 flex-col lg:h-full">
@@ -109,23 +116,23 @@ const PlantMimic: FC = () => {
       </div>
       <div className="min-h-0 flex-1 px-3 pb-2">
         <svg
-          viewBox="0 0 380 470"
+          viewBox="0 0 360 640"
           role="img"
           aria-label={summary}
-          className="mx-auto block h-full max-h-[440px] w-full lg:max-h-none"
+          className="mx-auto block h-full w-full"
           fontFamily="'IBM Plex Mono', ui-monospace, monospace"
         >
-          {/* cold leg: steam generator bottom, pump, core inlet */}
+          {/* hot leg: core outlet to steam generator primary tubes */}
           <path
-            d="M228 262 V372 H112 V352"
+            d="M112 330 V298 H226 V132"
             fill="none"
             stroke="var(--line-strong)"
             strokeWidth="3"
             strokeLinejoin="round"
           />
-          {/* hot leg: core outlet to steam generator primary tubes */}
+          {/* cold leg: steam generator bottom, pump, core inlet */}
           <path
-            d="M112 232 V212 H228 V80"
+            d="M226 368 V505 H112 V456"
             fill="none"
             stroke="var(--line-strong)"
             strokeWidth="3"
@@ -133,123 +140,144 @@ const PlantMimic: FC = () => {
           />
 
           {/* reactor vessel and core */}
-          <rect x="60" y="232" width="104" height="120" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <rect x="72" y="248" width="80" height="90" fill="none" stroke="var(--line)" strokeWidth="1" />
+          <rect x="56" y="330" width="112" height="126" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <rect x="70" y="348" width="84" height="86" fill="none" stroke="var(--line)" strokeWidth="1" />
           {[0, 1, 2, 3, 4, 5].map((i) => (
-            <rect key={i} x={78 + i * 13} y="248" width="5" height={90 * inserted} fill="var(--series-rod)" />
+            <rect key={i} x={77 + i * 13} y="348" width="5" height={86 * inserted} fill="var(--series-rod)" />
           ))}
-          <text x="112" y="366" textAnchor="middle" {...LABEL}>
+          <text x="112" y="478" textAnchor="middle" {...LABEL}>
             CORE
           </text>
-          <text x="112" y="386" textAnchor="middle" {...VALUE}>
+          <text x="112" y="500" textAnchor="middle" {...VALUE}>
             {formatNumber(powerMW, 0)} <tspan {...UNIT}>MW</tspan>
           </text>
-          <text x="112" y="400" textAnchor="middle" {...UNIT}>
-            fuel {tFuel} K, control bank {formatNumber(inserted * 100, 0)} % in
+          <text x="112" y="516" textAnchor="middle" {...UNIT}>
+            fuel {tFuel} K, rods {formatNumber(inserted * 100, 0)} % in
           </text>
 
           {/* two-sided steam generator: primary tubes inside a secondary shell */}
           <g role="img" aria-label={sgLevelAria}>
             <title>{sgLevelAria}</title>
-            <rect x="194" y="60" width="70" height="200" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-            <rect x="196" y={sgFillY} width="66" height={sgFillHeight} fill={sgLevelInk} opacity="0.16" />
-            <line x1="196" y1={sgFillY} x2="262" y2={sgFillY} stroke={sgLevelInk} strokeWidth="1" />
+            <rect x="186" y="130" width="82" height="240" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+            <rect x="188" y={sgFillY} width="78" height={sgFillHeight} fill={sgLevelInk} opacity="0.16" />
+            <line x1="188" y1={sgFillY} x2="266" y2={sgFillY} stroke={sgLevelInk} strokeWidth="1" />
             <path
-              d="M210 90 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20 M228 90 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20 M246 90 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20 q7 10 0 20 q-7 10 0 20"
+              d="M202 160 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22 M226 160 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22 M250 160 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22 q-7 11 0 22 q7 11 0 22"
               fill="none"
               stroke="var(--line)"
               strokeWidth="1"
             />
           </g>
-          <text x="229" y="46" textAnchor="middle" {...LABEL}>
+          <text x="226" y="105" textAnchor="middle" {...LABEL}>
             STEAM GEN
           </text>
-          <text x="229" y="31" textAnchor="middle" {...VALUE}>
+          <text x="226" y="123" textAnchor="middle" {...VALUE}>
             {formatNumber(pSteamMPa, 2)} <tspan {...UNIT}>MPa steam</tspan>
           </text>
-          <text x="229" y="278" textAnchor="middle" {...VALUE} fill={sgLevelInk}>
+          <text x="226" y="392" textAnchor="middle" {...VALUE} fill={sgLevelInk}>
             SG level {formatNumber(sgLevelPercent, 0)} <tspan fontSize="10">%</tspan>
           </text>
-          <text x="229" y="294" textAnchor="middle" {...UNIT}>
-            collapsed liquid, 4 SGs lumped
-          </text>
-          <text x="229" y="310" textAnchor="middle" {...UNIT}>
-            {formatNumber(sgMW, 0)} MW heat transfer
+          <text x="226" y="412" textAnchor="middle" {...UNIT}>
+            {formatNumber(sgMW, 0)} MW HX
           </text>
 
           {/* steam line, turbine admission and dump branch */}
-          <path d="M264 92 H300" fill="none" stroke="var(--line-strong)" strokeWidth="2" />
+          <path d="M268 164 H292" fill="none" stroke="var(--line-strong)" strokeWidth="2" />
           <path
-            d="M286 92 V40 H366"
+            d="M280 164 V70 H344"
             fill="none"
             stroke={dumpOpen ? 'var(--warn-ink)' : 'var(--line)'}
             strokeWidth={dumpOpen ? '2' : '1'}
             strokeLinejoin="round"
           />
           {dumpOpen && (
-            <text x="366" y="35" textAnchor="end" {...UNIT} fill="var(--warn-ink)">
+            <text x="344" y="62" textAnchor="end" {...UNIT} fill="var(--warn-ink)">
               DUMP {formatNumber(mDump, 0)} kg/s
             </text>
           )}
-          <g aria-label={turbineTripped ? `Turbine valve closed, ${tripCause}` : 'Turbine valve open'}>
-            {turbineTripped ? (
+          <g
+            aria-label={
+              valveClosed ? `Turbine valve closed, ${trip?.label ?? 'tripped'}` : 'Turbine valve open'
+            }
+          >
+            {valveClosed ? (
               <>
-                <line x1="289" y1="84" x2="297" y2="100" stroke="var(--danger-ink)" strokeWidth="1.5" />
-                <line x1="289" y1="100" x2="297" y2="84" stroke="var(--danger-ink)" strokeWidth="1.5" />
+                <line x1="279" y1="155" x2="287" y2="173" stroke="var(--danger-ink)" strokeWidth="1.5" />
+                <line x1="279" y1="173" x2="287" y2="155" stroke="var(--danger-ink)" strokeWidth="1.5" />
               </>
             ) : (
-              <path d="M289 85 L297 92 L289 99 Z" fill="none" stroke="var(--ink-2)" strokeWidth="1.2" />
+              <path d="M279 156 L287 164 L279 172 Z" fill="none" stroke="var(--ink-2)" strokeWidth="1.2" />
             )}
           </g>
-          <rect x="300" y="54" width="72" height="92" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <text x="336" y="70" textAnchor="middle" {...LABEL}>
+          <rect x="292" y="128" width="62" height="118" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <text x="323" y="146" textAnchor="middle" {...LABEL}>
             TURBINE
           </text>
-          <text x="336" y="91" textAnchor="middle" {...VALUE}>
+          <text x="323" y="168" textAnchor="middle" {...VALUE}>
             {formatNumber(admissionPercent, 0)} <tspan {...UNIT}>% adm</tspan>
           </text>
-          <text x="336" y="109" textAnchor="middle" {...VALUE}>
+          <text x="323" y="188" textAnchor="middle" {...VALUE}>
             {formatNumber(electricMW, 0)} <tspan {...UNIT}>MW</tspan>
           </text>
-          {turbineTripped && (
+          {tripActive && (
             <>
-              <text x="336" y="128" textAnchor="middle" fontSize="11" fill="var(--danger-ink)" letterSpacing="1.2">
+              <text x="323" y="211" textAnchor="middle" fontSize="11" fill="var(--danger-ink)" letterSpacing="1.2">
                 TRIPPED
               </text>
-              <text x="336" y="140" textAnchor="middle" fontSize="8.5" fill="var(--danger-ink)">
-                {tripCause}
+              <text x="323" y="227" textAnchor="middle" fontSize="8.5" fill="var(--danger-ink)">
+                {trip.label}
+              </text>
+            </>
+          )}
+          {tripPending && (
+            <>
+              <text x="323" y="211" textAnchor="middle" fontSize="10.5" fill="var(--warn-ink)" letterSpacing="0.7">
+                PENDING
+              </text>
+              <text x="323" y="227" textAnchor="middle" fontSize="8" fill="var(--warn-ink)">
+                trip on run
+              </text>
+            </>
+          )}
+          {tripResetPending && (
+            <>
+              <text x="323" y="211" textAnchor="middle" fontSize="9.5" fill="var(--warn-ink)" letterSpacing="0.5">
+                RESET PEND
+              </text>
+              <text x="323" y="227" textAnchor="middle" fontSize="8" fill="var(--warn-ink)">
+                on run
               </text>
             </>
           )}
 
           {/* feedwater return into the SG shell */}
-          <path d="M366 228 H264" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
-          <path d="M264 228 l8 -4 v8z" fill="var(--series-blue)" />
-          <text x="366" y="214" textAnchor="end" {...LABEL} fill="var(--series-blue)">
+          <path d="M344 324 H268" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
+          <path d="M268 324 l8 -4 v8z" fill="var(--series-blue)" />
+          <text x="344" y="348" textAnchor="end" {...LABEL} fill="var(--series-blue)">
             FEEDWATER
           </text>
-          <text x="366" y="234" textAnchor="end" {...VALUE}>
+          <text x="344" y="368" textAnchor="end" {...VALUE}>
             {formatNumber(mFeedwater, 0)} <tspan {...UNIT}>kg/s</tspan>
           </text>
           {feedwaterManual && (
-            <text x="366" y="249" textAnchor="end" fontSize="10" fill="var(--warn-ink)" letterSpacing="1.2">
+            <text x="344" y="384" textAnchor="end" fontSize="10" fill="var(--warn-ink)" letterSpacing="1.2">
               MAN
             </text>
           )}
 
           {/* pressurizer on its surge line */}
-          <path d="M160 212 V156" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
-          <rect x="140" y="92" width="40" height="64" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
-          <rect x="141" y="128" width="38" height="27" fill="var(--line)" />
-          <text x="160" y="82" textAnchor="middle" {...LABEL}>
+          <path d="M152 298 V280" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
+          <rect x="130" y="210" width="44" height="70" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
+          <rect x="132" y="250" width="40" height="28" fill="var(--line)" />
+          <text x="152" y="198" textAnchor="middle" {...LABEL}>
             PRESSURIZER
           </text>
-          <text x="160" y="176" textAnchor="middle" {...VALUE} fill={BAND_FILL[band]}>
+          <text x="152" y="302" textAnchor="middle" {...VALUE} fill={BAND_FILL[band]}>
             {formatNumber(pMPa, 2)} <tspan fontSize="10">MPa</tspan>
           </text>
           <text
-            x="160"
-            y="189"
+            x="152"
+            y="318"
             textAnchor="middle"
             {...UNIT}
             fill={band === 'green' ? 'var(--ink-2)' : BAND_FILL[band]}
@@ -258,29 +286,29 @@ const PlantMimic: FC = () => {
           </text>
 
           {/* pump on the cold leg */}
-          <circle cx="228" cy="318" r="14" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <path d="M222 312 l12 6 -12 6z" fill="var(--series-blue)" />
-          <text x="252" y="322" {...LABEL}>
+          <circle cx="226" cy="505" r="15" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <path d="M220 498 l13 7 -13 7z" fill="var(--series-blue)" />
+          <text x="226" y="534" textAnchor="middle" {...LABEL}>
             RCP
           </text>
 
           {/* leg temperatures */}
-          <text x="14" y="218" {...LABEL}>
+          <text x="20" y="300" {...LABEL}>
             HOT LEG
           </text>
-          <text x="14" y="204" {...VALUE}>
+          <text x="20" y="284" {...VALUE}>
             {tHot} <tspan {...UNIT}>K</tspan>
           </text>
-          <text x="60" y="430" {...LABEL} fill="var(--series-blue)">
+          <text x="60" y="586" {...LABEL} fill="var(--series-blue)">
             COLD LEG
           </text>
-          <text x="60" y="450" {...VALUE}>
+          <text x="60" y="608" {...VALUE}>
             {tCold} <tspan {...UNIT}>K</tspan>
           </text>
-          <text x="238" y="430" textAnchor="end" {...LABEL}>
+          <text x="284" y="586" textAnchor="end" {...LABEL}>
             AVERAGE
           </text>
-          <text x="238" y="450" textAnchor="end" {...VALUE}>
+          <text x="284" y="608" textAnchor="end" {...VALUE}>
             {tAvg} <tspan {...UNIT}>K</tspan>
           </text>
         </svg>
