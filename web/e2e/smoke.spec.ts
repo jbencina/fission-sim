@@ -217,9 +217,11 @@ test('SCRAM drops thermal power', async ({ page }) => {
 
   // ── Initiate SCRAM ─────────────────────────────────────────────────────────
   //
-  // Click the SCRAM button in the Safety section of ControlPanel.
-  // The button text is "SCRAM" (all-caps) — getByRole matches case-insensitively.
-  await page.getByRole('button', { name: /^scram$/i }).click()
+  // Click the SCRAM button in the Safety section of ControlPanel. The sticky
+  // toolbar has its own persistent SCRAM action, so scope this to the operator
+  // controls panel to keep the selector unambiguous.
+  const operatorControls = page.locator('section[aria-label="Operator controls"]')
+  await operatorControls.getByRole('button', { name: /^scram$/i }).click()
 
   // Confirm the SCRAM modal. The ConfirmDialog renders a confirm button with
   // confirmLabel="SCRAM" (set by ControlPanel). We target it inside the dialog
@@ -266,7 +268,9 @@ test('turbine trip raises steam pressure and opens the dump', async ({ page }) =
     timeout: 60_000,
   })
 
-  await secondaryControls.getByRole('button', { name: /reset turbine trip/i }).click()
+  const resetTripButton = secondaryControls.getByRole('button', { name: /reset turbine trip/i })
+  await expect(resetTripButton).toBeEnabled({ timeout: 60_000 })
+  await resetTripButton.click()
   await expect(page.getByTestId('status-turbine_load').getByText(/demand 0 %/i)).toBeVisible({
     timeout: 20_000,
   })
