@@ -235,11 +235,13 @@ def _build_telemetry_frame(snap: dict[str, Any], cmd: "_CommandState") -> dict[s
         "P_electric": _plain_float(turbine_tele.get("P_electric")),
         "turbine_load": _plain_float(turbine_tele.get("load")),
         "T_ref": _plain_float(turbine_tele.get("T_ref")),
+        "turbine_load_demand_effective": _plain_float(turbine_tele.get("load_demand")),
         "turbine_trip_active": _plain_bool(turbine_tele.get("trip_active")),
         "m_fw": _plain_float(feedwater_tele.get("m_fw")),
         "m_fw_max": _plain_float(feedwater_tele.get("m_fw_max")),
         "m_fw_demand": _plain_float(fw_ctrl_tele.get("m_fw_demand")),
         "fw_saturated": _plain_bool(fw_ctrl_tele.get("saturated")),
+        "feedwater_manual_effective": _plain_float(fw_ctrl_tele.get("feedwater_manual")),
         "rod_demand": _plain_float(tavg_ctrl_tele.get("rod_demand")),
         "rod_auto_acting": _plain_bool(tavg_ctrl_tele.get("acting")),
         **_command_fields(cmd),
@@ -402,10 +404,11 @@ class SimRuntime:
     ``T_secondary``, ``level_sg``, ``time_to_level_floor_s``, ``m_steam``,
     ``m_dump``, ``P_electric``, ``turbine_load``, ``T_ref``,
     ``turbine_trip_active``, ``m_fw``, ``m_fw_max``, ``m_fw_demand``,
-    ``fw_saturated``, ``rod_demand``, ``rod_auto_acting``, ``running``,
-    ``speed``, ``scrammed``, ``rod_command``, ``turbine_load_demand``,
-    ``turbine_trip``, ``rod_auto``, ``level_setpoint``,
-    ``feedwater_manual`` and ``model_limit``.
+    ``fw_saturated``, ``feedwater_manual_effective``, ``rod_demand``,
+    ``rod_auto_acting``, ``running``, ``speed``, ``scrammed``,
+    ``rod_command``, ``turbine_load_demand``,
+    ``turbine_load_demand_effective``, ``turbine_trip``, ``rod_auto``,
+    ``level_setpoint``, ``feedwater_manual`` and ``model_limit``.
 
     Model limit
     -----------

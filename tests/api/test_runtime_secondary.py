@@ -41,6 +41,7 @@ NUMERIC_FRAME_KEYS = {
     "m_dump",
     "P_electric",
     "turbine_load",
+    "turbine_load_demand_effective",
     "T_ref",
     "m_fw",
     "m_fw_max",
@@ -63,6 +64,7 @@ BOOLEAN_FRAME_KEYS = {
 NULLABLE_NUMERIC_FRAME_KEYS = {
     "time_to_level_floor_s",
     "feedwater_manual",
+    "feedwater_manual_effective",
 }
 
 ALL_SECONDARY_FRAME_KEYS = NUMERIC_FRAME_KEYS | BOOLEAN_FRAME_KEYS | NULLABLE_NUMERIC_FRAME_KEYS | {"model_limit"}
@@ -438,3 +440,36 @@ async def test_paused_new_command_fields_publish_without_advancing_time(runtime:
         assert q.empty()
     finally:
         runtime.unsubscribe(q)
+
+
+async def test_paused_selected_feedwater_and_admission_differ_from_last_stepped_effective_state() -> None:
+    """Paused commands update selected fields immediately; effective fields wait for the next accepted step."""
+    rt = SimRuntime()
+    initial = rt.snapshot()
+    assert initial["turbine_load_demand"] == 1.0
+    assert initial["turbine_load_demand_effective"] == 1.0
+    assert initial["feedwater_manual"] is None
+    assert initial["feedwater_manual_effective"] is None
+
+    rt.pause()
+
+    assert (await rt.handle_command({"type": "set_turbine_load", "value": 0.4}))["type"] == "ack"
+    assert (await rt.handle_command({"type": "set_feedwater_manual", "value": 0.25}))["type"] == "ack"
+
+    paused = rt.snapshot()
+    assert paused["running"] is False
+    assert paused["t"] == initial["t"]
+    assert paused["turbine_load_demand"] == 0.4
+    assert paused["turbine_load_demand_effective"] == 1.0
+    assert paused["feedwater_manual"] == 0.25
+    assert paused["feedwater_manual_effective"] is None
+
+    _step_runtime_once(rt, 0.1)
+
+    stepped = rt.snapshot()
+    assert stepped["t"] > paused["t"]
+    assert stepped["running"] is False
+    assert stepped["turbine_load_demand"] == 0.4
+    assert stepped["turbine_load_demand_effective"] == 0.4
+    assert stepped["feedwater_manual"] == 0.25
+    assert stepped["feedwater_manual_effective"] == 0.25

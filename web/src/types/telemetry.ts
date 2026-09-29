@@ -98,6 +98,13 @@ export interface Frame {
   T_ref: number;
 
   /**
+   * Last-stepped turbine admission demand used by the turbine component [fraction].
+   * While paused, `turbine_load_demand` can change immediately while this
+   * effective demand remains frozen until the next accepted simulation step.
+   */
+  turbine_load_demand_effective: number;
+
+  /**
    * Effective turbine trip status [boolean].
    * True when either the commanded operator trip latch is set or SCRAM/P-4 has
    * tripped the turbine; compare with `turbine_trip` for commanded-only state.
@@ -119,6 +126,13 @@ export interface Frame {
 
   /** Whether the automatic feedwater level controller is saturated [boolean] */
   fw_saturated: boolean;
+
+  /**
+   * Last-stepped manual feedwater demand [fraction of m_fw_max], or null = AUTO.
+   * While paused, `feedwater_manual` can change immediately while this
+   * effective value remains frozen until the next accepted simulation step.
+   */
+  feedwater_manual_effective: number | null;
 
   /**
    * Active rod demand that actually drives the control bank [fraction].
@@ -443,6 +457,7 @@ const NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   'P_electric',
   'turbine_load',
   'T_ref',
+  'turbine_load_demand_effective',
   'm_fw',
   'm_fw_max',
   'm_fw_demand',
@@ -472,6 +487,7 @@ const BOOLEAN_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
 const NULLABLE_NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   'time_to_level_floor_s',
   'feedwater_manual',
+  'feedwater_manual_effective',
 ];
 
 /** Required keys that every valid Frame must contain. */

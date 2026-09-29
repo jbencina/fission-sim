@@ -21,6 +21,10 @@ describe('isFrame', () => {
     const missingNullable = makeFrame();
     delete missingNullable.feedwater_manual;
     expect(isFrame(missingNullable)).toBe(false);
+
+    const missingEffective = makeFrame();
+    delete missingEffective.turbine_load_demand_effective;
+    expect(isFrame(missingEffective)).toBe(false);
   });
 
   it('rejects non-numeric values for numeric telemetry fields', () => {
@@ -33,14 +37,21 @@ describe('isFrame', () => {
     expect(isFrame(makeFrame({ P_primary_MPa: Number.NaN }))).toBe(false);
     expect(isFrame(makeFrame({ rho_total: Number.POSITIVE_INFINITY }))).toBe(false);
     expect(isFrame(makeFrame({ P_steam_Pa: Number.NEGATIVE_INFINITY }))).toBe(false);
+    expect(isFrame(makeFrame({ turbine_load_demand_effective: Number.NaN }))).toBe(false);
   });
 
   it('accepts nullable numeric fields only when null or finite numbers', () => {
-    expect(isFrame(makeFrame({ feedwater_manual: null, time_to_level_floor_s: null }))).toBe(true);
-    expect(isFrame(makeFrame({ feedwater_manual: 0.25, time_to_level_floor_s: 90 }))).toBe(true);
+    expect(
+      isFrame(makeFrame({ feedwater_manual: null, feedwater_manual_effective: null, time_to_level_floor_s: null })),
+    ).toBe(true);
+    expect(
+      isFrame(makeFrame({ feedwater_manual: 0.25, feedwater_manual_effective: 0.25, time_to_level_floor_s: 90 })),
+    ).toBe(true);
     expect(isFrame(makeFrame({ feedwater_manual: 'AUTO' }))).toBe(false);
+    expect(isFrame(makeFrame({ feedwater_manual_effective: 'AUTO' }))).toBe(false);
     expect(isFrame(makeFrame({ time_to_level_floor_s: Number.NaN }))).toBe(false);
     expect(isFrame(makeFrame({ feedwater_manual: Number.POSITIVE_INFINITY }))).toBe(false);
+    expect(isFrame(makeFrame({ feedwater_manual_effective: Number.NEGATIVE_INFINITY }))).toBe(false);
   });
 
   it('accepts a model-limit explanation and requires the field to be string or null', () => {

@@ -168,11 +168,13 @@ The example is a real frame from the design steady state:
   "P_electric": 989999999.9999962,
   "turbine_load": 1.0,
   "T_ref": 583.0,
+  "turbine_load_demand_effective": 1.0,
   "turbine_trip_active": false,
   "m_fw": 1669.0123623317777,
   "m_fw_max": 2002.8148347981332,
   "m_fw_demand": 1669.0123623317818,
   "fw_saturated": false,
+  "feedwater_manual_effective": null,
   "rod_demand": 0.5,
   "rod_auto_acting": false,
   "running": true,
@@ -219,11 +221,13 @@ see [README.md → Pressurizer](README.md#pressurizer-srcfission_simphysicspress
 | `P_electric` | float | W | Gross electric output proxy from the turbine model |
 | `turbine_load` | float | dimensionless | Actual turbine admission fraction after governor ramp/trip dynamics |
 | `T_ref` | float | K | Load-dependent Tavg reference from the turbine program |
+| `turbine_load_demand_effective` | float | dimensionless | Last-stepped turbine admission demand actually used by the turbine component; differs from `turbine_load_demand` while a paused command is pending |
 | `turbine_trip_active` | bool | dimensionless | Effective turbine-trip status: operator trip latch or SCRAM/P-4 interlock |
 | `m_fw` | float | kg/s | Actual feedwater actuator flow |
 | `m_fw_max` | float | kg/s | Maximum feedwater actuator flow (120 % of design steam flow) |
 | `m_fw_demand` | float | kg/s | Feedwater-controller demand before actuator lag |
 | `fw_saturated` | bool | dimensionless | Whether the feedwater controller demand is clamped at an actuator limit |
+| `feedwater_manual_effective` | float or null | dimensionless | Last-stepped manual feedwater fraction actually used by the feedwater controller; `null` = AUTO |
 | `rod_demand` | float | dimensionless | Rod demand actually sent to the rod actuator (manual command, automatic demand, or suspended hold) |
 | `rod_auto_acting` | bool | dimensionless | Whether automatic Tavg rod control is actively moving rods (not merely selected) |
 | `running` | bool | dimensionless | Whether simulated time is advancing (false while paused or halted at a model limit) |
