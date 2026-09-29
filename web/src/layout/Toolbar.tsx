@@ -23,7 +23,7 @@ import { TOOLTIPS } from '../widgets/tooltips'
 const README_URL = 'https://github.com/jbencina/fission-sim#readme'
 
 const item =
-  'inline-flex h-7 items-center gap-2 text-[12.5px] tracking-[0.04em] text-ink-2 transition-colors hover:text-ink'
+  'inline-flex h-7 items-center gap-2 whitespace-nowrap text-[12.5px] tracking-[0.04em] text-ink-2 transition-colors hover:text-ink'
 const dot = 'inline-block h-1.5 w-1.5 rounded-full'
 const compactButton =
   'inline-flex h-7 items-center justify-center gap-1.5 border border-line-strong px-2 text-[11.5px] tracking-[0.08em] transition-colors hover:border-ink hover:text-ink disabled:cursor-not-allowed disabled:opacity-45'
@@ -128,7 +128,6 @@ const TurbineTripChip: FC = () => {
     >
       <span className={`${dot} ${display.active || display.pending ? 'bg-warn' : 'bg-ink-3'}`} />
       <span className="tabular-nums">{display.label}</span>
-      {display.active && display.closed && <span className="text-ink-3">closed</span>}
     </InfoTip>
   )
 }
@@ -138,6 +137,14 @@ const RodModeChip: FC = () => {
   if (!latest) return null
 
   const rodStatus = deriveRodModeStatus(latest)
+  const label =
+    rodStatus.kind === 'manual'
+      ? 'Rods MANUAL'
+      : rodStatus.kind === 'auto-active'
+        ? 'Rods AUTO'
+        : rodStatus.kind === 'pending'
+          ? 'Rods PENDING'
+          : 'Rods SUSPENDED'
   return (
     <InfoTip
       title="Rod-control mode"
@@ -146,7 +153,7 @@ const RodModeChip: FC = () => {
       className={`${item} ${toneClass(rodStatus.tone)}`}
     >
       <span className={`${dot} ${rodStatus.tone === 'warn' ? 'bg-warn' : 'bg-ink-3'}`} />
-      <span className="tabular-nums">Rods {rodStatus.label}</span>
+      <span className="tabular-nums">{label}</span>
     </InfoTip>
   )
 }
@@ -181,17 +188,18 @@ const ToolbarActions: FC = () => {
         onConfirm={handleScramConfirm}
         onCancel={() => setScramDialogOpen(false)}
       />
-      <div className="order-last flex basis-full flex-wrap items-center gap-2 border-t border-line pt-2 sm:order-none sm:basis-auto sm:border-0 sm:pt-0">
+      <div className="order-last flex basis-full flex-wrap items-center gap-2 border-t border-line pt-2 sm:order-none sm:basis-auto sm:shrink-0 sm:border-0 sm:pt-0">
         <HelpTip tip={`Emergency shutdown. Drops both rod banks. ${P4_TURBINE_TRIP_COPY}`}>
           {(tipId) => (
             <button
               aria-describedby={tipId}
               type="button"
               disabled={!connected || scrammed}
+              title={scrammed ? 'SCRAM latched' : undefined}
               onClick={() => setScramDialogOpen(true)}
               className={`${compactButton} border-danger text-danger hover:border-danger hover:bg-danger-soft hover:text-danger`}
             >
-              {scrammed ? 'SCRAM latched' : 'SCRAM'}
+              SCRAM
             </button>
           )}
         </HelpTip>
@@ -223,7 +231,7 @@ const LearningNote: FC = () => (
     title="Learning use only"
     body="Built as a side project for learning, from public sources, by an author with no nuclear engineering training. Model behavior, values, and explanations may be incorrect, incomplete, and oversimplified. Do not rely on it for anything real."
     align="end"
-    className={`${item} hidden md:inline-flex`}
+    className={`${item} hidden 2xl:inline-flex`}
   >
     Learning use only
   </InfoTip>
@@ -235,8 +243,8 @@ const LearningNote: FC = () => (
 
 const Toolbar: FC = () => (
   <header className="sticky top-0 z-30 border-b border-line-strong bg-canvas">
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2 sm:px-6">
-      <div className="flex items-baseline gap-2.5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 sm:px-6 xl:flex-nowrap">
+      <div className="flex shrink-0 items-baseline gap-2.5">
         <h1 className="text-[13px] font-light tracking-[0.3em] text-ink">FISSION-SIM</h1>
         <span className="hidden text-[12px] text-ink-2 lg:inline">PWR simulator</span>
       </div>
@@ -244,7 +252,7 @@ const Toolbar: FC = () => (
       <SimClock />
 
       {/* On phones the state drops to its own row below the brand and clock. */}
-      <div className="order-last flex basis-full flex-wrap items-center gap-x-5 gap-y-1 sm:order-none sm:basis-auto">
+      <div className="order-last flex basis-full flex-wrap items-center gap-x-3 gap-y-1 sm:order-none sm:basis-auto xl:flex-nowrap">
         <ConnectionIndicator />
         <SimState />
         <TurbineTripChip />
@@ -253,7 +261,7 @@ const Toolbar: FC = () => (
 
       <ToolbarActions />
 
-      <div className="ml-auto flex items-center gap-4">
+      <div className="ml-auto flex shrink-0 items-center gap-4">
         <LearningNote />
         <a
           href={README_URL}

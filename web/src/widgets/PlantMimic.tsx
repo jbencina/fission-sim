@@ -155,8 +155,8 @@ const PlantMimic: FC = () => {
           </h2>
           <InfoTip title="Plant schematic" body={SCHEMATIC_HELP} area={titleRef} />
         </div>
-        <p className="mt-1 text-[10.5px] leading-tight text-ink-3">
-          SG collapsed; 4 SGs lumped; no shrink/swell; not narrow-range
+        <p className="mt-1 truncate text-[10.5px] leading-tight text-ink-3">
+          Collapsed SG inventory; no shrink/swell
         </p>
       </div>
       <div className="min-h-0 flex-1 px-2 pb-2">
@@ -168,14 +168,9 @@ const PlantMimic: FC = () => {
           fontFamily="'IBM Plex Mono', ui-monospace, monospace"
         >
           {shutdownInserted && (
-            <>
-              <text x="14" y="22" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
-                shutdown bank inserted
-              </text>
-              <text x="14" y="40" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
-                Reset Simulation required
-              </text>
-            </>
+            <text x="14" y="22" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+              shutdown bank inserted — reset required
+            </text>
           )}
           {/* hot leg: core outlet to steam generator primary tubes */}
           <path
@@ -232,10 +227,10 @@ const PlantMimic: FC = () => {
           <text x="226" y="138" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(pSteamMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
           </text>
-          <text x="218" y="456" textAnchor="middle" data-font-role="label" {...LABEL}>
+          <text x="226" y="456" textAnchor="middle" data-font-role="label" {...LABEL}>
             COLLAPSED
           </text>
-          <text x="218" y="480" textAnchor="middle" data-font-role="value" {...VALUE} fill={sgLevelInk}>
+          <text x="226" y="480" textAnchor="middle" data-font-role="value" {...VALUE} fill={sgLevelInk}>
             {formatNumber(sgLevelPercent, 0)} <tspan data-font-role="unit" {...UNIT}>%</tspan>
           </text>
 
@@ -385,16 +380,11 @@ const PlantMimic: FC = () => {
           <text x="113" y="564" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(powerMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
           </text>
-          <text
-            x="145"
-            y="584"
-            textAnchor="middle"
-            data-font-role="unit"
-            fontSize="13.6"
-            fill="var(--ink-2)"
-            letterSpacing="0.1"
-          >
-            control bank {formatNumber(rodWithdrawnFraction * 100, 0)} % withdrawn
+          <text x="113" y="584" textAnchor="middle" data-font-role="label" fontSize="13.2" fill="var(--ink-2)">
+            CONTROL BANK
+          </text>
+          <text x="113" y="604" textAnchor="middle" data-font-role="unit" fontSize="13.6" fill="var(--ink-2)">
+            {formatNumber(rodWithdrawnFraction * 100, 0)} % withdrawn
           </text>
 
           {/* pump on the cold leg */}

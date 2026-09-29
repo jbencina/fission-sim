@@ -166,13 +166,17 @@ export function deriveToolbarTurbineTripDisplay(frame: AdmissionStatusFrame): To
 
   let label: string
   if (tripStatus.pending) {
-    label = `Turbine ${tripStatus.label} · ${tripStatus.cause}`
+    label = tripStatus.kind === 'reset-pending' ? 'Turbine PENDING · reset' : 'Turbine PENDING · trip'
   } else if (admissionStatus.tripState === 'available') {
-    label = 'Turbine not tripped'
+    label = 'Turbine OK'
   } else if (admissionStatus.tripState === 'trip-active-closed') {
-    label = `Turbine trip active · ${tripStatus.cause}`
+    label = tripStatus.kind === 'scram-trip' ? 'Turbine TRIPPED · P-4' : 'Turbine TRIPPED · operator'
+  } else if (tripStatus.kind === 'operator-trip') {
+    label = 'Turbine TRIPPED · operator'
+  } else if (tripStatus.kind === 'scram-trip') {
+    label = 'Turbine TRIPPED · P-4'
   } else {
-    label = `Turbine ${tripStatus.label.toLowerCase()} · ${tripStatus.cause}`
+    label = 'Turbine CLOSING'
   }
 
   return {

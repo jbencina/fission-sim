@@ -43,7 +43,7 @@ describe('deriveAdmissionStatus', () => {
       )
 
       expect(display).toMatchObject({
-        label: 'Turbine TRIP PENDING · pending — applies when the simulation runs',
+        label: 'Turbine PENDING · trip',
         pending: true,
         active: false,
         closed: false,
@@ -61,7 +61,7 @@ describe('deriveAdmissionStatus', () => {
           }),
         ),
       ).toMatchObject({
-        label: 'Turbine trip active · operator trip',
+        label: 'Turbine TRIPPED · operator',
         cause: 'operator trip; admission closed at ≤ 0.5 %',
         active: true,
         closed: true,
