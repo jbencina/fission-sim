@@ -1,47 +1,48 @@
 /**
- * ControlPanel — operator controls for the fission-sim web UI.
+ * ControlPanel — primary operator controls for the fission-sim web UI.
  *
- * Four groups:
- *   1. Control rods — a ring gauge showing the bank's position (dot) and the
- *                     command (amber tick), with a slider beneath it for the
- *                     command in % of travel withdrawn (sent to the backend
- *                     as a fraction 0–1). The slider's track carries an amber
- *                     marker at the actual position, so the lag between
- *                     command and position is visible at a glance.
+ * Groups:
+ *   1. Control bank — AUTO/MANUAL rod control, a ring gauge, and the manual
+ *                     rod slider. In AUTO, the Tavg controller owns rod
+ *                     demand and the slider is disabled.
  *   2. Safety       — SCRAM with a confirmation dialog; Reset Scram while
  *                     scrammed.
  *   3. Run          — Pause/Resume and Reset Simulation (with confirmation).
  *   4. Speed        — segmented 1× / 2× / 5× / 10× real-time multiplier.
  *
  * All controls dispatch through the telemetry store's `sendCommand`. While
- * the WebSocket is not connected every control is disabled.
- *
- * Each control explains itself on hover and on keyboard focus; the
- * explanation is linked to the control with aria-describedby so screen
- * readers read it as the control's description.
+ * the WebSocket is not connected every control is disabled by the fieldset.
  *
  * @module ControlPanel
  */
 
-import { type FC, useCallback, useEffect, useRef, useState } from 'react'
+import { type FC, useCallback, useState } from 'react'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { SPEEDS, type Speed } from '../types/telemetry'
 import { HelpTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
 import { PauseIcon, PlayIcon, ResetIcon } from '../ui/icons'
 import ConfirmDialog from './ConfirmDialog'
+import { clampFraction, deriveRodModeStatus, type StatusTone } from './controlStatus'
 import RodGauge from './RodGauge'
+import { useCommittedRange } from './useCommittedRange'
 
 // ---------------------------------------------------------------------------
 // Small building blocks
 // ---------------------------------------------------------------------------
 
-const Readout: FC<{ label: string; value: string }> = ({ label, value }) => (
+function toneClass(tone: StatusTone): string {
+  if (tone === 'danger') return 'text-danger'
+  if (tone === 'warn') return 'text-warn'
+  return 'text-ink'
+}
+
+const Readout: FC<{ label: string; value: string; unit?: string }> = ({ label, value, unit = '%' }) => (
   <div>
     <div className="text-[11.5px] tracking-[0.04em] text-ink-2">{label}</div>
     <div className="font-mono text-[22px] font-light leading-tight tabular-nums text-ink">
       {value}
-      <span className="ml-1 font-sans text-[11px] text-ink-2">%</span>
+      <span className="ml-1 font-sans text-[11px] text-ink-2">{unit}</span>
     </div>
   </div>
 )
@@ -50,6 +51,7 @@ const Readout: FC<{ label: string; value: string }> = ({ label, value }) => (
 // ControlPanel
 // ---------------------------------------------------------------------------
 
+/** Primary-side operator controls: rods, SCRAM, run/reset and speed. */
 const ControlPanel: FC = () => {
   const status = useTelemetryStore((s) => s.status)
   const latest = useTelemetryStore((s) => s.latest)
@@ -59,63 +61,29 @@ const ControlPanel: FC = () => {
   const connected = status === 'connected'
   const scrammed = latest?.scrammed === true
   const running = latest?.running === true
-  // Halted at a model limit: the backend refuses resume until a reset.
   const halted = latest?.model_limit != null
   const speed = latest?.speed ?? 1
-  // null until the first frame arrives; the readout then shows "—".
+  const rodAuto = latest?.rod_auto === true
   const rodPosition = latest?.rod_position ?? null
+  const rodDemand = latest?.rod_demand ?? latest?.rod_command ?? 0.5
+  const backendRodCommand = latest?.rod_command ?? 0.5
+  const rodSliderBackendValue = rodAuto ? rodDemand : backendRodCommand
+  const rodModeStatus = latest
+    ? deriveRodModeStatus(latest)
+    : {
+        kind: 'manual' as const,
+        label: 'MANUAL',
+        detail: 'Waiting for first telemetry frame.',
+        tone: 'normal' as const,
+      }
 
-  // ── Slider value ───────────────────────────────────────────────────────────
-  //
-  // The slider is controlled by local state so dragging it doesn't spam the
-  // WebSocket. The value is sent on the input's native `change` event, which
-  // fires once when a drag is released (wherever the pointer is) and once
-  // per arrow-key step. While the user is not dragging, the slider follows
-  // the backend's rod_command.
-  const [localRodCmd, setLocalRodCmd] = useState<number>(latest?.rod_command ?? 0.5)
-  const draggingRef = useRef(false)
-  const sliderRef = useRef<HTMLInputElement>(null)
-  const backendRodCmdRef = useRef<number | undefined>(latest?.rod_command)
-  backendRodCmdRef.current = latest?.rod_command
-
-  useEffect(() => {
-    if (!draggingRef.current && latest?.rod_command !== undefined) {
-      setLocalRodCmd(latest.rod_command)
-    }
-  }, [latest?.rod_command])
-
-  useEffect(() => {
-    const el = sliderRef.current
-    if (!el) return
-    const commit = () => {
-      draggingRef.current = false
-      sendCommand({ type: 'set_rod_command', value: parseFloat(el.value) })
-    }
-    // A drag released where it started fires no `change`. Check once any
-    // `change` has had its turn; if none came, stop dragging and show the
-    // backend's command again, or the slider would stop following it.
-    let pending: number | undefined
-    const release = () => {
-      window.clearTimeout(pending)
-      pending = window.setTimeout(() => {
-        if (!draggingRef.current) return
-        draggingRef.current = false
-        const backend = backendRodCmdRef.current
-        if (backend !== undefined) setLocalRodCmd(backend)
-      }, 0)
-    }
-    el.addEventListener('change', commit)
-    el.addEventListener('pointerup', release)
-    el.addEventListener('pointercancel', release)
-    el.addEventListener('blur', release)
-    return () => {
-      window.clearTimeout(pending)
-      el.removeEventListener('change', commit)
-      el.removeEventListener('pointerup', release)
-      el.removeEventListener('pointercancel', release)
-      el.removeEventListener('blur', release)
-    }
-  }, [sendCommand])
+  const handleRodCommit = useCallback(
+    (value: number) => {
+      if (!rodAuto) sendCommand({ type: 'set_rod_command', value: clampFraction(value) })
+    },
+    [rodAuto, sendCommand],
+  )
+  const rodSlider = useCommittedRange(rodSliderBackendValue, handleRodCommit)
 
   // ── Dialogs ────────────────────────────────────────────────────────────────
   const [scramDialogOpen, setScramDialogOpen] = useState(false)
@@ -147,14 +115,23 @@ const ControlPanel: FC = () => {
     [sendCommand],
   )
 
+  const handleSetRodAuto = useCallback(
+    (value: boolean) => {
+      sendCommand({ type: 'set_rod_auto', value })
+    },
+    [sendCommand],
+  )
+
   const positionPct = Math.min(1, Math.max(0, rodPosition ?? 0)) * 100
+  const displayedRodTarget = rodAuto ? rodDemand : rodSlider.value
+  const rodTargetLabel = rodAuto ? 'Demand (auto)' : 'Command'
 
   return (
     <>
       <ConfirmDialog
         open={scramDialogOpen}
         title="Initiate SCRAM?"
-        message="SCRAM immediately drops the control bank and the shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm) and fission power falls within seconds. Reset Scram returns only the control bank to your command. The shutdown bank stays in, so getting back to power takes Reset Simulation."
+        message="SCRAM drops the control bank and shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm). It also trips the turbine through the P-4 interlock, so steam goes to the dump path while fission power falls."
         confirmLabel="SCRAM"
         danger
         onConfirm={handleScramConfirm}
@@ -163,7 +140,7 @@ const ControlPanel: FC = () => {
       <ConfirmDialog
         open={resetDialogOpen}
         title="Reset simulation?"
-        message="This restarts the simulator at t = 0 from the full-power design state: both rod banks at their design positions, rod command 50 %, design temperatures and pressure. Speed and pressure setpoint are kept. All current chart data will be lost."
+        message="This rebuilds the plant at the full-power design state and clears SCRAM, the turbine trip latch, feedwater manual and any model-limit halt. It keeps speed, pressure setpoint, turbine admission demand, rod mode and SG level setpoint; if admission demand is low, the reset starts with actual admission at 100 % and then ramps down."
         confirmLabel="Reset"
         danger
         onConfirm={handleResetConfirm}
@@ -179,26 +156,74 @@ const ControlPanel: FC = () => {
         <fieldset disabled={!connected} className={connected ? '' : 'opacity-60'}>
           {/* ── 1. Control rods ─────────────────────────────────────────── */}
           <section aria-label="Rod control" className="mt-3">
-            <div className="flex items-start gap-4">
-              <RodGauge position={rodPosition} command={localRodCmd} />
+            <HelpTip
+              tip="AUTO lets the Tavg controller move the control bank to hold average coolant temperature near its admission-based reference. MANUAL gives you the rod command; switching to MANUAL is bumpless because the backend first syncs the manual command to the actual bank position."
+            >
+              {(tipId) => (
+                <div className="flex items-center justify-between gap-3">
+                  <div aria-describedby={tipId} className="seg" role="group" aria-label="Rod control mode">
+                    <button
+                      type="button"
+                      disabled={!connected}
+                      aria-pressed={rodAuto}
+                      onClick={() => handleSetRodAuto(true)}
+                      className={[
+                        'h-8 px-3 text-[12px] tracking-[0.08em] transition-colors',
+                        rodAuto ? 'seg-on' : 'text-ink-2 hover:text-ink',
+                      ].join(' ')}
+                    >
+                      AUTO
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!connected}
+                      aria-pressed={!rodAuto}
+                      onClick={() => handleSetRodAuto(false)}
+                      className={[
+                        'h-8 px-3 text-[12px] tracking-[0.08em] transition-colors',
+                        !rodAuto ? 'seg-on' : 'text-ink-2 hover:text-ink',
+                      ].join(' ')}
+                    >
+                      MANUAL
+                    </button>
+                  </div>
+                  <div className="text-right">
+                    <div className={`font-mono text-[12px] tabular-nums ${toneClass(rodModeStatus.tone)}`}>
+                      {rodModeStatus.label}
+                    </div>
+                    <div className="text-[10.5px] text-ink-3">{rodModeStatus.detail}</div>
+                  </div>
+                </div>
+              )}
+            </HelpTip>
+
+            <div className="mt-3 flex items-start gap-4">
+              <RodGauge position={rodPosition} command={displayedRodTarget} />
               <div className="flex min-h-[124px] min-w-0 flex-1 flex-col justify-between">
-                <Readout label="Command" value={formatNumber(localRodCmd * 100, 0)} />
+                <Readout label={rodTargetLabel} value={formatNumber(displayedRodTarget * 100, 0)} />
                 <Readout
                   label="Position"
                   value={formatNumber(rodPosition === null ? null : rodPosition * 100, 0)}
                 />
                 <p className="text-[11.5px] leading-snug text-ink-2">
-                  {scrammed
-                    ? 'Shutdown bank is in. Reset the SCRAM to give the control bank back to your command.'
-                    : 'The bank moves at 1 % per second toward the command.'}
+                  {rodAuto
+                    ? 'AUTO owns rod demand; the manual slider is parked until MANUAL.'
+                    : scrammed
+                      ? 'Shutdown bank is in. Reset Scram gives the control bank back to your command.'
+                      : 'The bank moves at 1 % per second toward the command.'}
                 </p>
               </div>
             </div>
 
-            <HelpTip tip="Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second: 100 s for a full stroke, 50 s from design to either end. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.">
+            <HelpTip
+              tip={
+                rodAuto
+                  ? 'Disabled in AUTO because the Tavg controller, not the operator, is commanding rod demand. Select MANUAL for a bumpless transfer: the backend copies the actual bank position into the manual command before you move it.'
+                  : 'Control-bank command, % of travel withdrawn (0 % fully inserted, 100 % fully withdrawn; design 50 %). The bank moves toward it at 1 % per second. Each 1 % of travel is worth 12 pcm, so the bank can add or remove at most 600 pcm from design.'
+              }
+            >
               {(tipId) => (
                 <div className="relative mt-3">
-                  {/* Visible 1 px track, inset by the knob radius so the marker and knob line up. The white marker is the bank's actual position, as on the gauge. */}
                   <div
                     aria-hidden="true"
                     className="pointer-events-none absolute inset-x-[7px] top-1/2 h-px -translate-y-1/2 bg-line-strong"
@@ -210,21 +235,18 @@ const ControlPanel: FC = () => {
                     />
                   </div>
                   <input
-                    ref={sliderRef}
+                    ref={rodSlider.ref}
                     aria-describedby={tipId}
                     type="range"
                     className="rod-range relative"
                     min={0}
                     max={1}
                     step={0.01}
-                    value={localRodCmd}
-                    disabled={!connected}
-                    aria-label="Rod command"
-                    aria-valuetext={`${(localRodCmd * 100).toFixed(0)} % withdrawn`}
-                    onChange={(e) => {
-                      draggingRef.current = true
-                      setLocalRodCmd(parseFloat(e.target.value))
-                    }}
+                    value={rodSlider.value}
+                    disabled={!connected || rodAuto}
+                    aria-label={rodAuto ? 'Automatic rod demand' : 'Rod command'}
+                    aria-valuetext={`${(displayedRodTarget * 100).toFixed(0)} % withdrawn`}
+                    onChange={rodSlider.onChange}
                   />
                 </div>
               )}
@@ -239,9 +261,8 @@ const ControlPanel: FC = () => {
           <div className="-mx-4 my-4 h-px bg-line" />
 
           {/* ── 2. Safety ───────────────────────────────────────────────── */}
-          {/* While scrammed, Reset Scram takes half of the row instead of adding one. */}
           <section aria-label="Safety" className={scrammed ? 'grid grid-cols-2 gap-2' : ''}>
-            <HelpTip tip="Emergency shutdown. Immediately commands the control and shutdown banks to drop; both are fully inserted within about 2 s, adding about −7,000 pcm. Fission power falls to a few percent within seconds, then fades as delayed-neutron precursors decay.">
+            <HelpTip tip="Emergency shutdown. Drops the control and shutdown banks and trips the turbine through P-4. Fission power falls within seconds, then fades as delayed-neutron precursors decay; steam removal transfers to the dump path.">
               {(tipId) => (
                 <button
                   aria-describedby={tipId}
@@ -259,7 +280,7 @@ const ControlPanel: FC = () => {
             {scrammed && (
               <HelpTip
                 align="end"
-                tip="Clears the SCRAM latch and returns the control bank to your rod command. The shutdown bank stays fully inserted, so the reactor stays subcritical: total reactivity stays below about −4,300 pcm even with the control bank fully withdrawn and the plant cooled down. To return to power, use Reset Simulation."
+                tip="Clears the SCRAM latch, returns the control bank to its command, and sets turbine admission demand to 0 %. The shutdown bank stays fully inserted, so the reactor stays subcritical until Reset Simulation."
               >
                 {(tipId) => (
                   <button
@@ -278,7 +299,7 @@ const ControlPanel: FC = () => {
 
           {/* ── 3. Run ──────────────────────────────────────────────────── */}
           <section aria-label="Run control" className="mt-2 grid grid-cols-2 gap-2">
-            <HelpTip tip="Pauses simulator time advancement. Values are frozen; the display still updates when you change a control (SCRAM, speed, rods).">
+            <HelpTip tip="Pauses simulator time advancement. Values are frozen; command fields can update while paused and show as pending until the simulation runs.">
               {(tipId) => (
                 <button
                   aria-describedby={tipId}
@@ -294,7 +315,7 @@ const ControlPanel: FC = () => {
             </HelpTip>
             <HelpTip
               align="end"
-              tip="Restarts from the full-power design state (shutdown bank withdrawn, control bank at 50 %, design temperatures and pressure). The only way back to power after a SCRAM; the procedure-driven startup of a real plant is not modeled."
+              tip="Rebuilds the plant at full-power design conditions. Keeps speed, pressure setpoint, turbine admission demand, rod AUTO/MANUAL mode and SG level setpoint; clears SCRAM, turbine trip and feedwater manual. If demand is low, actual turbine admission starts at 100 % then ramps down."
             >
               {(tipId) => (
                 <button

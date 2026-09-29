@@ -1,8 +1,8 @@
 /**
  * RodGauge — a ring gauge for the control bank: 41 ticks over a 270° arc,
- * a white dot at the bank's position, an amber tick at the operator's
- * command and a grey tick at the design position (50 %). Display only; the
- * range input in ControlPanel is the control.
+ * a white dot at the bank's position, an amber tick at the active command or
+ * automatic demand, and a grey tick at the design position (50 %). Display
+ * only; the range input in ControlPanel is the manual control.
  */
 
 import type { FC } from 'react'
@@ -14,11 +14,37 @@ const R = 52
 const START = -225
 const SWEEP = 270
 
+/**
+ * Convert a gauge angle and radius to SVG coordinates.
+ *
+ * Parameters
+ * ----------
+ * deg:
+ *   Gauge angle [degrees].
+ * r:
+ *   Radius from the gauge center [SVG px].
+ *
+ * Returns
+ * -------
+ * [number, number]
+ *   The x/y coordinates [SVG px].
+ */
 function point(deg: number, r: number): [number, number] {
   const a = (deg * Math.PI) / 180
   return [CX + r * Math.cos(a), CY + r * Math.sin(a)]
 }
 
+/**
+ * Ring gauge showing actual bank position and active command/demand.
+ *
+ * Parameters
+ * ----------
+ * position:
+ *   Actual control-bank position [fraction withdrawn], or null before the
+ *   first frame arrives.
+ * command:
+ *   Active command/demand tick [fraction withdrawn].
+ */
 const RodGauge: FC<{ position: number | null; command: number }> = ({ position, command }) => {
   const pos = position === null ? null : Math.min(1, Math.max(0, position))
   const cmd = Math.min(1, Math.max(0, command))

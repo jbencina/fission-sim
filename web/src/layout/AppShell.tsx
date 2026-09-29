@@ -15,6 +15,7 @@
 import type { FC } from 'react'
 import ChartGrid from '../charts/ChartGrid'
 import ControlPanel from '../controls/ControlPanel'
+import SecondaryControls from '../controls/SecondaryControls'
 import ErrorNotice, { ModelLimitNotice } from '../widgets/ErrorNotice'
 import EventLog from '../widgets/EventLog'
 import PlantMimic from '../widgets/PlantMimic'
@@ -70,6 +71,9 @@ const AppShell: FC = () => (
         >
           <div className="order-2 lg:order-none">
             <ControlPanel />
+          </div>
+          <div className="order-2 lg:order-none">
+            <SecondaryControls />
           </div>
           <div className="order-4 lg:order-none">
             <StatusPanel />
