@@ -16,9 +16,10 @@ import { formatNumber } from '../ui/format'
 import { describeSchematicState, turbineTripStatus } from './loopState'
 import { type Band, getBand } from './thresholds'
 
-const LABEL = { fontSize: 9.5, letterSpacing: 1, fill: 'var(--ink-2)' } as const
-const VALUE = { fontSize: 14, fontWeight: 300, fill: 'var(--ink)' } as const
-const UNIT = { fontSize: 10, fontWeight: 400, fill: 'var(--ink-2)' } as const
+const LABEL = { fontSize: 13.5, letterSpacing: 1.05, fill: 'var(--ink-2)' } as const
+const VALUE = { fontSize: 17.5, fontWeight: 300, fill: 'var(--ink)' } as const
+const UNIT = { fontSize: 13.2, fontWeight: 400, fill: 'var(--ink-2)' } as const
+const STATUS = { fontSize: 13.2, fontWeight: 400, letterSpacing: 1.2 } as const
 const BAND_FILL: Record<Band, string> = {
   green: 'var(--ink)',
   amber: 'var(--warn-ink)',
@@ -38,6 +39,14 @@ function insertedFraction(rodPosition: number | undefined): number {
   return 1 - Math.min(1, Math.max(0, rodPosition))
 }
 
+/** Short trip wording that fits inside the turbine body at dashboard scale. */
+function turbineTripLines(label: string | undefined): string[] {
+  if (label === 'operator trip') return ['OP TRIP']
+  if (label === 'SCRAM (P-4)') return ['P-4']
+  if (label === 'trip clearing') return ['CLEARING']
+  return label ? [label.toUpperCase()] : ['TRIPPED']
+}
+
 const PlantMimic: FC = () => {
   const latest = useTelemetryStore((s) => s.latest)
   const titleRef = useRef<HTMLDivElement>(null)
@@ -47,8 +56,6 @@ const PlantMimic: FC = () => {
   const sgMW = latest ? latest.Q_sg / 1e6 : null
   const pMPa = latest?.P_primary_MPa ?? null
   const band: Band = pMPa === null ? 'green' : getBand('P_primary_MPa', pMPa)
-  const pressureNote =
-    pMPa === null || band === 'green' ? 'design 15.5' : `${pMPa < 15.5 ? 'low' : 'high'}, design 15.5`
   const tFuel = formatNumber(latest?.T_fuel ?? null, 0)
   const tHot = formatNumber(latest?.T_hot ?? null, 1)
   const tCold = formatNumber(latest?.T_cold ?? null, 1)
@@ -57,8 +64,8 @@ const PlantMimic: FC = () => {
   const sgLevel = latest?.level_sg ?? null
   const sgLevelFraction = Math.min(1, Math.max(0, sgLevel ?? 0.5))
   const sgLevelPercent = sgLevel === null ? null : sgLevel * 100
-  const sgFillHeight = 250 * sgLevelFraction
-  const sgFillY = 112 + (250 - sgFillHeight)
+  const sgFillHeight = 264 * sgLevelFraction
+  const sgFillY = 162 + (264 - sgFillHeight)
   // thresholds.ts is owned by D.5; this local colour mirrors its illustrative 0.40-0.60 band
   // and 0.35-0.90 operating band for the schematic only. These are not trip setpoints.
   const sgLevelInk =
@@ -93,6 +100,7 @@ const PlantMimic: FC = () => {
     mFeedwater,
     0,
   )} kilograms per second`
+  const tripDetailLines = turbineTripLines(trip?.label)
 
   const summary =
     `Core ${formatNumber(powerMW, 0)} MW, fuel ${tFuel} K, control bank ${formatNumber(inserted * 100, 0)} % inserted; ` +
@@ -114,9 +122,9 @@ const PlantMimic: FC = () => {
         </h2>
         <InfoTip title="Plant schematic" body={SCHEMATIC_HELP} area={titleRef} />
       </div>
-      <div className="min-h-0 flex-1 px-3 pb-2">
+      <div className="min-h-0 flex-1 px-2 pb-2">
         <svg
-          viewBox="0 0 360 640"
+          viewBox="0 0 360 720"
           role="img"
           aria-label={summary}
           className="mx-auto block h-full w-full"
@@ -124,7 +132,7 @@ const PlantMimic: FC = () => {
         >
           {/* hot leg: core outlet to steam generator primary tubes */}
           <path
-            d="M112 328 V300 H186 V112"
+            d="M168 418 H184 V220 H188"
             fill="none"
             stroke="var(--line-strong)"
             strokeWidth="3"
@@ -132,66 +140,61 @@ const PlantMimic: FC = () => {
           />
           {/* cold leg: steam generator bottom, pump, core inlet */}
           <path
-            d="M268 362 H282 V548 H48 V394 H56"
+            d="M272 430 H286 V603"
+            fill="none"
+            stroke="var(--line-strong)"
+            strokeWidth="3"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M263 618 H24 V472 H58"
             fill="none"
             stroke="var(--line-strong)"
             strokeWidth="3"
             strokeLinejoin="round"
           />
 
-          {/* reactor vessel and core */}
-          <rect x="56" y="328" width="112" height="126" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <rect x="70" y="346" width="84" height="86" fill="none" stroke="var(--line)" strokeWidth="1" />
-          {[0, 1, 2, 3, 4, 5].map((i) => (
-            <rect key={i} x={77 + i * 13} y="346" width="5" height={86 * inserted} fill="var(--series-rod)" />
-          ))}
-          <text x="112" y="476" textAnchor="middle" {...LABEL}>
-            CORE
+          {/* pressurizer on its surge line */}
+          <path d="M156 278 H178 V300 H184" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
+          <rect x="112" y="242" width="44" height="72" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
+          <rect x="114" y="285" width="40" height="27" fill="var(--line)" />
+          <text x="66" y="226" textAnchor="middle" data-font-role="label" {...LABEL}>
+            PRESSURIZER
           </text>
-          <text x="112" y="498" textAnchor="middle" {...VALUE}>
-            {formatNumber(powerMW, 0)} <tspan {...UNIT}>MW</tspan>
+          <text x="66" y="326" textAnchor="middle" data-font-role="value" {...VALUE} fill={BAND_FILL[band]}>
+            {formatNumber(pMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
           </text>
-          <text x="112" y="514" textAnchor="middle" {...UNIT}>
-            fuel {tFuel} K, rods {formatNumber(inserted * 100, 0)} % in
-          </text>
-
           {/* two-sided steam generator: primary tubes inside a secondary shell */}
           <g role="img" aria-label={sgLevelAria}>
             <title>{sgLevelAria}</title>
-            <rect x="186" y="110" width="82" height="254" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-            <rect x="188" y={sgFillY} width="78" height={sgFillHeight} fill={sgLevelInk} opacity="0.16" />
-            <line x1="188" y1={sgFillY} x2="266" y2={sgFillY} stroke={sgLevelInk} strokeWidth="1" />
+            <rect x="188" y="160" width="84" height="268" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+            <rect x="190" y={sgFillY} width="80" height={sgFillHeight} fill={sgLevelInk} opacity="0.16" />
+            <line x1="190" y1={sgFillY} x2="270" y2={sgFillY} stroke={sgLevelInk} strokeWidth="1" />
             <path
-              d="M202 140 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 M226 140 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 M250 140 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24"
+              d="M206 192 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 M230 192 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 M254 192 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24 q7 12 0 24 q-7 12 0 24"
               fill="none"
               stroke="var(--line)"
               strokeWidth="1"
             />
           </g>
-          <text x="226" y="84" textAnchor="middle" {...LABEL}>
+          <text x="226" y="112" textAnchor="middle" data-font-role="label" {...LABEL}>
             STEAM GEN
           </text>
-          <text x="226" y="102" textAnchor="middle" {...VALUE}>
-            {formatNumber(pSteamMPa, 2)} <tspan {...UNIT}>MPa steam</tspan>
-          </text>
-          <text x="228" y="386" textAnchor="middle" {...VALUE} fill={sgLevelInk}>
-            SG level {formatNumber(sgLevelPercent, 0)} <tspan fontSize="10">%</tspan>
-          </text>
-          <text x="228" y="406" textAnchor="middle" {...UNIT}>
-            {formatNumber(sgMW, 0)} MW HX
+          <text x="226" y="138" textAnchor="middle" data-font-role="value" {...VALUE}>
+            {formatNumber(pSteamMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
           </text>
 
           {/* steam line, turbine admission and dump branch */}
-          <path d="M268 144 H278" fill="none" stroke="var(--line-strong)" strokeWidth="2" />
+          <path d="M272 194 H282" fill="none" stroke="var(--line-strong)" strokeWidth="2" />
           <path
-            d="M278 144 V42 H356"
+            d="M278 194 V82 H354"
             fill="none"
             stroke={dumpOpen ? 'var(--warn-ink)' : 'var(--line)'}
             strokeWidth={dumpOpen ? '2' : '1'}
             strokeLinejoin="round"
           />
           {dumpOpen && (
-            <text x="356" y="34" textAnchor="end" {...UNIT} fill="var(--warn-ink)">
+            <text x="354" y="64" textAnchor="end" data-font-role="unit" {...UNIT} fill="var(--warn-ink)">
               DUMP {formatNumber(mDump, 0)} kg/s
             </text>
           )}
@@ -202,114 +205,140 @@ const PlantMimic: FC = () => {
           >
             {valveClosed ? (
               <>
-                <line x1="275" y1="135" x2="283" y2="153" stroke="var(--danger-ink)" strokeWidth="1.5" />
-                <line x1="275" y1="153" x2="283" y2="135" stroke="var(--danger-ink)" strokeWidth="1.5" />
+                <line x1="274" y1="185" x2="282" y2="203" stroke="var(--danger-ink)" strokeWidth="1.5" />
+                <line x1="274" y1="203" x2="282" y2="185" stroke="var(--danger-ink)" strokeWidth="1.5" />
               </>
             ) : (
-              <path d="M275 136 L283 144 L275 152 Z" fill="none" stroke="var(--ink-2)" strokeWidth="1.2" />
+              <path d="M274 186 L282 194 L274 202 Z" fill="none" stroke="var(--ink-2)" strokeWidth="1.2" />
             )}
           </g>
-          <rect x="278" y="108" width="78" height="126" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <text x="317" y="127" textAnchor="middle" {...LABEL}>
+          <rect x="282" y="180" width="74" height="154" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <text x="319" y="206" textAnchor="middle" data-font-role="label" {...LABEL}>
             TURBINE
           </text>
-          <text x="317" y="151" textAnchor="middle" {...VALUE}>
-            <tspan {...UNIT}>adm </tspan>{formatNumber(admissionPercent, 0)} <tspan {...UNIT}>%</tspan>
+          <text x="319" y="225" textAnchor="middle" data-font-role="unit" {...UNIT}>
+            ADM
           </text>
-          <text x="317" y="174" textAnchor="middle" {...VALUE}>
-            {formatNumber(electricMW, 0)} <tspan {...UNIT}>MW</tspan>
+          <text x="319" y="246" textAnchor="middle" data-font-role="value" {...VALUE}>
+            {formatNumber(admissionPercent, 0)} <tspan data-font-role="unit" {...UNIT}>%</tspan>
+          </text>
+          <text x="319" y="272" textAnchor="middle" data-font-role="value" {...VALUE}>
+            {formatNumber(electricMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
           </text>
           {tripActive && (
             <>
-              <text x="317" y="200" textAnchor="middle" fontSize="11" fill="var(--danger-ink)" letterSpacing="1.2">
+              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--danger-ink)">
                 TRIPPED
               </text>
-              <text x="317" y="216" textAnchor="middle" fontSize="8.5" fill="var(--danger-ink)">
-                {trip.label}
-              </text>
+              {tripDetailLines.map((line, i) => (
+                <text
+                  key={line}
+                  x="319"
+                  y={316 + i * 15}
+                  textAnchor="middle"
+                  data-font-role="status"
+                  fontSize="13.2"
+                  fill="var(--danger-ink)"
+                  letterSpacing="0.6"
+                >
+                  {line}
+                </text>
+              ))}
             </>
           )}
           {tripPending && (
             <>
-              <text x="317" y="200" textAnchor="middle" fontSize="10.5" fill="var(--warn-ink)" letterSpacing="0.7">
+              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
                 PENDING
               </text>
-              <text x="317" y="216" textAnchor="middle" fontSize="8" fill="var(--warn-ink)">
-                trip on run
+              <text
+                x="319"
+                y="316"
+                textAnchor="middle"
+                data-font-role="status"
+                fontSize="13.2"
+                fill="var(--warn-ink)"
+                letterSpacing="0.4"
+              >
+                ON RUN
               </text>
             </>
           )}
           {tripResetPending && (
             <>
-              <text x="317" y="200" textAnchor="middle" fontSize="9.5" fill="var(--warn-ink)" letterSpacing="0.5">
-                RESET PEND
+              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+                RESET
               </text>
-              <text x="317" y="216" textAnchor="middle" fontSize="8" fill="var(--warn-ink)">
-                on run
+              <text
+                x="319"
+                y="316"
+                textAnchor="middle"
+                data-font-role="status"
+                fontSize="13.2"
+                fill="var(--warn-ink)"
+                letterSpacing="0.4"
+              >
+                ON RUN
               </text>
             </>
           )}
 
           {/* feedwater return into the SG shell */}
-          <path d="M356 316 H268" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
-          <path d="M268 316 l8 -4 v8z" fill="var(--series-blue)" />
-          <text x="356" y="342" textAnchor="end" {...LABEL} fill="var(--series-blue)">
-            FEEDWATER
+          <path d="M356 418 H272" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
+          <path d="M272 418 l8 -4 v8z" fill="var(--series-blue)" />
+          <text x="356" y="362" textAnchor="end" data-font-role="label" {...LABEL} fill="var(--series-blue)">
+            {feedwaterManual ? 'FW MAN' : 'FEEDWATER'}
           </text>
-          <text x="356" y="362" textAnchor="end" {...VALUE}>
-            {formatNumber(mFeedwater, 0)} <tspan {...UNIT}>kg/s</tspan>
+          <text x="356" y="386" textAnchor="end" data-font-role="value" {...VALUE}>
+            {formatNumber(mFeedwater, 0)}
           </text>
-          {feedwaterManual && (
-            <text x="356" y="378" textAnchor="end" fontSize="10" fill="var(--warn-ink)" letterSpacing="1.2">
-              MAN
-            </text>
-          )}
-
-          {/* pressurizer on its surge line */}
-          <path d="M162 280 H176 V300" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
-          <rect x="118" y="208" width="44" height="70" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
-          <rect x="120" y="248" width="40" height="28" fill="var(--line)" />
-          <text x="76" y="214" textAnchor="middle" {...LABEL}>
-            PRESSURIZER
+          <text x="356" y="404" textAnchor="end" data-font-role="unit" {...UNIT}>
+            kg/s
           </text>
-          <text x="74" y="276" textAnchor="middle" {...VALUE} fill={BAND_FILL[band]}>
-            {formatNumber(pMPa, 2)} <tspan fontSize="10">MPa</tspan>
+          {/* reactor vessel and core */}
+          <rect x="58" y="382" width="110" height="128" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <rect x="72" y="400" width="82" height="78" fill="none" stroke="var(--line)" strokeWidth="1" />
+          {[0, 1, 2, 3, 4, 5].map((i) => (
+            <rect key={i} x={80 + i * 12} y="400" width="5" height={78 * inserted} fill="var(--series-rod)" />
+          ))}
+          <text x="113" y="540" textAnchor="middle" data-font-role="label" {...LABEL}>
+            CORE
           </text>
-          <text
-            x="74"
-            y="292"
-            textAnchor="middle"
-            {...UNIT}
-            fill={band === 'green' ? 'var(--ink-2)' : BAND_FILL[band]}
-          >
-            {pressureNote}
+          <text x="113" y="564" textAnchor="middle" data-font-role="value" {...VALUE}>
+            {formatNumber(powerMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
+          </text>
+          <text x="113" y="586" textAnchor="middle" data-font-role="unit" {...UNIT}>
+            fuel {tFuel} K
+          </text>
+          <text x="113" y="604" textAnchor="middle" data-font-role="unit" {...UNIT}>
+            rods {formatNumber(inserted * 100, 0)} %
           </text>
 
           {/* pump on the cold leg */}
-          <circle cx="282" cy="548" r="15" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <path d="M276 541 l13 7 -13 7z" fill="var(--series-blue)" />
-          <text x="282" y="577" textAnchor="middle" {...LABEL}>
+          <circle cx="278" cy="618" r="15" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
+          <path d="M272 611 l13 7 -13 7z" fill="var(--series-blue)" />
+          <text x="246" y="646" textAnchor="middle" data-font-role="label" {...LABEL}>
             RCP
           </text>
 
           {/* leg temperatures */}
-          <text x="20" y="322" {...LABEL}>
+          <text x="96" y="348" data-font-role="label" {...LABEL}>
             HOT LEG
           </text>
-          <text x="20" y="306" {...VALUE}>
-            {tHot} <tspan {...UNIT}>K</tspan>
+          <text x="96" y="374" data-font-role="value" {...VALUE}>
+            {tHot} <tspan data-font-role="unit" {...UNIT}>K</tspan>
           </text>
-          <text x="60" y="600" {...LABEL} fill="var(--series-blue)">
+          <text x="58" y="674" data-font-role="label" {...LABEL} fill="var(--series-blue)">
             COLD LEG
           </text>
-          <text x="60" y="624" {...VALUE}>
-            {tCold} <tspan {...UNIT}>K</tspan>
+          <text x="58" y="700" data-font-role="value" {...VALUE}>
+            {tCold} <tspan data-font-role="unit" {...UNIT}>K</tspan>
           </text>
-          <text x="306" y="600" textAnchor="end" {...LABEL}>
+          <text x="312" y="674" textAnchor="end" data-font-role="label" {...LABEL}>
             AVERAGE
           </text>
-          <text x="306" y="624" textAnchor="end" {...VALUE}>
-            {tAvg} <tspan {...UNIT}>K</tspan>
+          <text x="312" y="700" textAnchor="end" data-font-role="value" {...VALUE}>
+            {tAvg} <tspan data-font-role="unit" {...UNIT}>K</tspan>
           </text>
         </svg>
       </div>
