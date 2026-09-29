@@ -316,6 +316,60 @@ async def test_rod_auto_to_manual_syncs_command_to_actual_bank_position() -> Non
     assert frame["rod_command"] == pytest.approx(moved_position)
 
 
+async def test_rod_auto_to_manual_during_reset_syncs_to_rebuilt_bank_position() -> None:
+    """AUTO→MANUAL during reset uses the new t=0 bank position, not the stale pre-reset frame."""
+    rt = SimRuntime()
+    assert (await rt.handle_command({"type": "set_rod_auto", "value": True}))["type"] == "ack"
+    assert (await rt.handle_command({"type": "set_turbine_load", "value": 0.0}))["type"] == "ack"
+
+    for _ in range(12):
+        _step_runtime_once(rt, 10.0)
+        if abs(rt.snapshot()["rod_position"] - 0.5) > 0.005:
+            break
+    moved_position = rt.snapshot()["rod_position"]
+    assert abs(moved_position - 0.5) > 0.005, "automatic control did not move the bank enough for the test"
+
+    await rt.start()
+    q: asyncio.Queue | None = None
+    try:
+        rt.pause()
+
+        real_stop_task = rt._stop_task
+
+        async def yielding_stop_task() -> None:
+            await asyncio.sleep(0)
+            await real_stop_task()
+
+        rt._stop_task = yielding_stop_task
+        reset_task = asyncio.create_task(rt.reset())
+        await asyncio.sleep(0)
+        assert rt._reset_in_progress is True
+
+        assert (await rt.handle_command({"type": "set_rod_auto", "value": False})) == {
+            "type": "ack",
+            "command": "set_rod_auto",
+        }
+        await reset_task
+
+        frame = rt.snapshot()
+        assert frame["t"] == 0.0
+        assert frame["rod_auto"] is False
+        assert frame["rod_position"] == pytest.approx(0.5)
+        assert frame["rod_command"] == pytest.approx(0.5)
+
+        q = rt.subscribe()
+        q.get_nowait()
+        rt.resume()
+        resumed = await _next_frame(q, lambda f: f["t"] > 0.0, timeout=2.0)
+        assert resumed["rod_position"] == pytest.approx(0.5)
+        assert resumed["rod_command"] == pytest.approx(0.5)
+    finally:
+        rt._stop_task = real_stop_task
+        if q is not None:
+            rt.unsubscribe(q)
+        await rt.stop()
+
+
 async def test_reset_keeps_and_clears_secondary_command_state() -> None:
     """reset() preserves the planned settings and clears trip/manual one-shot states."""
     rt = SimRuntime()

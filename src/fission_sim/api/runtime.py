@@ -449,6 +449,13 @@ class SimRuntime:
         # only the lifecycle methods (holding _lifecycle_lock) change it.
         self._task: asyncio.Task | None = None
 
+        # True while reset() is between preparing reset command state and
+        # publishing the rebuilt engine's t = 0 frame. Synchronous setters can
+        # run during reset's awaits; AUTO→MANUAL rod transfer uses this flag
+        # to sync against the engine that will run after reset, not the stale
+        # pre-reset frame.
+        self._reset_in_progress = False
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -691,28 +698,32 @@ class SimRuntime:
         run one after the other and leave exactly one step task.
         """
         async with self._lifecycle_lock:
-            # Restart a loop that was started and not stopped, including
-            # one that died with an error (its task is kept until stop()).
-            restart = self._task is not None
-            # Reset the rod commands before the first await below, so a
-            # command another client sends while the old loop winds down is
-            # applied after the reset instead of being overwritten by it.
-            self._cmd.rod_command = _DESIGN_ROD_COMMAND
-            self._cmd.scrammed = False
-            self._cmd.turbine_trip = False
-            self._cmd.feedwater_manual = None
-            await self._stop_task()
+            self._reset_in_progress = True
+            try:
+                # Restart a loop that was started and not stopped, including
+                # one that died with an error (its task is kept until stop()).
+                restart = self._task is not None
+                # Reset the rod commands before the first await below, so a
+                # command another client sends while the old loop winds down is
+                # applied after the reset instead of being overwritten by it.
+                self._cmd.rod_command = _DESIGN_ROD_COMMAND
+                self._cmd.scrammed = False
+                self._cmd.turbine_trip = False
+                self._cmd.feedwater_manual = None
+                await self._stop_task()
 
-            if self._cmd.model_limit is not None:
-                self._cmd.model_limit = None
-                self._cmd.running = True
-            # Built after the command reset: the engine's rod_command default
-            # comes from self._cmd.
-            self._engine = self._new_engine()
-            self._publish(_build_telemetry_frame(self._engine.snapshot(), self._cmd))
+                if self._cmd.model_limit is not None:
+                    self._cmd.model_limit = None
+                    self._cmd.running = True
+                # Built after the command reset: the engine's rod_command default
+                # comes from self._cmd.
+                self._engine = self._new_engine()
+                self._publish(_build_telemetry_frame(self._engine.snapshot(), self._cmd))
 
-            if restart:
-                self._start_task()
+                if restart:
+                    self._start_task()
+            finally:
+                self._reset_in_progress = False
 
     def _start_task(self) -> None:
         """Create the step task unless one is running. Caller holds the lifecycle lock."""
@@ -914,13 +925,17 @@ class SimRuntime:
         Notes
         -----
         On an AUTO→MANUAL transfer, ``rod_command`` is synchronized to the
-        actual control-bank position from the latest accepted frame. Without
-        that bumpless transfer, a stale manual command would immediately
-        drive the bank after automatic control had moved it.
+        actual control-bank position from the latest accepted frame. During a
+        concurrent reset it synchronizes to the rebuilt engine's initial bank
+        position instead, because that is the engine that will run next.
+        Without this bumpless transfer, a stale manual command would
+        immediately drive the bank after automatic control had moved it.
         """
         enabled = bool(enabled)
         if self._cmd.rod_auto and not enabled:
-            self._cmd.rod_command = float(self._latest_frame["rod_position"])
+            self._cmd.rod_command = (
+                _DESIGN_ROD_COMMAND if self._reset_in_progress else float(self._latest_frame["rod_position"])
+            )
         self._cmd.rod_auto = enabled
         self._command_state_changed()
 
