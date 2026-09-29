@@ -274,25 +274,70 @@ test('turbine trip raises steam pressure and opens the dump', async ({ page }) =
 
 test('rod AUTO mode displays status and returns to MANUAL bumplessly', async ({ page }) => {
   await waitForConsole(page)
-  await resetToDesignFixture(page, 1)
+  await resetToDesignFixture(page, 10)
 
   const operatorControls = page.locator('section[aria-label="Operator controls"]')
   const rodMode = operatorControls.getByRole('group', { name: /rod control mode/i })
+  const rodPositionValue = page.getByTestId('status-rod_position-value')
+  const rodCommandValue = page.getByTestId('status-rod_command-value')
 
-  await rodMode.getByRole('button', { name: /^auto$/i }).click()
-  await expect(operatorControls.getByText(/AUTO ACTIVE/i)).toBeVisible({ timeout: 20_000 })
+  try {
+    await rodMode.getByRole('button', { name: /^auto$/i }).click()
+    await expect(operatorControls.getByText(/AUTO ACTIVE/i)).toBeVisible({ timeout: 20_000 })
+    await sendCommand(page, { type: 'set_turbine_load', value: 0.9 })
 
-  await rodMode.getByRole('button', { name: /^manual$/i }).click()
-  await expect
-    .poll(
-      async () => {
-        const frame = await readLatestFrame(page)
-        if (frame.rod_auto !== false || frame.rod_command === undefined || frame.rod_position === undefined) {
-          return Number.POSITIVE_INFINITY
-        }
-        return Math.abs(frame.rod_command - frame.rod_position)
-      },
-      { timeout: 20_000, intervals: [250, 500, 1_000] },
-    )
-    .toBeLessThan(0.002)
+    await expect
+      .poll(
+        async () => {
+          const frame = await readLatestFrame(page)
+          if (frame.rod_auto !== true || frame.rod_command === undefined || frame.rod_position === undefined) {
+            return 0
+          }
+          return Math.abs(frame.rod_position - 0.5)
+        },
+        { timeout: 60_000, intervals: [500, 1_000, 2_000] },
+      )
+      .toBeGreaterThan(0.01)
+
+    await operatorControls.getByRole('button', { name: /^pause$/i }).click()
+    await expect(operatorControls.getByRole('button', { name: /^resume$/i })).toBeVisible({ timeout: 20_000 })
+
+    const pausedFrame = await readLatestFrame(page)
+    expect(pausedFrame.running).toBe(false)
+    let capturedPositionPct = 50
+    await expect
+      .poll(async () => {
+        capturedPositionPct = await numericText(rodPositionValue)
+        return Math.abs(capturedPositionPct - 50)
+      }, {
+        timeout: 20_000,
+        intervals: [250, 500, 1_000],
+      })
+      .toBeGreaterThan(1)
+
+    await rodMode.getByRole('button', { name: /^manual$/i }).click()
+    await expect
+      .poll(async () => Math.abs((await numericText(rodCommandValue)) - capturedPositionPct), {
+        timeout: 20_000,
+        intervals: [250, 500, 1_000],
+      })
+      .toBeLessThan(0.2)
+
+    await operatorControls.getByRole('button', { name: /^resume$/i }).click()
+    await expect
+      .poll(
+        async () => {
+          const frame = await readLatestFrame(page)
+          return frame.t === undefined || pausedFrame.t === undefined ? 0 : frame.t - pausedFrame.t
+        },
+        { timeout: 20_000, intervals: [250, 500, 1_000] },
+      )
+      .toBeGreaterThan(2)
+
+    const resumedPositionPct = await numericText(rodPositionValue)
+    expect(Math.abs(resumedPositionPct - capturedPositionPct)).toBeLessThan(0.3)
+    expect(Math.abs(50 - resumedPositionPct)).toBeGreaterThanOrEqual(Math.abs(50 - capturedPositionPct) - 0.3)
+  } finally {
+    await resetToDesignFixture(page, 1).catch(() => undefined)
+  }
 })
