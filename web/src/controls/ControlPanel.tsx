@@ -47,6 +47,9 @@ const Readout: FC<{ label: string; value: string; unit?: string }> = ({ label, v
   </div>
 )
 
+const P4_TURBINE_TRIP_COPY =
+  "SCRAM also trips the turbine through the simulator's P-4 turbine-trip consequence, so steam transfers to the dump path while fission power falls."
+
 // ---------------------------------------------------------------------------
 // ControlPanel
 // ---------------------------------------------------------------------------
@@ -131,7 +134,7 @@ const ControlPanel: FC = () => {
       <ConfirmDialog
         open={scramDialogOpen}
         title="Initiate SCRAM?"
-        message="SCRAM drops the control bank and shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm). It also trips the turbine through the P-4 interlock, so steam goes to the dump path while fission power falls."
+        message={`SCRAM drops the control bank and shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm). ${P4_TURBINE_TRIP_COPY}`}
         confirmLabel="SCRAM"
         danger
         onConfirm={handleScramConfirm}
@@ -206,11 +209,7 @@ const ControlPanel: FC = () => {
                   value={formatNumber(rodPosition === null ? null : rodPosition * 100, 0)}
                 />
                 <p className="text-[11.5px] leading-snug text-ink-2">
-                  {rodAuto
-                    ? 'AUTO owns rod demand; the manual slider is parked until MANUAL.'
-                    : scrammed
-                      ? 'Shutdown bank stays in. Reset Scram gives the control bank back to the selected mode.'
-                      : 'The bank moves at 1 % per second toward the command.'}
+                  {rodModeStatus.detail}
                 </p>
               </div>
             </div>
@@ -262,7 +261,9 @@ const ControlPanel: FC = () => {
 
           {/* ── 2. Safety ───────────────────────────────────────────────── */}
           <section aria-label="Safety" className={scrammed ? 'grid grid-cols-2 gap-2' : ''}>
-            <HelpTip tip="Emergency shutdown. Drops the control and shutdown banks and trips the turbine through P-4. Fission power falls within seconds, then fades as delayed-neutron precursors decay; steam removal transfers to the dump path.">
+            <HelpTip
+              tip={`Emergency shutdown. Drops the control and shutdown banks. Fission power falls within seconds, then fades as delayed-neutron precursors decay. ${P4_TURBINE_TRIP_COPY}`}
+            >
               {(tipId) => (
                 <button
                   aria-describedby={tipId}
@@ -280,7 +281,7 @@ const ControlPanel: FC = () => {
             {scrammed && (
               <HelpTip
                 align="end"
-                tip="Clears the SCRAM latch, returns the control bank to the selected rod-control mode, sets turbine admission demand to 0 %, and keeps any P-4 turbine trip latched until the turbine valves are closed. The shutdown bank stays inserted, so the reactor stays subcritical until Reset Simulation."
+                tip="Clears the SCRAM latch, returns the control bank to the selected rod-control mode, and sets turbine admission demand to 0 %. A P-4 turbine trip remains latched until Reset Turbine Trip after actual admission is closed. The shutdown bank stays inserted, so the reactor stays subcritical until Reset Simulation."
               >
                 {(tipId) => (
                   <button

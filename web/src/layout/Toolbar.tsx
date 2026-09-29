@@ -2,17 +2,22 @@
  * Toolbar — the console's top bar.
  *
  * Left: the wordmark, the elapsed simulation clock, and the plant state as
- * dot-plus-word items: connection, run state with speed, and the SCRAM
- * latch. Right: the learning-use note and a link to the README. Each state
- * item explains itself on hover, focus or tap.
+ * dot-plus-word items: connection, run state with speed, SCRAM latch,
+ * effective turbine trip, and rod-control mode. A compact persistent action
+ * strip keeps SCRAM and Pause/Resume reachable while columns scroll. Right:
+ * the learning-use note and a link to the README. Each state item explains
+ * itself on hover, focus or tap.
  */
 
-import type { FC } from 'react'
+import { type FC, useCallback, useState } from 'react'
+import ConfirmDialog from '../controls/ConfirmDialog'
+import { TURBINE_ADMISSION_CLOSED_FRACTION, deriveAdmissionStatus } from '../state/admissionStatus'
+import { deriveRodModeStatus, deriveTurbineTripStatus, type StatusTone } from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import type { ConnectionStatus } from '../types/telemetry'
-import { InfoTip } from '../ui/InfoTip'
+import { HelpTip, InfoTip } from '../ui/InfoTip'
 import { formatClock } from '../ui/format'
-import { BookIcon } from '../ui/icons'
+import { BookIcon, PauseIcon, PlayIcon } from '../ui/icons'
 import { TOOLTIPS } from '../widgets/tooltips'
 
 const README_URL = 'https://github.com/jbencina/fission-sim#readme'
@@ -20,6 +25,16 @@ const README_URL = 'https://github.com/jbencina/fission-sim#readme'
 const item =
   'inline-flex h-7 items-center gap-2 text-[12.5px] tracking-[0.04em] text-ink-2 transition-colors hover:text-ink'
 const dot = 'inline-block h-1.5 w-1.5 rounded-full'
+const compactButton =
+  'inline-flex h-7 items-center justify-center gap-1.5 border border-line-strong px-2 text-[11.5px] tracking-[0.08em] transition-colors hover:border-ink hover:text-ink disabled:cursor-not-allowed disabled:opacity-45'
+const P4_TURBINE_TRIP_COPY =
+  "SCRAM also trips the turbine through the simulator's P-4 turbine-trip consequence, so steam transfers to the dump path while fission power falls."
+
+function toneClass(tone: StatusTone): string {
+  if (tone === 'danger') return '!text-danger'
+  if (tone === 'warn') return '!text-warn'
+  return ''
+}
 
 // ---------------------------------------------------------------------------
 // Connection
@@ -98,6 +113,119 @@ const SimState: FC = () => {
   )
 }
 
+const TurbineTripChip: FC = () => {
+  const latest = useTelemetryStore((s) => s.latest)
+  if (!latest) return null
+
+  const tripStatus = deriveTurbineTripStatus(latest)
+  const admissionStatus = deriveAdmissionStatus(latest)
+  const closed = admissionStatus.admissionClosed
+  const cause =
+    admissionStatus.tripState === 'trip-active-closed'
+      ? `${tripStatus.cause}; admission closed at ≤ ${TURBINE_ADMISSION_CLOSED_FRACTION * 100} %`
+      : tripStatus.cause
+  const label =
+    admissionStatus.tripState === 'available'
+      ? 'Turbine not tripped'
+      : admissionStatus.tripState === 'trip-active-closed'
+        ? `Turbine trip active · ${tripStatus.cause}`
+        : `Turbine ${tripStatus.label.toLowerCase()} · ${tripStatus.cause}`
+
+  return (
+    <InfoTip
+      title="Turbine trip status"
+      body={cause}
+      label={label}
+      className={`${item} ${toneClass(tripStatus.tone)}`}
+    >
+      <span className={`${dot} ${tripStatus.active || tripStatus.pending ? 'bg-warn' : 'bg-ink-3'}`} />
+      <span className="tabular-nums">{label}</span>
+      {tripStatus.active && closed && <span className="text-ink-3">closed</span>}
+    </InfoTip>
+  )
+}
+
+const RodModeChip: FC = () => {
+  const latest = useTelemetryStore((s) => s.latest)
+  if (!latest) return null
+
+  const rodStatus = deriveRodModeStatus(latest)
+  return (
+    <InfoTip
+      title="Rod-control mode"
+      body={rodStatus.detail}
+      label={`Rod-control mode: ${rodStatus.label}`}
+      className={`${item} ${toneClass(rodStatus.tone)}`}
+    >
+      <span className={`${dot} ${rodStatus.tone === 'warn' ? 'bg-warn' : 'bg-ink-3'}`} />
+      <span className="tabular-nums">Rods {rodStatus.label}</span>
+    </InfoTip>
+  )
+}
+
+const ToolbarActions: FC = () => {
+  const status = useTelemetryStore((s) => s.status)
+  const latest = useTelemetryStore((s) => s.latest)
+  const sendCommand = useTelemetryStore((s) => s.sendCommand)
+  const connected = status === 'connected'
+  const scrammed = latest?.scrammed === true
+  const running = latest?.running === true
+  const halted = latest != null && latest.model_limit !== null
+  const [scramDialogOpen, setScramDialogOpen] = useState(false)
+
+  const handleScramConfirm = useCallback(() => {
+    setScramDialogOpen(false)
+    sendCommand({ type: 'scram' })
+  }, [sendCommand])
+
+  const handlePauseResume = useCallback(() => {
+    sendCommand({ type: running ? 'pause' : 'resume' })
+  }, [running, sendCommand])
+
+  return (
+    <>
+      <ConfirmDialog
+        open={scramDialogOpen}
+        title="Initiate SCRAM?"
+        message={`SCRAM drops the control bank and shutdown bank; both are fully inserted within about 2 s (about −7,000 pcm). ${P4_TURBINE_TRIP_COPY}`}
+        confirmLabel="SCRAM"
+        danger
+        onConfirm={handleScramConfirm}
+        onCancel={() => setScramDialogOpen(false)}
+      />
+      <div className="order-last flex basis-full flex-wrap items-center gap-2 border-t border-line pt-2 sm:order-none sm:basis-auto sm:border-0 sm:pt-0">
+        <HelpTip tip={`Emergency shutdown. Drops both rod banks. ${P4_TURBINE_TRIP_COPY}`}>
+          {(tipId) => (
+            <button
+              aria-describedby={tipId}
+              type="button"
+              disabled={!connected || scrammed}
+              onClick={() => setScramDialogOpen(true)}
+              className={`${compactButton} border-danger text-danger hover:border-danger hover:bg-danger-soft hover:text-danger`}
+            >
+              {scrammed ? 'SCRAM latched' : 'SCRAM'}
+            </button>
+          )}
+        </HelpTip>
+        <HelpTip tip="Pauses simulator time advancement. While paused, accepted commands can show as pending until the simulation runs.">
+          {(tipId) => (
+            <button
+              aria-describedby={tipId}
+              type="button"
+              disabled={!connected || halted || latest == null}
+              onClick={handlePauseResume}
+              className={`${compactButton} text-ink-2`}
+            >
+              {running ? <PauseIcon size={12} /> : <PlayIcon size={11} />}
+              {running ? 'Pause' : 'Resume'}
+            </button>
+          )}
+        </HelpTip>
+      </div>
+    </>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Right-hand items
 // ---------------------------------------------------------------------------
@@ -131,7 +259,11 @@ const Toolbar: FC = () => (
       <div className="order-last flex basis-full flex-wrap items-center gap-x-5 gap-y-1 sm:order-none sm:basis-auto">
         <ConnectionIndicator />
         <SimState />
+        <TurbineTripChip />
+        <RodModeChip />
       </div>
+
+      <ToolbarActions />
 
       <div className="ml-auto flex items-center gap-4">
         <LearningNote />

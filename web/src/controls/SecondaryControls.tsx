@@ -14,6 +14,7 @@ import { LEVEL_SETPOINT_MAX, LEVEL_SETPOINT_MIN } from '../types/telemetry'
 import { HelpTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
 import ConfirmDialog from './ConfirmDialog'
+import { TURBINE_ADMISSION_CLOSED_FRACTION, deriveAdmissionStatus } from '../state/admissionStatus'
 import {
   clampFraction,
   deriveFeedwaterModeStatus,
@@ -60,6 +61,14 @@ const Readout: FC<{ label: string; value: string; unit: string }> = ({ label, va
 
 const Divider: FC = () => <div className="-mx-4 my-4 h-px bg-line" />
 
+const P9_SCOPE_WARNING = [
+  'In representative Westinghouse plants with P-9, a turbine trip above about 50 % power also trips the reactor;',
+  'thresholds and logic vary. That protection is not modelled here.',
+].join(' ')
+
+const INVENTORY_SCOPE_WARNING =
+  'Unprotected inventory exercise — no low-low-level reactor trip or auxiliary feedwater start; no high-high-level turbine trip or feedwater isolation.'
+
 /**
  * Secondary-side operator panel: turbine, SG level and feedwater controls.
  */
@@ -88,6 +97,17 @@ const SecondaryControls: FC = () => {
         cause: 'Waiting for first telemetry frame.',
         active: false,
         tone: 'normal' as const,
+      }
+  const admissionStatus = latest
+    ? deriveAdmissionStatus(latest)
+    : {
+        selectedDemand: turbineDemand,
+        effectiveDemand: turbineDemand,
+        actualAdmission: turbineActual ?? 0,
+        demandPending: false,
+        admissionClosed: true,
+        resetBlocked: false,
+        tripState: 'available' as const,
       }
   const feedwaterStatus = latest
     ? deriveFeedwaterModeStatus(latest)
@@ -159,35 +179,66 @@ const SecondaryControls: FC = () => {
   )
 
   const actualAdmissionPct = turbineActual === null ? 0 : clampFraction(turbineActual) * 100
+  const actualAdmissionDisplayPct = admissionStatus.actualAdmission * 100
   const levelMarkerPct =
     levelSg === null ? 50 : rangePercent(levelSg, LEVEL_SETPOINT_MIN, LEVEL_SETPOINT_MAX)
   const manualFlow = latest === null ? null : feedwaterSlider.value * mFwMax
   const manualDesignPct = designFeedwater > 0 && manualFlow !== null ? (manualFlow / designFeedwater) * 100 : null
-  const turbineResetCopy =
-    latest?.turbine_trip === true
-      ? 'Reset Turbine Trip is accepted once actual admission is closed.'
-      : latest?.scrammed === true
-        ? 'Reset Scram sets demand to 0 % and keeps the trip until closed.'
-        : 'Demand remains retained until the trip clears.'
+  const turbineTripFromResetScram =
+    latest?.turbine_trip === true &&
+    latest.scrammed === false &&
+    latest.shutdown_position < 0.5
+  const turbineResetCopy = (() => {
+    if (turbineTripFromResetScram) {
+      return 'After Reset Scram, the P-4 turbine trip remains latched until Reset Turbine Trip after actual admission is closed.'
+    }
+    if (latest?.turbine_trip === true) {
+      return 'Reset Turbine Trip is accepted once actual admission is closed; re-admission remains an explicit later demand.'
+    }
+    if (latest?.scrammed === true) {
+      return 'Reset Scram sets demand to 0 % and keeps the turbine trip latched until Reset Turbine Trip after the valves are closed.'
+    }
+    return 'Demand remains retained until the trip clears.'
+  })()
   const turbineContext =
-    tripStatus.active || tripStatus.kind === 'reset-pending'
-      ? `Valves closing — demand ${formatNumber(turbineSlider.value * 100, 0)} % retained; ${turbineResetCopy}`
+    admissionStatus.tripState === 'reset-pending'
+      ? `Reset pending — ${tripStatus.cause}. Actual admission ${formatNumber(actualAdmissionDisplayPct, 1)} %.`
+      : admissionStatus.tripState === 'trip-active-closed'
+        ? `Trip active; admission closed. ${turbineResetCopy}`
+        : admissionStatus.tripState === 'trip-active-closing'
+          ? `Valves closing, ${formatNumber(actualAdmissionDisplayPct, 1)} % open — reset available when closed. ${turbineResetCopy}`
+          : tripStatus.kind === 'trip-pending'
+            ? `Trip pending — demand ${formatNumber(turbineSlider.value * 100, 0)} % is retained until the simulation runs.`
+            : 'Admission demand ramps at 5 %/min; the marker shows actual valve admission.'
+  const turbineTripLabel =
+    admissionStatus.tripState === 'trip-active-closed' ? 'TRIP ACTIVE' : tripStatus.label
+  const turbineTripDetail =
+    admissionStatus.tripState === 'trip-active-closed'
+      ? `${tripStatus.cause}; admission closed`
       : tripStatus.kind === 'trip-pending'
-        ? `Trip pending — demand ${formatNumber(turbineSlider.value * 100, 0)} % is retained until the simulation runs.`
-        : 'Admission demand ramps at 5 %/min; the marker shows actual valve admission.'
+        ? tripStatus.cause
+        : tripStatus.cause
+  const turbineResetDisabled = !connected || admissionStatus.resetBlocked
+  const turbineResetTip = admissionStatus.resetBlocked
+    ? `Valves closing, ${formatNumber(actualAdmissionDisplayPct, 1)} % open — reset available when closed. The backend accepts Reset Turbine Trip once actual admission is at or below ${formatNumber(
+        TURBINE_ADMISSION_CLOSED_FRACTION * 100,
+        1,
+      )} %.`
+    : 'Clears only the operator turbine-trip latch after actual admission is closed. Admission demand is set to 0 %, and re-admission is a deliberate later demand change. After Reset Scram, the P-4 turbine trip remains latched here until Reset Turbine Trip.'
   const feedwaterPending = feedwaterStatus.kind === 'pending'
   const feedwaterSelectedText = formatFeedwaterSelection(
     feedwaterStatus.selectedMode,
     feedwaterStatus.selectedDemandKgS,
     mFwMax,
   )
+  const feedwaterDemandLabel = feedwaterStatus.selectedMode === 'auto' ? 'Tracked demand' : 'Manual demand'
 
   return (
     <>
       <ConfirmDialog
         open={tripDialogOpen}
         title="Trip turbine?"
-        message="This is an unprotected exercise. A real plant also trips the reactor on turbine trip above about 50 % power (P-9); this model does not. The steam dump takes the steam."
+        message={`This is an unprotected exercise. ${P9_SCOPE_WARNING} The steam dump takes the steam in this model.`}
         confirmLabel="Trip turbine"
         danger
         onConfirm={handleTripConfirm}
@@ -203,13 +254,14 @@ const SecondaryControls: FC = () => {
         <fieldset disabled={!connected} className={connected ? '' : 'opacity-60'}>
           {/* ── Turbine admission and trip ──────────────────────────────── */}
           <section aria-label="Turbine controls" className="mt-3">
+            <h3 className="text-[12px] uppercase tracking-[0.14em] text-ink-2">Turbine admission</h3>
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="mt-2">
                 <div className="text-[11.5px] tracking-[0.04em] text-ink-2">Effective trip</div>
                 <div className={`font-mono text-[13px] tabular-nums ${toneClass(tripStatus.tone)}`}>
-                  {tripStatus.label}
+                  {turbineTripLabel}
                 </div>
-                <div className="text-[10.5px] text-ink-3">{tripStatus.cause}</div>
+                <div className="text-[10.5px] text-ink-3">{turbineTripDetail}</div>
               </div>
             </div>
 
@@ -255,13 +307,19 @@ const SecondaryControls: FC = () => {
                 </div>
               )}
             </HelpTip>
-            <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[10.5px] text-ink-3">
-              <span>Closed</span>
-              <span>Full admission</span>
+                {admissionStatus.demandPending && (
+                  <p className="mt-2 text-[11px] leading-snug text-warn">
+                    Admission demand pending — selected {formatNumber(admissionStatus.selectedDemand * 100, 0)} %,
+                    effective {formatNumber(admissionStatus.effectiveDemand * 100, 0)} % until the simulation runs.
+                  </p>
+                )}
+                <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[10.5px] text-ink-3">
+                  <span>Closed</span>
+                  <span>Full admission</span>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
-              <HelpTip tip="Trips the turbine stop valves. This is unprotected in the simulator: a real plant also trips the reactor above about 50 % power (P-9), but that protection is not modeled here.">
+              <HelpTip tip={`Trips the turbine stop valves. This is unprotected in the simulator: ${P9_SCOPE_WARNING}`}>
                 {(tipId) => (
                   <button
                     type="button"
@@ -276,15 +334,17 @@ const SecondaryControls: FC = () => {
               </HelpTip>
 
               {latest?.turbine_trip === true ? (
-                <HelpTip
-                  align="end"
-                  tip="Clears only the operator turbine-trip latch after actual admission is closed. The backend refuses while valves are more than 0.5 % open. Admission demand returns to 0 %, and re-admission is a deliberate later demand change."
-                >
+                <HelpTip align="end" tip={turbineResetTip}>
                   {(tipId) => (
                     <button
                       type="button"
                       aria-describedby={tipId}
-                      disabled={!connected}
+                      disabled={turbineResetDisabled}
+                      title={
+                        admissionStatus.resetBlocked
+                          ? 'Reset available when actual admission is closed'
+                          : undefined
+                      }
                       onClick={handleResetTrip}
                       className="btn w-full !border-ink"
                     >
@@ -302,8 +362,12 @@ const SecondaryControls: FC = () => {
 
           {/* ── SG level setpoint ───────────────────────────────────────── */}
           <section aria-label="Steam-generator level controls">
+            <h3 className="text-[12px] uppercase tracking-[0.14em] text-ink-2">Feedwater &amp; SG level</h3>
+            <p className="mt-1 border border-warn-line bg-warn-soft px-2 py-1.5 text-[11px] leading-snug text-warn">
+              {INVENTORY_SCOPE_WARNING}
+            </p>
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="mt-3">
                 <h3 className="text-[12px] uppercase tracking-[0.14em] text-ink-2">
                   SG collapsed liquid fraction
                 </h3>
@@ -328,7 +392,9 @@ const SecondaryControls: FC = () => {
               />
             </div>
 
-            <HelpTip tip="Feedwater level target for SG collapsed liquid fraction. The allowed 35–90 % operating band stays inside the model validity limits; collapsed level is inventory, not a shrink/swell narrow-range indication.">
+            <HelpTip
+              tip={`Feedwater level target for SG collapsed liquid fraction. The allowed 35–90 % operating band stays inside the model validity limits; collapsed level is inventory, not a shrink/swell narrow-range indication. ${INVENTORY_SCOPE_WARNING}`}
+            >
               {(tipId) => (
                 <div className="relative mt-3">
                   <div
@@ -363,7 +429,9 @@ const SecondaryControls: FC = () => {
 
           {/* ── Feedwater mode and manual demand ────────────────────────── */}
           <section aria-label="Feedwater controls">
-            <HelpTip tip="AUTO uses the three-element level controller. MANUAL sends a direct feedwater demand; selecting MANUAL is bumpless because the UI sends the current demand fraction. Returning to AUTO sends null.">
+            <HelpTip
+              tip={`AUTO uses the three-element level controller. MANUAL sends a direct feedwater demand; selecting MANUAL is bumpless because the UI sends the current demand fraction. Returning to AUTO restores SG level control to automatic. ${INVENTORY_SCOPE_WARNING}`}
+            >
               {(tipId) => (
                 <div className="flex items-center justify-between gap-3">
                   <div aria-describedby={tipId} className="seg" role="group" aria-label="Feedwater mode">
@@ -403,7 +471,11 @@ const SecondaryControls: FC = () => {
             </HelpTip>
 
             <div className="mt-3 grid grid-cols-3 gap-3">
-              <Readout label="Manual" value={formatNumber(feedwaterSlider.value * 100, 0)} unit="% max" />
+              <Readout
+                label={feedwaterDemandLabel}
+                value={formatNumber(feedwaterSlider.value * 100, 0)}
+                unit="% max"
+              />
               <Readout label="Demand" value={formatNumber(manualFlow, 0)} unit="kg/s" />
               <Readout label="Design" value={formatNumber(manualDesignPct, 0)} unit="%" />
             </div>
@@ -414,7 +486,9 @@ const SecondaryControls: FC = () => {
               </p>
             )}
 
-            <HelpTip tip="Manual feedwater demand is a percent of maximum feedwater flow. Maximum is 120 % of design flow, so 83 % max is about 100 % design. The slider is disabled in AUTO; use MANUAL to take direct control.">
+            <HelpTip
+              tip={`Manual feedwater demand is a percent of maximum feedwater flow. Maximum is 120 % of design flow, so 83 % max is about 100 % design. The slider is disabled in AUTO; use MANUAL to take direct control. Returning to AUTO restores SG level control to automatic. ${INVENTORY_SCOPE_WARNING}`}
+            >
               {(tipId) => (
                 <div className="relative mt-3">
                   <div
@@ -440,10 +514,14 @@ const SecondaryControls: FC = () => {
                 </div>
               )}
             </HelpTip>
-            <div aria-hidden="true" className="mt-0.5 flex justify-between px-0.5 text-[10.5px] text-ink-3">
-              <span>0 % max</span>
-              <span>100 % design</span>
-              <span>120 % design</span>
+            <div aria-hidden="true" className="mt-0.5 px-0.5 text-[10.5px] text-ink-3">
+              <div className="flex justify-between">
+                <span>0 % max</span>
+                <span>100 % max</span>
+              </div>
+              <p className="mt-1 leading-snug text-ink-2">
+                Scale: 83 % max = 100 % design; full scale = 120 % design.
+              </p>
             </div>
           </section>
         </fieldset>
