@@ -28,6 +28,34 @@ export interface Thresholds {
 }
 
 /**
+ * Secondary steam-pressure bands [MPa].
+ *
+ * The high bands line up with the simplified dump valve: it starts opening
+ * above 7.6 MPa and is fully open above 8.2 MPa. The low red band sits above
+ * the model's 3.0 MPa feedwater-flashing floor. These are display bands only,
+ * not trip setpoints.
+ */
+export const STEAM_PRESSURE_THRESHOLDS_MPA: Thresholds = {
+  aboveAmber: 7.6,
+  aboveRed: 8.2,
+  belowRed: 3.5,
+};
+
+/**
+ * SG collapsed-liquid-fraction bands [fraction].
+ *
+ * The normal teaching band is 40–60 %. Red stays inside the model validity
+ * limits (30 % tube-uncovery floor, 95 % overfill ceiling) so the dashboard
+ * warns before the backend halts at those assumptions.
+ */
+export const SG_LEVEL_THRESHOLDS: Thresholds = {
+  belowAmber: 0.40,
+  aboveAmber: 0.60,
+  belowRed: 0.35,
+  aboveRed: 0.90,
+};
+
+/**
  * Per-tile threshold map.
  *
  * Keep the list short, so an amber or red tile still means "look here".
@@ -51,6 +79,10 @@ export const THRESHOLDS: Record<string, Thresholds> = {
     aboveAmber: 17.0,
     aboveRed: 18.0,
   },
+
+  P_steam_MPa: STEAM_PRESSURE_THRESHOLDS_MPA,
+
+  level_sg: SG_LEVEL_THRESHOLDS,
 
   // Total reactivity [pcm]. Positive reactivity makes power rise. This
   // model's prompt-critical threshold is sum(beta_i) = 650.2 pcm (one

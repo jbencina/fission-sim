@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_VALUE, MINUS, formatClock, formatNumber } from './format';
+import { EMPTY_VALUE, MINUS, formatClock, formatNumber, formatSignedNumber } from './format';
 
 describe('formatNumber', () => {
   it('uses fixed decimals and thousands separators', () => {
@@ -18,6 +18,24 @@ describe('formatNumber', () => {
     expect(formatNumber(null, 1)).toBe(EMPTY_VALUE);
     expect(formatNumber(undefined, 1)).toBe(EMPTY_VALUE);
     expect(formatNumber(Number.NaN, 1)).toBe(EMPTY_VALUE);
+  });
+});
+
+describe('formatSignedNumber', () => {
+  it('adds a plus sign to positive values and a typographic minus to negative values', () => {
+    expect(formatSignedNumber(12.34, 1)).toBe('+12.3');
+    expect(formatSignedNumber(-12.34, 1)).toBe(`${MINUS}12.3`);
+  });
+
+  it('uses grouping and suppresses signs on values that round to zero', () => {
+    expect(formatSignedNumber(1234.5, 0)).toBe('+1,235');
+    expect(formatSignedNumber(-0.04, 1)).toBe('0.0');
+    expect(formatSignedNumber(0, 1)).toBe('0.0');
+  });
+
+  it('shows a dash for missing signed values', () => {
+    expect(formatSignedNumber(null, 1)).toBe(EMPTY_VALUE);
+    expect(formatSignedNumber(Number.POSITIVE_INFINITY, 1)).toBe(EMPTY_VALUE);
   });
 });
 

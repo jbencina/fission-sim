@@ -13,8 +13,9 @@
  */
 
 import type { FC, ReactNode } from 'react'
+import { feedwaterSaturation } from '../state/events'
 import { useTelemetryStore } from '../state/telemetryStore'
-import { formatNumber, kelvinToCelsius } from '../ui/format'
+import { formatNumber, formatSignedNumber, kelvinToCelsius } from '../ui/format'
 import { InfoRow } from './Readouts'
 import { criticalityWord } from './loopState'
 import { getBand } from './thresholds'
@@ -43,6 +44,23 @@ const StatusPanel: FC = () => {
   const tFuel = latest?.T_fuel ?? null
   const tHot = latest?.T_hot ?? null
   const tCold = latest?.T_cold ?? null
+  const pSteamMPa = latest?.P_steam_MPa ?? null
+  const tSecondary = latest?.T_secondary ?? null
+  const levelSgPct = latest ? latest.level_sg * 100 : null
+  const levelErrorPct = latest ? (latest.level_setpoint - latest.level_sg) * 100 : null
+  const tAvgMinusRef = latest ? latest.T_avg - latest.T_ref : null
+  const feedSteamMismatch = latest ? latest.m_fw - (latest.m_steam + latest.m_dump) : null
+  const fwSaturation = latest ? feedwaterSaturation(latest) : null
+  const fwDemandSecondary =
+    latest === null
+      ? undefined
+      : fwSaturation === 'zero'
+        ? 'saturated at zero'
+        : fwSaturation === 'maximum'
+          ? 'saturated at maximum'
+          : fwSaturation === 'other'
+            ? 'saturated'
+            : `${formatNumber((latest.m_fw_demand / latest.m_fw_max) * 100, 0)} % max`
 
   return (
     <section aria-label="Plant status" className="panel p-4">
@@ -103,6 +121,92 @@ const StatusPanel: FC = () => {
           tooltip={TOOLTIPS.T_cold}
           value={formatNumber(tCold, 1)}
           secondary={celsius(tCold)}
+        />
+      </Group>
+
+      <Group title="Steam generator">
+        <InfoRow
+          data-testid="status-P_steam_MPa"
+          tooltip={TOOLTIPS.P_steam_MPa}
+          value={formatNumber(pSteamMPa, 2)}
+          secondary={pSteamMPa === null ? undefined : 'dump 7.6 / full 8.2'}
+          band={pSteamMPa === null ? 'green' : getBand('P_steam_MPa', pSteamMPa)}
+        />
+        <InfoRow
+          data-testid="status-T_secondary"
+          tooltip={TOOLTIPS.T_secondary}
+          value={formatNumber(tSecondary, 1)}
+          secondary={celsius(tSecondary)}
+        />
+        <InfoRow
+          data-testid="status-level_sg"
+          tooltip={TOOLTIPS.level_sg}
+          value={formatNumber(levelSgPct, 1)}
+          secondary="valid 30–95 %"
+          band={latest === null ? 'green' : getBand('level_sg', latest.level_sg)}
+        />
+        <InfoRow
+          data-testid="status-level_error"
+          tooltip={TOOLTIPS.level_error}
+          value={formatSignedNumber(levelErrorPct, 1)}
+          secondary={latest === null ? undefined : `setpoint ${formatNumber(latest.level_setpoint * 100, 1)} %`}
+        />
+        <InfoRow
+          data-testid="status-T_avg_minus_T_ref"
+          tooltip={TOOLTIPS.T_avg_minus_T_ref}
+          value={formatSignedNumber(tAvgMinusRef, 1)}
+          secondary={latest === null ? undefined : `T_ref ${formatNumber(latest.T_ref, 1)} K`}
+        />
+        <InfoRow
+          data-testid="status-time_to_level_floor_s"
+          tooltip={TOOLTIPS.time_to_level_floor_s}
+          value={formatNumber(latest?.time_to_level_floor_s, 0)}
+          secondary={latest?.time_to_level_floor_s == null ? undefined : 'current-flow estimate'}
+        />
+      </Group>
+
+      <Group title="Turbine">
+        <InfoRow
+          data-testid="status-P_electric"
+          tooltip={TOOLTIPS.P_electric}
+          value={formatNumber(latest ? latest.P_electric / 1e6 : null, 1)}
+          secondary="fixed-efficiency proxy"
+        />
+        <InfoRow
+          data-testid="status-turbine_load"
+          tooltip={TOOLTIPS.turbine_load}
+          value={formatNumber(latest ? latest.turbine_load * 100 : null, 1)}
+          secondary={latest === null ? undefined : `demand ${formatNumber(latest.turbine_load_demand * 100, 0)} %`}
+        />
+        <InfoRow
+          data-testid="status-m_steam"
+          tooltip={TOOLTIPS.m_steam}
+          value={formatNumber(latest?.m_steam, 1)}
+        />
+        <InfoRow
+          data-testid="status-m_dump"
+          tooltip={TOOLTIPS.m_dump}
+          value={formatNumber(latest?.m_dump, 1)}
+        />
+      </Group>
+
+      <Group title="Feedwater">
+        <InfoRow
+          data-testid="status-m_fw"
+          tooltip={TOOLTIPS.m_fw}
+          value={formatNumber(latest?.m_fw, 1)}
+        />
+        <InfoRow
+          data-testid="status-m_fw_demand"
+          tooltip={TOOLTIPS.m_fw_demand}
+          value={formatNumber(latest?.m_fw_demand, 1)}
+          secondary={fwDemandSecondary}
+          band={latest?.fw_saturated ? 'amber' : 'green'}
+        />
+        <InfoRow
+          data-testid="status-feed_steam_mismatch"
+          tooltip={TOOLTIPS.feed_steam_mismatch}
+          value={formatSignedNumber(feedSteamMismatch, 1)}
         />
       </Group>
 

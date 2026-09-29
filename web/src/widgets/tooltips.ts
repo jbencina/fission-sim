@@ -110,11 +110,12 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     title: 'Rod command',
     units: '%',
     body:
-      'Operator target for the control-bank position, in % of travel ' +
-      'withdrawn (sent to the simulator as a fraction, 0 to 1). The rod drive ' +
-      'moves the bank toward it at 1 % of travel per second, so a full ' +
-      'stroke takes 100 s. A difference between command and position means ' +
-      'the bank is still moving. During a SCRAM the command is overridden.',
+      'Retained MANUAL target for the control-bank position, in % of travel ' +
+      'withdrawn (sent to the simulator as a fraction, 0 to 1). In MANUAL the ' +
+      'rod drive moves the bank toward this value at 1 % of travel per second. ' +
+      'In AUTO the bank follows the automatic rod demand instead; this manual ' +
+      'command is kept for a bumpless return to MANUAL. During a SCRAM both ' +
+      'manual and automatic demands are overridden.',
   },
 
   Q_sg: {
@@ -125,6 +126,138 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
       'through the steam generator. At steady state this matches core thermal ' +
       'power. During a transient the difference is heat being stored in, or ' +
       'drawn from, the fuel and the primary coolant.',
+  },
+
+  P_steam_MPa: {
+    title: 'Steam pressure',
+    units: 'MPa',
+    body:
+      'Pressure in the lumped secondary steam-generator steam space. Design ' +
+      'full power is about 6.9 MPa. The steam dump begins opening above ' +
+      '7.6 MPa and is fully open above 8.2 MPa; the amber and red colours are ' +
+      'illustrative alert bands, not trip setpoints.',
+  },
+
+  T_secondary: {
+    title: 'SG saturation temperature',
+    units: 'K',
+    body:
+      'Saturation temperature corresponding to the secondary steam pressure: ' +
+      'the boiling temperature inside the lumped steam generators. Design ' +
+      'full power is about 558 K (285 °C). The primary-to-secondary heat ' +
+      'transfer model uses this temperature as the cold-side temperature.',
+  },
+
+  level_sg: {
+    title: 'SG collapsed liquid fraction',
+    units: '%',
+    body:
+      'Collapsed liquid fraction in the steam generators: liquid inventory ' +
+      'expressed as a fraction of the total shell volume. It is four steam ' +
+      'generators lumped together and does not include two-phase shrink/swell, ' +
+      'so it is not a direct sight-glass water level. Design is 50 %. The ' +
+      'model validity limits are 30 % (tube-uncovery floor) and 95 % ' +
+      '(overfill); display bands are illustrative, not trip setpoints.',
+  },
+
+  level_error: {
+    title: 'Level error',
+    units: 'pp',
+    body:
+      'Feedwater controller level error: setpoint minus SG collapsed liquid ' +
+      'fraction, shown in percentage points. Positive means the controller is ' +
+      'trying to add inventory; negative means it is trying to reduce feedwater. ' +
+      'At design the setpoint and level are both 50 %, so the error is 0 pp.',
+  },
+
+  T_avg_minus_T_ref: {
+    title: 'T_avg − T_ref',
+    units: 'K',
+    body:
+      'Difference between average primary coolant temperature and the turbine ' +
+      'program reference. In automatic rod control, this is the temperature ' +
+      'error the controller tries to remove by moving rods. At design full ' +
+      'admission both values are about 583 K, so the difference is 0 K.',
+  },
+
+  P_electric: {
+    title: 'Gross electrical output',
+    units: 'MW',
+    body:
+      'Illustrative gross generator output from a fixed-efficiency turbine ' +
+      'proxy. It is computed from steam flow and enthalpy drop with a constant ' +
+      '33 % efficiency, not from a detailed turbine-generator model. Design ' +
+      'full admission is about 990 MW.',
+  },
+
+  turbine_load: {
+    title: 'Turbine admission',
+    units: '%',
+    body:
+      'Actual turbine admission valve opening, in percent. This is not an MW ' +
+      'demand: the same admission can pass different steam flow as steam ' +
+      'pressure changes. The valve ramps toward the operator demand at ' +
+      '5 % per minute and closes on a turbine trip or SCRAM/P-4. Design: 100 %.',
+  },
+
+  m_steam: {
+    title: 'Steam flow',
+    units: 'kg/s',
+    body:
+      'Steam mass flow admitted through the turbine path. At design full power ' +
+      'the simplified four-loop plant sends about 1,669 kg/s through the ' +
+      'turbine. A turbine trip drives this path closed, so steam flow falls ' +
+      'even if the reactor is still making heat.',
+  },
+
+  m_dump: {
+    title: 'Steam dump flow',
+    units: 'kg/s',
+    body:
+      'Steam diverted around the turbine by the simplified dump/relief path. ' +
+      'It is normally 0 kg/s. The dump begins opening at 7.6 MPa steam pressure ' +
+      'and is fully open at 8.2 MPa; that path stands in for several real plant ' +
+      'relief and dump systems and is not a trip setpoint.',
+  },
+
+  m_fw: {
+    title: 'Feedwater flow',
+    units: 'kg/s',
+    body:
+      'Actual feedwater mass flow entering the lumped steam generators. The ' +
+      'feedwater actuator lags its controller demand with a 5 s time constant. ' +
+      'At design, feedwater matches turbine steam flow at about 1,669 kg/s so ' +
+      'the collapsed inventory stays steady.',
+  },
+
+  m_fw_demand: {
+    title: 'Feedwater demand',
+    units: 'kg/s',
+    body:
+      'Feedwater flow requested by the level controller before the actuator ' +
+      'lag. AUTO uses steam flow, dump flow and SG level error; MANUAL uses the ' +
+      'operator fraction of the maximum feedwater flow. The maximum is 120 % ' +
+      'of design flow, about 2,003 kg/s.',
+  },
+
+  feed_steam_mismatch: {
+    title: 'Feed/steam mismatch',
+    units: 'kg/s',
+    body:
+      'Signed inventory balance m_fw − (m_steam + m_dump). Positive means more ' +
+      'feedwater is entering than steam is leaving, so collapsed level tends ' +
+      'to rise. Negative means the steam generators are draining. At steady ' +
+      'design operation the mismatch is 0 kg/s.',
+  },
+
+  time_to_level_floor_s: {
+    title: 'Time to level floor',
+    units: 's',
+    body:
+      'Current-flow estimate of how long it would take to reach the 30 % ' +
+      'collapsed-level validity floor if the present feed/steam mismatch ' +
+      'stayed unchanged. It is not a countdown or a prediction; it shows "—" ' +
+      'when the steam generators are not draining toward that floor.',
   },
 
   sim_time: {

@@ -41,6 +41,24 @@ export function formatNumber(
 }
 
 /**
+ * Format `value` with an explicit sign for positive and negative numbers.
+ *
+ * Null, NaN and infinities give "—". Values that round to zero print without
+ * a sign, so a small negative sensor difference never appears as "−0.0".
+ */
+export function formatSignedNumber(
+  value: number | null | undefined,
+  decimals: number,
+  { grouping = true }: { grouping?: boolean } = {},
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return EMPTY_VALUE
+  const text = formatter(decimals, grouping).format(Math.abs(value))
+  const roundsToZero = Number(text.replace(/,/g, '')) === 0
+  if (roundsToZero) return text
+  return value < 0 ? `${MINUS}${text}` : `+${text}`
+}
+
+/**
  * Format simulated time [s] as "mm:ss.t". Minutes keep counting past 59.
  *
  *   0 → "00:00.0",  90.7 → "01:30.7",  3661.25 → "61:01.2"

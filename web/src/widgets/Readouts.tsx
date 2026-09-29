@@ -6,6 +6,7 @@
 
 import { type FC, useRef } from 'react'
 import { InfoTip } from '../ui/InfoTip'
+import { EMPTY_VALUE } from '../ui/format'
 import type { TooltipEntry } from './tooltips'
 import type { Band } from './thresholds'
 
@@ -43,14 +44,16 @@ export const InfoRow: FC<ReadoutProps> = ({
       className="flex min-h-[36px] items-center justify-between gap-3 border-t border-line py-1 first:border-t-0"
     >
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-[12.5px] text-ink-2">{tooltip.title}</span>
+        <span className="text-[12.5px] leading-snug text-ink-2">{tooltip.title}</span>
         <InfoTip title={tooltip.title} body={tooltip.body} area={ref} align={align} />
       </div>
       <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap tabular-nums">
         {secondary && <span className="text-[10.5px] text-ink-3 lg:hidden xl:inline">{secondary}</span>}
         <span className={`font-mono text-[13px] ${ROW_BAND[band]}`}>
           <span data-testid={testId ? `${testId}-value` : undefined}>{value}</span>
-          {tooltip.units && <span className="ml-1 font-sans text-[11px] text-ink-2">{tooltip.units}</span>}
+          {tooltip.units && value !== EMPTY_VALUE && (
+            <span className="ml-1 font-sans text-[11px] text-ink-2">{tooltip.units}</span>
+          )}
         </span>
       </div>
     </div>
