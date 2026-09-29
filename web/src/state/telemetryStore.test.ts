@@ -3,7 +3,7 @@
  *
  * Tests cover:
  * - pushFrame appends to history and updates latest
- * - history caps at HISTORY_CAP (600 frames)
+ * - history trims by simulated time with a hard frame cap
  * - setStatus updates the status field
  * - reportError/clearError manage the error notice without letting a stale
  *   connection message hide or outlive a server explanation
@@ -11,7 +11,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { HISTORY_CAP, useTelemetryStore } from './telemetryStore';
+import { HISTORY_MAX_FRAMES, HISTORY_RETENTION_S, trimHistory, useTelemetryStore } from './telemetryStore';
 import { EVENTS_CAP } from './events';
 import { makeFrame } from '../test/makeFrame';
 
@@ -50,18 +50,37 @@ describe('pushFrame', () => {
     expect(latest?.t).toBe(3);
   });
 
-  it(`caps history at ${HISTORY_CAP} frames and drops oldest`, () => {
-    // Push one extra frame beyond the cap.
-    for (let i = 0; i <= HISTORY_CAP; i++) {
-      useTelemetryStore.getState().pushFrame(makeFrame(i));
+  it('keeps at least 15 minutes of 10 Hz, 1x simulated-time history', () => {
+    const dt = 0.1;
+    const finalT = 15 * 60;
+    const count = Math.round(finalT / dt) + 1;
+    for (let i = 0; i < count; i++) {
+      useTelemetryStore.getState().pushFrame(makeFrame(+(i * dt).toFixed(6)));
     }
 
     const { history } = useTelemetryStore.getState();
-    expect(history).toHaveLength(HISTORY_CAP);
-    // The very first frame (t=0) should have been dropped.
-    expect(history[0].t).toBe(1);
-    // The last frame should be the newest.
-    expect(history[history.length - 1].t).toBe(HISTORY_CAP);
+    expect(history.length).toBeGreaterThanOrEqual(9_000);
+    expect(history[0].t).toBe(0);
+    expect(history[history.length - 1].t).toBe(finalT);
+  });
+
+  it('trims history by simulated time after the retained window plus margin', () => {
+    for (let t = 0; t <= HISTORY_RETENTION_S + 10; t++) {
+      useTelemetryStore.getState().pushFrame(makeFrame(t));
+    }
+
+    const { history } = useTelemetryStore.getState();
+    expect(history[0].t).toBe(10);
+    expect(history[history.length - 1].t).toBe(HISTORY_RETENTION_S + 10);
+  });
+
+  it('caps unusual same-time frame bursts at the hard frame bound', () => {
+    let history = Array.from({ length: HISTORY_MAX_FRAMES }, (_, i) => makeFrame(100, { rod_command: i }));
+    history = trimHistory(history, makeFrame(100, { rod_command: HISTORY_MAX_FRAMES }));
+
+    expect(history).toHaveLength(HISTORY_MAX_FRAMES);
+    expect(history[0].rod_command).toBe(1);
+    expect(history[history.length - 1].rod_command).toBe(HISTORY_MAX_FRAMES);
   });
 
   it('clears stale history when simulation time moves backward', () => {

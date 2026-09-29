@@ -1,15 +1,14 @@
 /**
- * EventLog — the newest plant events, newest first, under a "Now" row with
- * the current clock. Events come from the telemetry store (state/events.ts).
+ * EventLog — the retained plant-event history, newest first, under a "Now"
+ * row with the current clock. Events come from the telemetry store
+ * (state/events.ts).
  */
 
 import type { FC } from 'react'
 import type { EventLevel } from '../state/events'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { formatClock } from '../ui/format'
-
-/** How many events the panel shows. */
-const SHOWN = 6
+import { eventsForLog } from './EventLog.helpers'
 
 const LEVEL_CLASS: Record<EventLevel, string> = {
   info: 'text-ink-2',
@@ -20,12 +19,12 @@ const LEVEL_CLASS: Record<EventLevel, string> = {
 const EventLog: FC = () => {
   const events = useTelemetryStore((s) => s.events)
   const t = useTelemetryStore((s) => s.latest?.t ?? null)
-  const shown = events.slice(-SHOWN).reverse()
+  const shown = eventsForLog(events)
 
   return (
     <section aria-label="Events" className="px-4 pb-3 pt-2.5 sm:px-5">
       <h2 className="eyebrow mb-1.5">Events</h2>
-      <ol className="text-[12px]">
+      <ol className="scroll-column max-h-[12rem] overflow-y-auto pr-1 text-[12px]">
         <li className="grid grid-cols-[62px_1fr] gap-2.5 py-1 text-ink">
           <span className="font-mono text-[11.5px] text-ink-3">{formatClock(t)}</span>
           <span>Now</span>

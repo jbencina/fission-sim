@@ -2,18 +2,17 @@
  * TimeSeriesChart — one live trend, drawn on canvas by uPlot.
  *
  * Smoothness comes from three things working together:
- *   - The x window [now − 60 s, now] moves on every display refresh, driven
+ *   - The x window [now − selected window, now] moves on every display refresh, driven
  *     by the shared ticker (ticker.ts / displayClock.ts), not only when a
  *     telemetry frame arrives.
  *   - The y range is sticky and eased (autoRange.ts).
  *   - Nothing here re-renders React per frame: new data, scales and legend
  *     values are pushed to uPlot and the DOM imperatively.
  *
- * Grid lines stay fixed at 10 s intervals relative to "now" while the traces
- * slide under them. Hovering shows a crosshair synchronised across every
- * chart, and the legend switches from the latest values to the values under
- * the cursor. The time axis is labelled only when `timeAxis` is set, so a
- * grid of charts can label its bottom row alone.
+ * Grid lines stay fixed at readable intervals relative to "now" while the
+ * traces slide under them. Hovering shows a crosshair synchronised across
+ * every chart, and the legend switches from the latest values to the values
+ * under the cursor.
  */
 
 import { type FC, useEffect, useId, useRef } from 'react'
@@ -21,9 +20,9 @@ import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { InfoTip } from '../ui/InfoTip'
-import { MINUS, formatNumber } from '../ui/format'
+import { formatNumber } from '../ui/format'
 import { AutoRange, niceStep, stepDecimals, visibleExtent } from './autoRange'
-import { CHART_WINDOW_S, toColumns } from './chartData'
+import { DEFAULT_CHART_WINDOW_S, relativeTimeLabel, timeAxisSplits, toColumns } from './chartData'
 import type { ChartSpec } from './chartSpecs'
 import { subscribeTick } from './ticker'
 
@@ -35,13 +34,6 @@ const SYNC_KEY = 'plant-trends'
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-}
-
-/** Axis/cursor label for a time relative to now, e.g. "−30s" or "now". */
-function relativeLabel(dt: number, decimals = 0): string {
-  const r = +dt.toFixed(decimals)
-  if (r === 0) return 'now'
-  return `${r < 0 ? MINUS : ''}${Math.abs(r).toFixed(decimals)}s`
 }
 
 function setText(el: HTMLElement | null | undefined, text: string): void {
@@ -63,7 +55,18 @@ const Swatch: FC<{ color: string; dashed: boolean }> = ({ color, dashed }) => (
   />
 )
 
-const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, timeAxis }) => {
+export interface TimeSeriesChartProps {
+  spec: ChartSpec
+  timeAxis: boolean
+  /** Width of the displayed history window [s of simulated time]. */
+  windowSeconds?: number
+}
+
+const TimeSeriesChart: FC<TimeSeriesChartProps> = ({
+  spec,
+  timeAxis,
+  windowSeconds = DEFAULT_CHART_WINDOW_S,
+}) => {
   const empty = useTelemetryStore((s) => s.history.length === 0)
   const titleId = useId()
   const plotRef = useRef<HTMLDivElement>(null)
@@ -86,7 +89,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
     const extractors = spec.series.map((s) => s.value)
 
     const store = useTelemetryStore.getState()
-    let data = toColumns(store.history, extractors)
+    let data = toColumns(store.history, extractors, windowSeconds)
     let pending: number[][] | null = null
     let latestFrame = store.latest
     let now: number | null = null
@@ -107,7 +110,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
       })
       setText(
         cursorRef.current,
-        hovering ? relativeLabel((u.data[0][idx] as number) - (now as number), 1) : '',
+        hovering ? relativeTimeLabel((u.data[0][idx] as number) - (now as number), 1) : '',
       )
       legendDirty = false
     }
@@ -144,13 +147,10 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
           grid: { show: false },
           ticks: { show: false },
           splits: (u, _i, _min, max) => {
-            const step = u.bbox.width / uPlot.pxRatio < 340 ? 20 : 10
-            const out: number[] = []
-            for (let r = -CHART_WINDOW_S; r <= 0; r += step) out.push(max + r)
-            return out
+            return timeAxisSplits(max, windowSeconds, u.bbox.width / uPlot.pxRatio)
           },
           values: (u, splits) =>
-            timeAxis ? splits.map((v) => relativeLabel(v - (u.scales.x.max ?? v))) : splits.map(() => ''),
+            timeAxis ? splits.map((v) => relativeTimeLabel(v - (u.scales.x.max ?? v))) : splits.map(() => ''),
         },
         {
           stroke: ink3,
@@ -217,7 +217,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
     writeLegend(u)
 
     const unsubscribeStore = useTelemetryStore.subscribe((s, prev) => {
-      if (s.history !== prev.history) pending = toColumns(s.history, extractors)
+      if (s.history !== prev.history) pending = toColumns(s.history, extractors, windowSeconds)
       if (s.latest !== prev.latest) {
         latestFrame = s.latest
         legendDirty = true
@@ -236,7 +236,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
       if (t === null) return
 
       const columns = pending ?? data
-      const next = range.update(visibleExtent(columns, t - CHART_WINDOW_S), dt)
+      const next = range.update(visibleExtent(columns, t - windowSeconds), dt)
       const moved =
         t !== now ||
         next?.[0] !== yRange?.[0] ||
@@ -251,7 +251,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
             data = pending
             pending = null
           }
-          u.setScale('x', { min: t - CHART_WINDOW_S, max: t })
+          u.setScale('x', { min: t - windowSeconds, max: t })
           if (next) u.setScale('y', { min: next[0], max: next[1] })
         })
       }
@@ -264,7 +264,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
       resize.disconnect()
       u.destroy()
     }
-  }, [spec, timeAxis])
+  }, [spec, timeAxis, windowSeconds])
 
   const primary = spec.series.find((s) => s.width !== undefined && s.dash === undefined) ?? spec.series[0]
   const primaryIndex = spec.series.indexOf(primary)
@@ -307,7 +307,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
         <div
           ref={plotRef}
           role="img"
-          aria-label={`${spec.title} over the last ${CHART_WINDOW_S} seconds`}
+          aria-label={`${spec.title} over the last ${relativeTimeLabel(-windowSeconds).slice(1)}`}
           className="absolute inset-0"
         />
         {empty && (

@@ -1,9 +1,10 @@
 /**
  * Zustand store for simulation telemetry.
  *
- * Holds the latest Frame received over the WebSocket plus a rolling history
- * buffer capped at HISTORY_CAP frames. Also tracks WebSocket connection status
- * and the message currently shown to the user in the error notice.
+ * Holds the latest Frame received over the WebSocket plus a rolling,
+ * simulated-time history buffer long enough for the 15-minute chart window.
+ * Also tracks WebSocket connection status and the message currently shown to
+ * the user in the error notice.
  *
  * This store is intentionally side-effect free — selectors are pure reads,
  * and all mutations go through the named action functions. The WebSocket
@@ -15,13 +16,21 @@ import type { AppErrorSource, Command, ConnectionStatus, Frame } from '../types/
 import { EVENTS_CAP, type EventTracker, type PlantEvent, detectEvents, initialEventTracker } from './events';
 
 /**
- * Maximum number of history frames retained.
+ * Simulated time kept for chart history [s].
  *
- * 600 frames = 60 s of telemetry at the backend's 10 Hz publish rate. At
- * faster simulation speeds the same 600 frames cover more simulated time;
- * the charts still plot only the last CHART_WINDOW_S of it (chartData.ts).
+ * 905 s covers the 15-minute operator chart window plus the small display
+ * margin used to draw the trace entering from the left edge. At 1× and the
+ * runtime's 10 Hz publish cadence this is about 9,050 frames; at 10× it is
+ * about 905 frames.
  */
-export const HISTORY_CAP = 600;
+export const HISTORY_RETENTION_S = 15 * 60 + 5;
+
+/**
+ * Hard frame bound for unusual cases such as many paused command frames with
+ * identical simulation time. Ordinary 1× operation stays below this while
+ * preserving the full 15-minute simulated-time history.
+ */
+export const HISTORY_MAX_FRAMES = 12_000;
 
 // ---------------------------------------------------------------------------
 // Error messages
@@ -43,8 +52,8 @@ export interface TelemetryState {
 
   /**
    * Rolling history of frames, newest at the end.
-   * Capped at HISTORY_CAP entries; oldest frame is dropped when the cap
-   * is exceeded to prevent unbounded memory growth.
+   * Trimmed by simulated time and then by HISTORY_MAX_FRAMES to prevent
+   * unbounded memory growth while keeping the 15-minute chart window.
    */
   history: Frame[];
 
@@ -79,8 +88,9 @@ export interface TelemetryState {
   /**
    * Append a new telemetry frame to history, update `latest`, and append
    * any events the new frame reveals (events.ts). Drops the oldest frame
-   * when history exceeds HISTORY_CAP. If simulation time moves backward,
-   * treats it as a backend reset and starts a fresh history and event list.
+   * when history exceeds the retained simulated-time span. If simulation
+   * time moves backward, treats it as a backend reset and starts a fresh
+   * history and event list.
    */
   pushFrame: (frame: Frame) => void;
 
@@ -128,6 +138,20 @@ export interface TelemetryState {
 // Stored outside state so it doesn't trigger re-renders when updated.
 let _send: ((cmd: Command) => void) | null = null;
 
+/**
+ * Return a history buffer with `frame` appended and stale simulated time
+ * removed. The input history is oldest first and the output preserves that
+ * ordering.
+ */
+export function trimHistory(history: readonly Frame[], frame: Frame): Frame[] {
+  const appended = [...history, frame];
+  const oldestKeptT = frame.t - HISTORY_RETENTION_S;
+  const timeTrimmed = appended.filter((candidate) => candidate.t >= oldestKeptT);
+  return timeTrimmed.length > HISTORY_MAX_FRAMES
+    ? timeTrimmed.slice(timeTrimmed.length - HISTORY_MAX_FRAMES)
+    : timeTrimmed;
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -147,11 +171,7 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
       // Backend reset is visible as simulation time moving backward. Start a
       // fresh history so charts do not mix pre-reset and post-reset points.
       const timeRolledBack = state.latest !== null && frame.t < state.latest.t;
-      const history = timeRolledBack
-        ? [frame]
-        : state.history.length < HISTORY_CAP
-          ? [...state.history, frame]
-          : [...state.history.slice(1), frame];
+      const history = timeRolledBack ? [frame] : trimHistory(state.history, frame);
       // Events restart on a reset too; otherwise the newest ones are kept.
       const fresh = detectEvents(state.eventBaseline, frame, state.eventTracker);
       let events = state.events;

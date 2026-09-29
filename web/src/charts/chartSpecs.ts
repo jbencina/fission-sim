@@ -43,6 +43,15 @@ export interface ChartSpec {
   zeroLine?: boolean
 }
 
+export type ChartViewId = 'all' | 'reactor' | 'secondary'
+
+export interface ChartViewSpec {
+  id: ChartViewId
+  label: string
+  description: string
+  chartIds: readonly string[]
+}
+
 export const CHART_SPECS: ChartSpec[] = [
   {
     id: 'power',
@@ -214,3 +223,39 @@ export const CHART_SPECS: ChartSpec[] = [
     ],
   },
 ]
+
+/** Operator chart views, ordered as the segmented control displays them. */
+export const CHART_VIEWS: readonly ChartViewSpec[] = [
+  {
+    id: 'all',
+    label: 'All',
+    description: 'All ten trend charts in the original scrolling grid.',
+    chartIds: CHART_SPECS.map((spec) => spec.id),
+  },
+  {
+    id: 'reactor',
+    label: 'Reactor',
+    description: 'Core response and primary-side indications for reactivity and rod exercises.',
+    chartIds: ['power', 'reactivity', 'coolant', 'fuel', 'pressure', 'rods'],
+  },
+  {
+    id: 'secondary',
+    label: 'Secondary',
+    description:
+      'The plots needed together for turbine trips, SG inventory exercises, and secondary heat removal.',
+    chartIds: ['power', 'coolant', 'steam-pressure', 'sg-level', 'steam-feed-flow', 'electric-output'],
+  },
+]
+
+/** Default chart view on a new page load. */
+export const DEFAULT_CHART_VIEW: ChartViewId = 'all'
+
+/** Return chart specs in the selected operator view order. */
+export function chartSpecsForView(view: ChartViewId): ChartSpec[] {
+  const viewSpec = CHART_VIEWS.find((candidate) => candidate.id === view) ?? CHART_VIEWS[0]
+  return viewSpec.chartIds.map((id) => {
+    const spec = CHART_SPECS.find((candidate) => candidate.id === id)
+    if (!spec) throw new Error(`Unknown chart id in ${viewSpec.id} view: ${id}`)
+    return spec
+  })
+}
