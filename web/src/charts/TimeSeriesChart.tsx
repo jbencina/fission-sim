@@ -270,7 +270,7 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
   const primaryIndex = spec.series.indexOf(primary)
 
   return (
-    <section aria-labelledby={titleId} className="flex min-h-0 flex-col bg-canvas px-4 pb-1.5 pt-3">
+    <section aria-labelledby={titleId} className="flex min-h-0 min-w-0 flex-col bg-canvas px-4 pb-1.5 pt-3">
       <div className="flex items-baseline gap-2">
         <h3 id={titleId} className="eyebrow truncate !text-ink">
           {spec.title}
@@ -284,11 +284,14 @@ const TimeSeriesChart: FC<{ spec: ChartSpec; timeAxis: boolean }> = ({ spec, tim
         Label and value per series on one row. The row keeps the same height
         on every chart, so plots in a row stay aligned as values change width.
       */}
-      <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-0.5">
+      <ul className="mt-1.5 flex min-w-0 flex-wrap gap-x-4 gap-y-0.5">
         {spec.series.map((s, i) => (
-          <li key={s.label} className="flex items-center gap-1.5 whitespace-nowrap text-[11.5px] text-ink-2">
+          <li
+            key={s.label}
+            className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5 gap-y-0 text-[11.5px] leading-tight text-ink-2"
+          >
             <Swatch color={s.color} dashed={s.dash !== undefined} />
-            {s.label}
+            <span className="min-w-0 break-words">{s.label}</span>
             <span
               ref={(node) => {
                 valueRefs.current[i] = node

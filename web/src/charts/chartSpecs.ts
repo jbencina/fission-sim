@@ -95,7 +95,7 @@ export const CHART_SPECS: ChartSpec[] = [
       { label: 'Average', color: '--series-ink', value: (f) => f.T_avg, width: 1.5 },
       { label: 'Cold leg', color: '--series-blue', value: (f) => f.T_cold },
       {
-        label: 'T_ref (admission program)',
+        label: 'T_ref',
         color: '--series-gray',
         value: (f) => f.T_ref,
         dash: [4, 3],

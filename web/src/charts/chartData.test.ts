@@ -65,7 +65,7 @@ describe('unit conversions', () => {
     const coolant = CHART_SPECS.find((s) => s.id === 'coolant');
     const rods = CHART_SPECS.find((s) => s.id === 'rods');
 
-    expect(coolant?.series.find((s) => s.label === 'T_ref (admission program)')?.value(frame)).toBe(580);
+    expect(coolant?.series.find((s) => s.label === 'T_ref')?.value(frame)).toBe(580);
     expect(rods?.series.find((s) => s.label === 'Demand')?.value(frame)).toBe(42);
   });
 
