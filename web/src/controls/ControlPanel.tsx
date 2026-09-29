@@ -23,7 +23,7 @@ import { HelpTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
 import { PauseIcon, PlayIcon, ResetIcon } from '../ui/icons'
 import ConfirmDialog from './ConfirmDialog'
-import { clampFraction, deriveRodModeStatus, type StatusTone } from './controlStatus'
+import { clampFraction, deriveRodModeStatus, type StatusTone } from '../state/plantStatus'
 import RodGauge from './RodGauge'
 import { useCommittedRange } from './useCommittedRange'
 

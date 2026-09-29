@@ -13,7 +13,7 @@
  */
 
 import type { FC, ReactNode } from 'react'
-import { feedwaterSaturation } from '../state/events'
+import { deriveLevelStatus, feedwaterSaturation } from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { formatNumber, formatSignedNumber, kelvinToCelsius } from '../ui/format'
 import { InfoRow } from './Readouts'
@@ -51,6 +51,7 @@ const StatusPanel: FC = () => {
   const tAvgMinusRef = latest ? latest.T_avg - latest.T_ref : null
   const feedSteamMismatch = latest ? latest.m_fw - (latest.m_steam + latest.m_dump) : null
   const fwSaturation = latest ? feedwaterSaturation(latest) : null
+  const levelStatus = latest ? deriveLevelStatus(latest) : null
   const fwDemandSecondary =
     latest === null
       ? undefined
@@ -143,7 +144,7 @@ const StatusPanel: FC = () => {
           tooltip={TOOLTIPS.level_sg}
           value={formatNumber(levelSgPct, 1)}
           secondary="valid 30–95 %"
-          band={latest === null ? 'green' : getBand('level_sg', latest.level_sg)}
+          band={levelStatus?.band ?? 'green'}
         />
         <InfoRow
           data-testid="status-level_error"

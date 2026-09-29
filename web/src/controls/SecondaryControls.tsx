@@ -19,9 +19,8 @@ import {
   deriveFeedwaterModeStatus,
   deriveTurbineTripStatus,
   feedwaterDemandFraction,
-  findLastRunningFrame,
   type StatusTone,
-} from './controlStatus'
+} from '../state/plantStatus'
 import { useCommittedRange } from './useCommittedRange'
 
 function toneClass(tone: StatusTone): string {
@@ -67,7 +66,6 @@ const Divider: FC = () => <div className="-mx-4 my-4 h-px bg-line" />
 const SecondaryControls: FC = () => {
   const status = useTelemetryStore((s) => s.status)
   const latest = useTelemetryStore((s) => s.latest)
-  const history = useTelemetryStore((s) => s.history)
   const sendCommand = useTelemetryStore((s) => s.sendCommand)
 
   const connected = status === 'connected'
@@ -91,18 +89,20 @@ const SecondaryControls: FC = () => {
         active: false,
         tone: 'normal' as const,
       }
-  const lastRunning = findLastRunningFrame(history, latest)
   const feedwaterStatus = latest
-    ? deriveFeedwaterModeStatus(latest, lastRunning ?? latest)
+    ? deriveFeedwaterModeStatus(latest)
     : {
         kind: 'auto' as const,
         label: 'AUTO',
         detail: 'Waiting for first telemetry frame.',
+        pending: false,
         tone: 'normal' as const,
         selectedMode: 'auto' as const,
         effectiveMode: 'auto' as const,
         selectedDemandKgS: null,
+        effectiveSelectedDemandKgS: null,
         effectiveDemandKgS: 0,
+        saturation: null,
       }
 
   const handleTurbineCommit = useCallback(
@@ -170,7 +170,7 @@ const SecondaryControls: FC = () => {
         ? 'Reset Scram sets it to 0 %.'
         : 'Demand remains retained until the trip clears.'
   const turbineContext =
-    tripStatus.active || tripStatus.kind === 'clear-pending'
+    tripStatus.active || tripStatus.kind === 'reset-pending'
       ? `Valves closing — demand ${formatNumber(turbineSlider.value * 100, 0)} % retained; ${turbineResetCopy}`
       : tripStatus.kind === 'trip-pending'
         ? `Trip pending — demand ${formatNumber(turbineSlider.value * 100, 0)} % is retained until the simulation runs.`

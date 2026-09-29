@@ -12,7 +12,7 @@
 
 import { create } from 'zustand';
 import type { AppErrorSource, Command, ConnectionStatus, Frame } from '../types/telemetry';
-import { EVENTS_CAP, type PlantEvent, detectEvents } from './events';
+import { EVENTS_CAP, type EventTracker, type PlantEvent, detectEvents, initialEventTracker } from './events';
 
 /**
  * Maximum number of history frames retained.
@@ -50,6 +50,9 @@ export interface TelemetryState {
 
   /** Plant events derived from the frames, oldest first, at most EVENTS_CAP. */
   events: PlantEvent[];
+
+  /** Explicit event hysteresis/debounce state carried between frames. */
+  eventTracker: EventTracker;
 
   /** Current WebSocket connection state. */
   status: ConnectionStatus;
@@ -126,6 +129,7 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
   latest: null,
   history: [],
   events: [],
+  eventTracker: initialEventTracker(),
   status: 'connecting',
   lastError: null,
   connectionNoticeDismissed: false,
@@ -141,11 +145,11 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
           ? [...state.history, frame]
           : [...state.history.slice(1), frame];
       // Events restart on a reset too; otherwise the newest ones are kept.
-      const fresh = detectEvents(state.latest, frame);
+      const fresh = detectEvents(state.latest, frame, state.eventTracker);
       let events = state.events;
-      if (timeRolledBack) events = fresh;
-      else if (fresh.length > 0) events = [...state.events, ...fresh].slice(-EVENTS_CAP);
-      return { latest: frame, history, events };
+      if (timeRolledBack) events = fresh.events;
+      else if (fresh.events.length > 0) events = [...state.events, ...fresh.events].slice(-EVENTS_CAP);
+      return { latest: frame, history, events, eventTracker: fresh.tracker };
     }),
 
   setStatus: (status: ConnectionStatus) =>

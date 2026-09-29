@@ -62,7 +62,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_avg: {
-    title: 'Average coolant',
+    title: 'Avg coolant',
     units: 'K',
     body:
       'Arithmetic mean of hot-leg and cold-leg temperatures: (T_hot + T_cold)/2. ' +
@@ -139,7 +139,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   T_secondary: {
-    title: 'SG saturation temperature',
+    title: 'SG sat temp',
     units: 'K',
     body:
       'Saturation temperature corresponding to the secondary steam pressure: ' +
@@ -149,7 +149,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   level_sg: {
-    title: 'SG collapsed liquid fraction',
+    title: 'SG level',
     units: '%',
     body:
       'Collapsed liquid fraction in the steam generators: liquid inventory ' +
@@ -165,13 +165,13 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
     units: 'pp',
     body:
       'Feedwater controller level error: setpoint minus SG collapsed liquid ' +
-      'fraction, shown in percentage points. Positive means the controller is ' +
+      'fraction, shown in percentage points (pp). Positive means the controller is ' +
       'trying to add inventory; negative means it is trying to reduce feedwater. ' +
       'At design the setpoint and level are both 50 %, so the error is 0 pp.',
   },
 
   T_avg_minus_T_ref: {
-    title: 'T_avg − T_ref',
+    title: 'Tavg error',
     units: 'K',
     body:
       'Difference between average primary coolant temperature and the turbine ' +
@@ -181,7 +181,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   P_electric: {
-    title: 'Gross electrical output',
+    title: 'Gross MW',
     units: 'MW',
     body:
       'Illustrative gross generator output from a fixed-efficiency turbine ' +
@@ -191,7 +191,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   turbine_load: {
-    title: 'Turbine admission',
+    title: 'Admission',
     units: '%',
     body:
       'Actual turbine admission valve opening, in percent. This is not an MW ' +
@@ -211,7 +211,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   m_dump: {
-    title: 'Steam dump flow',
+    title: 'Dump flow',
     units: 'kg/s',
     body:
       'Steam diverted around the turbine by the simplified dump/relief path. ' +
@@ -221,7 +221,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   m_fw: {
-    title: 'Feedwater flow',
+    title: 'Feed flow',
     units: 'kg/s',
     body:
       'Actual feedwater mass flow entering the lumped steam generators. The ' +
@@ -231,7 +231,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   m_fw_demand: {
-    title: 'Feedwater demand',
+    title: 'FW demand',
     units: 'kg/s',
     body:
       'Feedwater flow requested by the level controller before the actuator ' +
@@ -241,7 +241,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   feed_steam_mismatch: {
-    title: 'Feed/steam mismatch',
+    title: 'FW − steam',
     units: 'kg/s',
     body:
       'Signed inventory balance m_fw − (m_steam + m_dump). Positive means more ' +
@@ -251,7 +251,7 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   time_to_level_floor_s: {
-    title: 'Time to level floor',
+    title: 'Level floor est.',
     units: 's',
     body:
       'Current-flow estimate of how long it would take to reach the 30 % ' +
