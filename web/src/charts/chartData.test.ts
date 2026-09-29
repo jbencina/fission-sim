@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CHART_WINDOW_S, WINDOW_MARGIN_S, toColumns, toMW, toPcm, toPercent } from './chartData';
+import { CHART_WINDOW_S, WINDOW_MARGIN_S, toColumns, toMPa, toMW, toPcm, toPercent } from './chartData';
 import { CHART_SPECS } from './chartSpecs';
 import { makeFrame } from '../test/makeFrame';
 
@@ -39,8 +39,9 @@ describe('toColumns', () => {
 });
 
 describe('unit conversions', () => {
-  it('converts watts, reactivity and rod fraction to display units', () => {
+  it('converts common telemetry units to display units', () => {
     expect(toMW(3e9)).toBe(3000);
+    expect(toMPa(7.6e6)).toBe(7.6);
     expect(toPcm(-0.0065)).toBeCloseTo(-650);
     expect(toPercent(0.5)).toBe(50);
   });
@@ -57,5 +58,29 @@ describe('unit conversions', () => {
   it('chart ids are unique', () => {
     const ids = CHART_SPECS.map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('plots T_ref and rod_demand as the charted references', () => {
+    const frame = makeFrame(5, { T_ref: 580, rod_command: 0.7, rod_demand: 0.42 });
+    const coolant = CHART_SPECS.find((s) => s.id === 'coolant');
+    const rods = CHART_SPECS.find((s) => s.id === 'rods');
+
+    expect(coolant?.series.find((s) => s.label === 'T_ref (admission program)')?.value(frame)).toBe(580);
+    expect(rods?.series.find((s) => s.label === 'Demand')?.value(frame)).toBe(42);
+  });
+
+  it('defines the ten D.7 dashboard charts', () => {
+    expect(CHART_SPECS.map((s) => s.id)).toEqual([
+      'power',
+      'reactivity',
+      'coolant',
+      'fuel',
+      'pressure',
+      'rods',
+      'steam-pressure',
+      'sg-level',
+      'steam-feed-flow',
+      'electric-output',
+    ]);
   });
 });

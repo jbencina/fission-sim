@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { AutoRange, niceStep, stepDecimals, targetRange, visibleExtent } from './autoRange';
+import { CHART_SPECS } from './chartSpecs';
+
+function chartRange(id: string) {
+  const spec = CHART_SPECS.find((s) => s.id === id);
+  if (!spec) throw new Error(`missing chart ${id}`);
+  return spec.range;
+}
 
 describe('niceStep', () => {
   it('picks 1, 2, 2.5 or 5 times a power of ten', () => {
@@ -127,5 +134,31 @@ describe('AutoRange', () => {
     expect(r.update(null, 0.016)).toBeNull();
     const shown = r.update([0, 1], 0.016);
     expect(r.update(null, 0.016)).toEqual(shown);
+  });
+});
+
+describe('D.7 secondary chart ranges', () => {
+  it('keeps the steam-pressure axis above the secondary model floor', () => {
+    const [lo, hi] = targetRange(6.899, 7.6, chartRange('steam-pressure'));
+    expect(lo).toBeGreaterThanOrEqual(3);
+    expect(hi - lo).toBeGreaterThanOrEqual(1);
+    expect(hi).toBeGreaterThanOrEqual(7.6);
+  });
+
+  it('keeps SG level as a bounded percentage with room around the setpoint', () => {
+    const [lo, hi] = targetRange(50, 50, chartRange('sg-level'));
+    expect(lo).toBeGreaterThanOrEqual(0);
+    expect(hi).toBeLessThanOrEqual(100);
+    expect(hi - lo).toBeGreaterThanOrEqual(10);
+  });
+
+  it('keeps steam/feed-flow and electrical-output axes grounded at zero', () => {
+    const [flowLo, flowHi] = targetRange(0, 2003, chartRange('steam-feed-flow'));
+    expect(flowLo).toBe(0);
+    expect(flowHi).toBeGreaterThan(2003);
+
+    const [mwLo, mwHi] = targetRange(0, 990, chartRange('electric-output'));
+    expect(mwLo).toBe(0);
+    expect(mwHi).toBeGreaterThan(990);
   });
 });

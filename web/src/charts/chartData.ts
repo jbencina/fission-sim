@@ -32,6 +32,9 @@ export const WINDOW_MARGIN_S = 5
 /** Watts to megawatts. */
 export const toMW = (watts: number): number => watts / 1e6
 
+/** Pascals to megapascals for steam and primary-system pressure charts. */
+export const toMPa = (pascals: number): number => pascals / 1e6
+
 /** Dimensionless reactivity to pcm (per cent mille, 1e-5). */
 export const toPcm = (rho: number): number => rho * 1e5
 
