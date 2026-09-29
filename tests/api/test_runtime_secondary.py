@@ -89,9 +89,15 @@ def _command_state(rt: SimRuntime) -> tuple[Any, ...]:
 def _assert_plain_json_frame(frame: dict[str, Any]) -> None:
     """Assert that a frame is strict-JSON serialisable and contains plain scalar values."""
     json.dumps(frame, allow_nan=False)
-    missing = ALL_SECONDARY_FRAME_KEYS - set(frame)
-    assert not missing, f"frame missing secondary keys: {sorted(missing)}"
+    assert set(frame) == ALL_SECONDARY_FRAME_KEYS
 
+    for key, value in frame.items():
+        if key == "model_limit":
+            assert value is None or type(value) is str, f"{key} is {type(value).__name__}, not str or None"
+        else:
+            assert type(value) in (float, bool, type(None)), (
+                f"{key} is {type(value).__name__}, not a plain JSON scalar type"
+            )
     for key in NUMERIC_FRAME_KEYS:
         assert type(frame[key]) is float, f"{key} is {type(frame[key]).__name__}, not plain float"
         assert math.isfinite(frame[key]), f"{key} is not finite: {frame[key]!r}"
