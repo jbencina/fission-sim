@@ -224,6 +224,77 @@ async def test_reset_scram_preserves_p4_turbine_trip_until_valves_close() -> Non
     assert closed_frame["turbine_load"] < 0.005
 
 
+async def test_reset_scram_during_reset_does_not_recreate_pre_reset_turbine_trip() -> None:
+    """A queued Reset SCRAM during reset must not copy stale P-4 telemetry into the rebuilt plant."""
+    rt = SimRuntime()
+
+    assert (await rt.handle_command({"type": "scram"})) == {"type": "ack", "command": "scram"}
+    _step_runtime_once(rt, 0.2)
+    assert rt.snapshot()["scrammed"] is True
+    assert rt.snapshot()["turbine_trip_active"] is True
+    rt.pause()
+
+    real_stop_task = rt._stop_task
+
+    async def yielding_stop_task() -> None:
+        await asyncio.sleep(0)
+        await real_stop_task()
+
+    rt._stop_task = yielding_stop_task
+    try:
+        reset_task = asyncio.create_task(rt.reset())
+        await asyncio.sleep(0)
+        assert rt._reset_in_progress is True
+
+        assert (await rt.handle_command({"type": "reset_scram"})) == {
+            "type": "ack",
+            "command": "reset_scram",
+        }
+        await reset_task
+    finally:
+        rt._stop_task = real_stop_task
+
+    frame = rt.snapshot()
+    assert frame["t"] == 0.0
+    assert frame["scrammed"] is False
+    assert frame["turbine_trip"] is False
+    assert frame["turbine_trip_active"] is False
+
+
+async def test_redundant_reset_scram_after_paused_turbine_trip_reset_does_not_recreate_latch() -> None:
+    """Reset SCRAM is a no-op for the turbine latch once SCRAM has already been cleared."""
+    rt = SimRuntime()
+
+    assert (await rt.handle_command({"type": "scram"}))["type"] == "ack"
+    _step_runtime_once(rt, 0.2)
+    assert (await rt.handle_command({"type": "reset_scram"}))["type"] == "ack"
+    assert rt.snapshot()["scrammed"] is False
+    assert rt.snapshot()["turbine_trip"] is True
+
+    _step_runtime_once(rt, 5.0)
+    assert rt.snapshot()["turbine_load"] < 0.005
+    rt.pause()
+
+    assert (await rt.handle_command({"type": "reset_turbine_trip"})) == {
+        "type": "ack",
+        "command": "reset_turbine_trip",
+    }
+    cleared = rt.snapshot()
+    assert cleared["running"] is False
+    assert cleared["scrammed"] is False
+    assert cleared["turbine_trip"] is False
+    assert cleared["turbine_trip_active"] is True
+
+    assert (await rt.handle_command({"type": "reset_scram"})) == {
+        "type": "ack",
+        "command": "reset_scram",
+    }
+    redundant = rt.snapshot()
+    assert redundant["scrammed"] is False
+    assert redundant["turbine_trip"] is False
+    assert redundant["turbine_trip_active"] is True
+
+
 async def test_reset_turbine_trip_refused_until_actual_admission_is_closed() -> None:
     """The trip reset is refused while actual admission is above the 0.5 % closed tolerance."""
     rt = SimRuntime()

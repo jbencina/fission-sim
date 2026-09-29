@@ -841,15 +841,22 @@ class SimRuntime:
         clearing the latch is unconditional (no interlock logic is
         modeled).
 
-        Clearing SCRAM also sets ``turbine_load_demand`` to zero. If the last
-        accepted plant state had an effective P-4 turbine trip and there was
-        no operator turbine-trip latch, the runtime sets that operator latch
-        before clearing SCRAM. That mirrors the operator distinction: resetting
-        the reactor trip is not the same action as resetting the turbine trip,
-        and the stop valves must keep closing after Reset Scram until the
-        operator separately resets the turbine trip.
+        Clearing an active SCRAM also sets ``turbine_load_demand`` to zero.
+        If the last accepted plant state had an effective P-4 turbine trip
+        and there was no operator turbine-trip latch, the runtime sets that
+        operator latch before clearing SCRAM. That mirrors the operator
+        distinction: resetting the reactor trip is not the same action as
+        resetting the turbine trip, and the stop valves must keep closing
+        after Reset Scram until the operator separately resets the turbine
+        trip.
         """
-        if self._latest_frame.get("turbine_trip_active") is True and not self._cmd.turbine_trip:
+        active_scram = self._cmd.scrammed
+        if (
+            active_scram
+            and not self._reset_in_progress
+            and self._latest_frame.get("turbine_trip_active") is True
+            and not self._cmd.turbine_trip
+        ):
             self._cmd.turbine_trip = True
         self._cmd.scrammed = False
         self._cmd.turbine_load_demand = 0.0
