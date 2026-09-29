@@ -104,6 +104,11 @@ _RESET_KEEPS_SETTINGS = (
     "or the same thing will happen again."
 )
 
+# Actual turbine admission below this fraction is treated as closed for
+# resetting the operator trip latch. The UI displays one decimal percent, so
+# 0.5 % is a visible, documented boundary rather than a hidden epsilon.
+_TURBINE_TRIP_RESET_ADMISSION_TOLERANCE = 0.005  # [fraction] = 0.5 % open
+
 
 def _is_number(value: Any) -> bool:
     """True for a finite JSON number.
@@ -218,8 +223,10 @@ def _build_telemetry_frame(snap: dict[str, Any], cmd: "_CommandState") -> dict[s
         "T_avg": T_avg,
         "T_fuel": T_fuel,
         "rod_position": _plain_float(rod_tele.get("rod_position")),
+        "shutdown_position": _plain_float(rod_tele.get("shutdown_position")),
         "P_primary_Pa": P_pa,
         "P_primary_MPa": P_mpa,
+        "pzr_level": _plain_float(pzr_tele.get("level")),
         "Q_sg": _plain_float(sg_tele.get("Q_sg")),
         "rho_rod": rho_rod,
         "rho_doppler": rho_doppler,
@@ -398,8 +405,9 @@ class SimRuntime:
     Notes
     -----
     Telemetry frame keys: ``t``, ``power_thermal``, ``T_hot``, ``T_cold``,
-    ``T_avg``, ``T_fuel``, ``rod_position``, ``P_primary_Pa``,
-    ``P_primary_MPa``, ``Q_sg``, ``rho_rod``, ``rho_doppler``,
+    ``T_avg``, ``T_fuel``, ``rod_position``, ``shutdown_position``,
+    ``P_primary_Pa``, ``P_primary_MPa``, ``pzr_level``, ``Q_sg``,
+    ``rho_rod``, ``rho_doppler``,
     ``rho_moderator``, ``rho_total``, ``P_steam_Pa``, ``P_steam_MPa``,
     ``T_secondary``, ``level_sg``, ``time_to_level_floor_s``, ``m_steam``,
     ``m_dump``, ``P_electric``, ``turbine_load``, ``T_ref``,
@@ -833,11 +841,16 @@ class SimRuntime:
         clearing the latch is unconditional (no interlock logic is
         modeled).
 
-        Clearing SCRAM also sets ``turbine_load_demand`` to zero. A SCRAM
-        trips the turbine through the P-4 interlock, and resetting that trip
-        must not silently re-open the admission valves to an old demand;
-        re-admission is an explicit operator action.
+        Clearing SCRAM also sets ``turbine_load_demand`` to zero. If the last
+        accepted plant state had an effective P-4 turbine trip and there was
+        no operator turbine-trip latch, the runtime sets that operator latch
+        before clearing SCRAM. That mirrors the operator distinction: resetting
+        the reactor trip is not the same action as resetting the turbine trip,
+        and the stop valves must keep closing after Reset Scram until the
+        operator separately resets the turbine trip.
         """
+        if self._latest_frame.get("turbine_trip_active") is True and not self._cmd.turbine_trip:
+            self._cmd.turbine_trip = True
         self._cmd.scrammed = False
         self._cmd.turbine_load_demand = 0.0
         self._command_state_changed()
@@ -911,7 +924,28 @@ class SimRuntime:
         Resetting the trip does not restore the previous admission demand:
         ``turbine_load_demand`` is set to 0 so re-admission is an explicit
         operator action, matching the M3 operator-review requirement.
+
+        Raises
+        ------
+        ValueError
+            If actual turbine admission in the last accepted state is above
+            the 0.5 % closed-valve tolerance. Clearing the trip then would
+            hand the valves from fast trip closure back to the ordinary
+            governor ramp, which closes at only 5 %/min.
         """
+        actual_admission = float(self._latest_frame["turbine_load"])
+        if actual_admission > _TURBINE_TRIP_RESET_ADMISSION_TOLERANCE:
+            actual_pct = actual_admission * 100.0
+            # Clearing the trip releases the fast stop-valve closure term
+            # (-load / tau_trip) and gives the valve back to the normal
+            # 5 %-per-minute governor ramp toward the now-zero demand. An
+            # early reset with several percent actual admission would leave
+            # steam flowing for over a minute, so the runtime requires the
+            # simulated valves to be effectively closed first.
+            raise ValueError(
+                f"turbine valves still closing ({actual_pct:.1f} % open); "
+                "reset the trip once they are closed"
+            )
         self._cmd.turbine_trip = False
         self._cmd.turbine_load_demand = 0.0
         self._command_state_changed()
@@ -1034,8 +1068,9 @@ class SimRuntime:
             No extra fields.  Drops both rod banks (see ``scram()``).
         reset_scram
             No extra fields.  Clears the scram latch, returns the control
-            bank to the operator, and sets turbine admission demand to 0
-            (see ``reset_scram()``).
+            bank to the operator, latches any accepted P-4 turbine trip as
+            an operator turbine trip, and sets turbine admission demand to
+            0 (see ``reset_scram()``).
         pause
             No extra fields.  Suspends engine stepping (wall-clock loop keeps running).
         resume
@@ -1058,7 +1093,8 @@ class SimRuntime:
             No extra fields. Sets the operator turbine-trip latch.
         reset_turbine_trip
             No extra fields. Clears the latch and sets turbine admission
-            demand to 0, so re-admission is explicit.
+            demand to 0, so re-admission is explicit. Refused while actual
+            turbine admission is above the 0.5 % closed-valve tolerance.
         set_rod_auto
             ``value: bool``. Enables/disables automatic Tavg rod control;
             AUTO→MANUAL synchronizes ``rod_command`` to actual bank position.
@@ -1128,7 +1164,10 @@ class SimRuntime:
             return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "reset_turbine_trip":
-            self.reset_turbine_trip()
+            try:
+                self.reset_turbine_trip()
+            except ValueError as err:
+                return {"type": "error", "detail": str(err)}
             return {"type": "ack", "command": cmd_type}
 
         elif cmd_type == "set_rod_auto":

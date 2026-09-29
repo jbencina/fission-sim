@@ -162,8 +162,10 @@ The example is a real frame from the design steady state:
   "T_avg": 583.0,
   "T_fuel": 1100.0,
   "rod_position": 0.5,
+  "shutdown_position": 1.0,
   "P_primary_Pa": 15499345.236082302,
   "P_primary_MPa": 15.499345236082302,
+  "pzr_level": 0.49999478981883927,
   "Q_sg": 3000000000.0,
   "rho_rod": 0.0,
   "rho_doppler": -0.0,
@@ -214,9 +216,11 @@ see [README.md → Pressurizer](README.md#pressurizer-srcfission_simphysicspress
 | `T_cold` | float | K | Cold-leg coolant temperature |
 | `T_avg` | float | K | Average primary coolant temperature, `(T_hot + T_cold) / 2` |
 | `T_fuel` | float | K | Lumped (average) fuel temperature, not the centerline |
-| `rod_position` | float | dimensionless | Actual control-bank position (0 = inserted, 1 = withdrawn). The shutdown bank is not in the frame. |
+| `rod_position` | float | dimensionless | Actual control-bank position (0 = inserted, 1 = withdrawn). |
+| `shutdown_position` | float | dimensionless | Shutdown-bank position (1 = withdrawn, 0 = inserted); after Reset Scram this remains near 0 until Reset Simulation. |
 | `P_primary_Pa` | float | Pa | Primary system pressure from pressurizer |
 | `P_primary_MPa` | float | MPa | Same primary pressure, converted for display |
+| `pzr_level` | float | dimensionless | Pressurizer liquid level, fraction of pressurizer volume |
 | `Q_sg` | float | W | Heat removed by the steam generator |
 | `rho_rod` | float | dimensionless | Rod reactivity, control bank + shutdown bank |
 | `rho_doppler` | float | dimensionless | Doppler fuel-temperature reactivity feedback |
@@ -276,10 +280,10 @@ applied.
 | `set_rod_command` | `value` in `[0, 1]` | Stores the manual control-bank command. |
 | `set_rod_auto` | JSON boolean `value` | Selects AUTO Tavg rod control or MANUAL; AUTO→MANUAL copies actual rod position into `rod_command`. |
 | `scram` | none | Latches SCRAM and drops the control and shutdown banks. |
-| `reset_scram` | none | Clears the SCRAM latch, leaves the shutdown bank inserted, and sets turbine admission demand to 0. |
+| `reset_scram` | none | Clears the SCRAM latch, leaves the shutdown bank inserted, latches any accepted P-4 turbine trip as an operator turbine trip, and sets turbine admission demand to 0. |
 | `set_turbine_load` | `value` in `[0, 1]` | Sets turbine admission demand; actual admission ramps at 5 percentage-points/min while not tripped. |
 | `turbine_trip` | none | Sets the operator turbine-trip latch. |
-| `reset_turbine_trip` | none | Clears the operator latch and sets turbine admission demand to 0. |
+| `reset_turbine_trip` | none | Clears the operator latch and sets turbine admission demand to 0; refused until actual admission is ≤ 0.5 %. |
 | `pause` | none | Stops advancing simulated time. |
 | `resume` | none | Resumes simulated time unless a model-limit halt is active. |
 | `reset` | none | Rebuilds the plant at design full-power state; preserves selected settings listed below. |
@@ -345,9 +349,13 @@ stays below about −4,300 pcm even with the control bank fully withdrawn
 about +1,480 pcm), against the shutdown bank's −6,400 pcm. Returning to power
 takes a `reset`; the procedure-driven reactor startup that would withdraw the
 shutdown banks in a real plant is not modeled. In the simulator clearing the
-latch is unconditional (no interlock logic is modeled). Clearing SCRAM also
-sets `turbine_load_demand` to 0 because the SCRAM tripped the turbine through
-P-4; re-admission is an explicit operator action.
+latch is unconditional (no interlock logic is modeled). Clearing SCRAM also sets `turbine_load_demand` to 0 because the SCRAM tripped
+the turbine through P-4; re-admission is an explicit operator action. If the
+last accepted plant state had an effective P-4 turbine trip and no operator
+turbine-trip latch, Reset Scram sets the operator latch before clearing the
+SCRAM latch. Resetting the reactor trip is therefore not a shortcut around the
+separate turbine-trip reset: the simulated stop valves keep closing until the
+operator resets that trip after closure.
 
 **`set_turbine_load`** - set turbine admission demand.
 
@@ -377,9 +385,20 @@ interlock is not modeled.
 {"type": "reset_turbine_trip"}
 ```
 
-No extra fields. Also sets `turbine_load_demand` to 0, so clearing the latch
-cannot silently re-open the turbine to an old admission demand. Re-admission
-is an explicit operator action through `set_turbine_load`.
+No extra fields. Refused with an error frame while actual turbine admission
+(`turbine_load` in the last accepted frame) is above 0.5 %:
+
+```json
+{"type": "error", "detail": "turbine valves still closing (6.8 % open); reset the trip once they are closed"}
+```
+
+The guard matters because clearing the trip hands the admission valves back to
+the ordinary governor ramp, which closes at only 5 percentage-points/min. An
+early reset with several percent actual admission would leave steam flowing for
+over a minute even though demand is already zero. Once accepted, this command
+sets `turbine_load_demand` to 0, so clearing the latch cannot silently re-open
+the turbine to an old admission demand. Re-admission is an explicit operator
+action through `set_turbine_load`.
 
 **`pause`** - stop advancing simulated time. The background loop keeps
 running.

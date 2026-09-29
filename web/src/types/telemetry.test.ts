@@ -25,12 +25,21 @@ describe('isFrame', () => {
     const missingEffective = makeFrame();
     delete missingEffective.turbine_load_demand_effective;
     expect(isFrame(missingEffective)).toBe(false);
+
+    const missingShutdownBank = makeFrame();
+    delete missingShutdownBank.shutdown_position;
+    expect(isFrame(missingShutdownBank)).toBe(false);
+
+    const missingPzrLevel = makeFrame();
+    delete missingPzrLevel.pzr_level;
+    expect(isFrame(missingPzrLevel)).toBe(false);
   });
 
   it('rejects non-numeric values for numeric telemetry fields', () => {
     expect(isFrame(makeFrame({ power_thermal: '3000 MW' }))).toBe(false);
     expect(isFrame(makeFrame({ T_hot: null }))).toBe(false);
     expect(isFrame(makeFrame({ m_fw_demand: '1669 kg/s' }))).toBe(false);
+    expect(isFrame(makeFrame({ pzr_level: 'half full' }))).toBe(false);
   });
 
   it('rejects non-finite numeric values', () => {
@@ -38,6 +47,7 @@ describe('isFrame', () => {
     expect(isFrame(makeFrame({ rho_total: Number.POSITIVE_INFINITY }))).toBe(false);
     expect(isFrame(makeFrame({ P_steam_Pa: Number.NEGATIVE_INFINITY }))).toBe(false);
     expect(isFrame(makeFrame({ turbine_load_demand_effective: Number.NaN }))).toBe(false);
+    expect(isFrame(makeFrame({ shutdown_position: Number.NaN }))).toBe(false);
   });
 
   it('accepts nullable numeric fields only when null or finite numbers', () => {

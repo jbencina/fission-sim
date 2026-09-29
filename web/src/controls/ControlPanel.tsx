@@ -209,7 +209,7 @@ const ControlPanel: FC = () => {
                   {rodAuto
                     ? 'AUTO owns rod demand; the manual slider is parked until MANUAL.'
                     : scrammed
-                      ? 'Shutdown bank is in. Reset Scram gives the control bank back to your command.'
+                      ? 'Shutdown bank stays in. Reset Scram gives the control bank back to the selected mode.'
                       : 'The bank moves at 1 % per second toward the command.'}
                 </p>
               </div>
@@ -280,7 +280,7 @@ const ControlPanel: FC = () => {
             {scrammed && (
               <HelpTip
                 align="end"
-                tip="Clears the SCRAM latch, returns the control bank to its command, and sets turbine admission demand to 0 %. The shutdown bank stays fully inserted, so the reactor stays subcritical until Reset Simulation."
+                tip="Clears the SCRAM latch, returns the control bank to the selected rod-control mode, sets turbine admission demand to 0 %, and keeps any P-4 turbine trip latched until the turbine valves are closed. The shutdown bank stays inserted, so the reactor stays subcritical until Reset Simulation."
               >
                 {(tipId) => (
                   <button

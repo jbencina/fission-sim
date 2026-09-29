@@ -24,8 +24,10 @@ NUMERIC_FRAME_KEYS = {
     "T_avg",
     "T_fuel",
     "rod_position",
+    "shutdown_position",
     "P_primary_Pa",
     "P_primary_MPa",
+    "pzr_level",
     "Q_sg",
     "rho_rod",
     "rho_doppler",
@@ -193,6 +195,61 @@ async def test_scram_alone_effectively_trips_turbine_without_operator_trip_latch
         await rt.stop()
 
 
+async def test_reset_scram_preserves_p4_turbine_trip_until_valves_close() -> None:
+    """Reset SCRAM leaves a P-4 turbine trip latched so fast turbine closure continues."""
+    rt = SimRuntime()
+
+    assert (await rt.handle_command({"type": "scram"})) == {"type": "ack", "command": "scram"}
+    _step_runtime_once(rt, 0.2)
+    p4_frame = rt.snapshot()
+    assert p4_frame["scrammed"] is True
+    assert p4_frame["turbine_trip"] is False
+    assert p4_frame["turbine_trip_active"] is True
+    assert p4_frame["turbine_load"] > 0.005
+
+    assert (await rt.handle_command({"type": "reset_scram"})) == {
+        "type": "ack",
+        "command": "reset_scram",
+    }
+    reset_frame = rt.snapshot()
+    assert reset_frame["scrammed"] is False
+    assert reset_frame["turbine_trip"] is True
+    assert reset_frame["turbine_trip_active"] is True
+    assert reset_frame["turbine_load_demand"] == 0.0
+
+    _step_runtime_once(rt, 5.0)
+    closed_frame = rt.snapshot()
+    assert closed_frame["turbine_trip"] is True
+    assert closed_frame["turbine_trip_active"] is True
+    assert closed_frame["turbine_load"] < 0.005
+
+
+async def test_reset_turbine_trip_refused_until_actual_admission_is_closed() -> None:
+    """The trip reset is refused while actual admission is above the 0.5 % closed tolerance."""
+    rt = SimRuntime()
+    assert (await rt.handle_command({"type": "set_turbine_load", "value": 0.7}))["type"] == "ack"
+    assert (await rt.handle_command({"type": "turbine_trip"})) == {"type": "ack", "command": "turbine_trip"}
+    _step_runtime_once(rt, 0.2)
+
+    before = (dict(rt.snapshot()), _command_state(rt))
+    reply = await rt.handle_command({"type": "reset_turbine_trip"})
+    assert reply["type"] == "error"
+    assert "turbine valves still closing" in reply["detail"]
+    assert "reset the trip once they are closed" in reply["detail"]
+    assert (rt.snapshot(), _command_state(rt)) == before
+
+    _step_runtime_once(rt, 5.0)
+    assert rt.snapshot()["turbine_load"] < 0.005
+
+    assert (await rt.handle_command({"type": "reset_turbine_trip"})) == {
+        "type": "ack",
+        "command": "reset_turbine_trip",
+    }
+    frame = rt.snapshot()
+    assert frame["turbine_trip"] is False
+    assert frame["turbine_load_demand"] == 0.0
+
+
 async def test_secondary_commands_ack_and_update_command_state() -> None:
     """Each secondary-side command uses the existing ack shape and changes its frame field."""
     rt = SimRuntime()
@@ -206,6 +263,8 @@ async def test_secondary_commands_ack_and_update_command_state() -> None:
     assert (await rt.handle_command({"type": "turbine_trip"})) == {"type": "ack", "command": "turbine_trip"}
     assert rt.snapshot()["turbine_trip"] is True
 
+    _step_runtime_once(rt, 5.0)
+    assert rt.snapshot()["turbine_load"] < 0.005
     assert (await rt.handle_command({"type": "reset_turbine_trip"})) == {
         "type": "ack",
         "command": "reset_turbine_trip",

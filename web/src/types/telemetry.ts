@@ -41,16 +41,25 @@ export interface Frame {
 
   /**
    * Control-bank position as a fraction of travel withdrawn [0..1].
-   * 0 = fully inserted, 1 = fully withdrawn; design 0.5. The shutdown bank
-   * (dropped only by SCRAM) is not in the frame; its worth is in rho_rod.
+   * 0 = fully inserted, 1 = fully withdrawn; design 0.5.
    */
   rod_position: number;
+
+  /**
+   * Shutdown-bank position as a fraction of travel withdrawn [0..1].
+   * It is 1 in normal operation, drops toward 0 on SCRAM, and stays inserted
+   * after Reset Scram until Reset Simulation rebuilds the plant.
+   */
+  shutdown_position: number;
 
   /** Primary system pressure from the pressurizer [Pa] */
   P_primary_Pa: number;
 
   /** Primary system pressure from the pressurizer [MPa] (convenience derived) */
   P_primary_MPa: number;
+
+  /** Pressurizer liquid level [fraction of pressurizer volume]. */
+  pzr_level: number;
 
   /** Heat transferred from primary to secondary side via the steam generator [W] */
   Q_sg: number;
@@ -276,10 +285,11 @@ export interface ScramCommand {
 }
 
 /**
- * Clear the SCRAM latch, return the control bank to rod_command, and set
- * turbine admission demand to 0. The shutdown bank stays inserted (the core
- * stays subcritical) until `reset`; turbine re-admission is an explicit
- * operator action.
+ * Clear the SCRAM latch, return the control bank to the selected rod-control
+ * mode, and set turbine admission demand to 0. If P-4 has already tripped
+ * the turbine, the backend latches a separate turbine trip so stop-valve
+ * closure continues until Reset Turbine Trip after the valves are shut. The
+ * shutdown bank stays inserted until `reset`; the core stays subcritical.
  */
 export interface ResetScramCommand {
   type: 'reset_scram';
@@ -303,7 +313,9 @@ export interface TurbineTripCommand {
 
 /**
  * Clear the operator turbine-trip latch and set turbine admission demand to 0.
- * Re-admission is always an explicit later `set_turbine_load` action.
+ * The backend rejects this command while actual turbine admission is above the
+ * 0.5 % closed-valve tolerance; re-admission is always an explicit later
+ * `set_turbine_load` action.
  */
 export interface ResetTurbineTripCommand {
   type: 'reset_turbine_trip';
@@ -445,8 +457,10 @@ const NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   'T_avg',
   'T_fuel',
   'rod_position',
+  'shutdown_position',
   'P_primary_Pa',
   'P_primary_MPa',
+  'pzr_level',
   'Q_sg',
   'P_steam_Pa',
   'P_steam_MPa',

@@ -165,9 +165,9 @@ const SecondaryControls: FC = () => {
   const manualDesignPct = designFeedwater > 0 && manualFlow !== null ? (manualFlow / designFeedwater) * 100 : null
   const turbineResetCopy =
     latest?.turbine_trip === true
-      ? 'Reset Turbine Trip sets it to 0 %.'
+      ? 'Reset Turbine Trip is accepted once actual admission is closed.'
       : latest?.scrammed === true
-        ? 'Reset Scram sets it to 0 %.'
+        ? 'Reset Scram sets demand to 0 % and keeps the trip until closed.'
         : 'Demand remains retained until the trip clears.'
   const turbineContext =
     tripStatus.active || tripStatus.kind === 'reset-pending'
@@ -278,7 +278,7 @@ const SecondaryControls: FC = () => {
               {latest?.turbine_trip === true ? (
                 <HelpTip
                   align="end"
-                  tip="Clears only the operator turbine-trip latch. Admission demand returns to 0 %, so the turbine remains closed until you deliberately raise demand again."
+                  tip="Clears only the operator turbine-trip latch after actual admission is closed. The backend refuses while valves are more than 0.5 % open. Admission demand returns to 0 %, and re-admission is a deliberate later demand change."
                 >
                   {(tipId) => (
                     <button
