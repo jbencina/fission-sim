@@ -34,7 +34,11 @@ colour-prefixed output. Press **Ctrl-C** to stop both processes.
 
 Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready. During development, Vite proxies `/api` and `/ws` to the
-backend.
+backend. If port 8000 is already taken on a shared machine, start the backend
+on another port and tell Vite which API port to proxy:
+
+    uv run uvicorn fission_sim.api.app:app --port 8761
+    FISSION_SIM_API_PORT=8761 npm run dev --prefix web
 
 Both servers bind `0.0.0.0`, so the dashboard is reachable from any host on
 your network at `http://<your-machine-ip>:5173`. There is no authentication;
@@ -101,6 +105,11 @@ Start the stack in one terminal:
 Run the smoke test in another:
 
     make e2e
+
+By default Playwright opens `http://127.0.0.1:5173`. Override the browser
+target when Vite is using a non-default port:
+
+    E2E_BASE_URL=http://127.0.0.1:5182 npm run e2e --prefix web
 
 ## Web API Reference
 
@@ -474,8 +483,8 @@ Layer rules:
 - `fission_sim.api` is the only package that knows about asyncio, HTTP, or
   WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
 - The Vite frontend is a separate process. During development, the Vite proxy
-  (`/api`, `/ws` to `127.0.0.1:8000`) removes the need for browser CORS
-  preflights.
+  (`/api`, `/ws` to `127.0.0.1:8000` by default, or `FISSION_SIM_API_PORT`)
+  removes the need for browser CORS preflights.
 
 ## Frontend Tech Stack
 
@@ -493,7 +502,9 @@ The browser dashboard is a single-page app in `web/`:
 | Vitest | 4.x | Unit tests for store logic and utilities |
 
 During development, Vite forwards `/api/*` and `/ws/*` to
-`http://127.0.0.1:8000` and `ws://127.0.0.1:8000`, respectively.
+`http://127.0.0.1:8000` and `ws://127.0.0.1:8000`, respectively. Set
+`FISSION_SIM_API_PORT` before starting Vite to proxy both paths to a different
+loopback port when 8000 is occupied.
 Authentication, persistence, multi-user support, and replay are not
 implemented.
 

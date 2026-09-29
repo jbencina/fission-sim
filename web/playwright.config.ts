@@ -3,14 +3,17 @@
  *
  * Assumptions:
  *   - The dev stack is already running (started via `make dev` or equivalent).
- *   - The frontend is served at http://127.0.0.1:5173 (Vite default).
- *   - The backend WebSocket is served at ws://127.0.0.1:8000.
+ *   - The frontend is served at E2E_BASE_URL (default http://127.0.0.1:5173).
+ *   - Vite proxies the backend WebSocket; use FISSION_SIM_API_PORT when the
+ *     backend is not on port 8000.
  *
  * Run: npm run e2e (from web/)
  * Pre-condition: `make dev` must be running in a separate terminal.
  */
 
 import { defineConfig, devices } from '@playwright/test'
+
+const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:5173'
 
 export default defineConfig({
   // Location of e2e spec files.
@@ -31,7 +34,7 @@ export default defineConfig({
 
   use: {
     // All tests navigate relative to this base URL.
-    baseURL: 'http://127.0.0.1:5173',
+    baseURL,
 
     // Maximum time for each Playwright action (click, fill, etc.).
     actionTimeout: 15_000,

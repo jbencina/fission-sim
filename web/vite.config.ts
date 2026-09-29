@@ -1,6 +1,10 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+const apiPort = process.env.FISSION_SIM_API_PORT ?? '8000'
+const apiHttpTarget = `http://127.0.0.1:${apiPort}`
+const apiWsTarget = `ws://127.0.0.1:${apiPort}`
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -12,11 +16,11 @@ export default defineConfig({
       // Proxy targets stay on loopback — the proxy runs on the same host
       // as the backend, so going through 127.0.0.1 avoids an extra hop.
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: apiHttpTarget,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://127.0.0.1:8000',
+        target: apiWsTarget,
         ws: true,
         changeOrigin: true,
       },

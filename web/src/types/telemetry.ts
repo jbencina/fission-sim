@@ -14,7 +14,8 @@
  * A single telemetry frame as broadcast over the /ws/telemetry WebSocket.
  *
  * All temperatures are in Kelvin (K), pressures in Pa or MPa as noted,
- * powers in Watts (W), reactivities are dimensionless, times in seconds (s).
+ * powers in Watts (W), mass flows in kg/s, reactivities are dimensionless,
+ * times in seconds (s).
  */
 export interface Frame {
   /** Simulation time [s] */
@@ -53,6 +54,108 @@ export interface Frame {
 
   /** Heat transferred from primary to secondary side via the steam generator [W] */
   Q_sg: number;
+
+  /** Secondary-side steam pressure in the lumped steam-generator shell [Pa] */
+  P_steam_Pa: number;
+
+  /** Secondary-side steam pressure in the lumped steam-generator shell [MPa] */
+  P_steam_MPa: number;
+
+  /** Lumped secondary-side saturation temperature in the steam generator [K] */
+  T_secondary: number;
+
+  /**
+   * SG collapsed liquid fraction (4 SGs lumped, no shrink/swell) [fraction].
+   * This is inventory expressed as an equivalent liquid level, not a visible
+   * two-phase swell level.
+   */
+  level_sg: number;
+
+  /**
+   * Estimated time until the SG collapsed liquid fraction reaches its lower
+   * validity floor while draining [s], or null when the SG is not draining
+   * toward that floor.
+   */
+  time_to_level_floor_s: number | null;
+
+  /** Steam flow admitted through the turbine admission path [kg/s] */
+  m_steam: number;
+
+  /** Steam flow diverted through the steam dump instead of the turbine [kg/s] */
+  m_dump: number;
+
+  /** Gross electrical power from the turbine/generator fixed-efficiency proxy [W] */
+  P_electric: number;
+
+  /**
+   * Actual turbine admission valve opening [fraction].
+   * Label this as "turbine admission", not load; it ramps toward
+   * turbine_load_demand and is forced closed by an effective trip.
+   */
+  turbine_load: number;
+
+  /** Tavg controller reference temperature scheduled from turbine admission [K] */
+  T_ref: number;
+
+  /**
+   * Effective turbine trip status [boolean].
+   * True when either the commanded operator trip latch is set or SCRAM/P-4 has
+   * tripped the turbine; compare with `turbine_trip` for commanded-only state.
+   */
+  turbine_trip_active: boolean;
+
+  /** Actual feedwater flow into the lumped steam generators [kg/s] */
+  m_fw: number;
+
+  /**
+   * Maximum feedwater flow available to the controller [kg/s].
+   * This maximum is 120 % of design flow and is the denominator for
+   * feedwater_manual.
+   */
+  m_fw_max: number;
+
+  /** Feedwater flow demanded by the level controller before plant response [kg/s] */
+  m_fw_demand: number;
+
+  /** Whether the automatic feedwater level controller is saturated [boolean] */
+  fw_saturated: boolean;
+
+  /**
+   * Active rod demand that actually drives the control bank [fraction].
+   * In AUTO it comes from the Tavg controller; in MANUAL it follows
+   * rod_command, the retained operator command.
+   */
+  rod_demand: number;
+
+  /**
+   * Whether automatic rod control is actively adjusting rods [boolean].
+   * False can mean AUTO is suspended by controller logic or the operator has
+   * selected MANUAL; compare with `rod_auto` for the commanded mode.
+   */
+  rod_auto_acting: boolean;
+
+  /** Commanded turbine admission demand before ramping/trip action [fraction] */
+  turbine_load_demand: number;
+
+  /**
+   * Commanded operator turbine-trip latch [boolean].
+   * This is the operator command only; `turbine_trip_active` is the effective
+   * turbine trip after SCRAM/P-4 is also considered.
+   */
+  turbine_trip: boolean;
+
+  /** Operator-selected automatic rod-control mode [boolean] */
+  rod_auto: boolean;
+
+  /** SG collapsed-liquid-fraction setpoint for the feedwater controller [fraction] */
+  level_setpoint: number;
+
+  /**
+   * Manual feedwater demand [fraction of m_fw_max], or null = AUTO.
+   * m_fw_max is 120 % of design flow, so a manual value of 1.0 commands the
+   * maximum feedwater flow rather than design flow.
+   */
+  feedwater_manual: number | null;
 
   /**
    * Rod reactivity, control bank + shutdown bank [dimensionless].
@@ -97,8 +200,10 @@ export interface Frame {
   scrammed: boolean;
 
   /**
-   * Operator's control-bank command, fraction of travel withdrawn [0..1].
-   * The rod controller moves the bank toward it at 0.01 per second.
+   * Operator's retained manual control-bank command [fraction withdrawn].
+   * This is the manual command shown separately from rod_demand; in AUTO the
+   * bank follows rod_demand instead. The rod controller moves the bank toward
+   * the active demand at 0.01 per second.
    */
   rod_command: number;
 
@@ -120,6 +225,18 @@ export interface Frame {
  * failure. Mirrors `SIM_ERROR_PREFIX` in `src/fission_sim/api/runtime.py`.
  */
 export const SIM_ERROR_PREFIX = 'Simulation error: ';
+
+/**
+ * Minimum SG level setpoint accepted by the runtime. Mirrors
+ * `LEVEL_SETPOINT_MIN` in `src/fission_sim/api/runtime.py`.
+ */
+export const LEVEL_SETPOINT_MIN = 0.35;
+
+/**
+ * Maximum SG level setpoint accepted by the runtime. Mirrors
+ * `LEVEL_SETPOINT_MAX` in `src/fission_sim/api/runtime.py`.
+ */
+export const LEVEL_SETPOINT_MAX = 0.90;
 
 // ---------------------------------------------------------------------------
 // Command — outbound messages from UI to backend
@@ -145,11 +262,69 @@ export interface ScramCommand {
 }
 
 /**
- * Clear the SCRAM latch and return the control bank to rod_command. The
- * shutdown bank stays inserted (the core stays subcritical) until `reset`.
+ * Clear the SCRAM latch, return the control bank to rod_command, and set
+ * turbine admission demand to 0. The shutdown bank stays inserted (the core
+ * stays subcritical) until `reset`; turbine re-admission is an explicit
+ * operator action.
  */
 export interface ResetScramCommand {
   type: 'reset_scram';
+}
+
+/**
+ * Set turbine admission demand [0..1].
+ * The turbine admission valve ramps toward this demand at 5 %/min while not
+ * effectively tripped; electrical output is reported separately.
+ */
+export interface SetTurbineLoadCommand {
+  type: 'set_turbine_load';
+  /** Turbine admission demand as a fraction of full admission [0..1]. */
+  value: number;
+}
+
+/** Set the operator turbine-trip latch; effective trip may also come from SCRAM/P-4. */
+export interface TurbineTripCommand {
+  type: 'turbine_trip';
+}
+
+/**
+ * Clear the operator turbine-trip latch and set turbine admission demand to 0.
+ * Re-admission is always an explicit later `set_turbine_load` action.
+ */
+export interface ResetTurbineTripCommand {
+  type: 'reset_turbine_trip';
+}
+
+/**
+ * Select automatic or manual rod control.
+ * `true` lets the Tavg controller drive rod_demand; `false` enters MANUAL and
+ * the runtime synchronizes rod_command to the actual rod position for a
+ * bumpless transfer.
+ */
+export interface SetRodAutoCommand {
+  type: 'set_rod_auto';
+  /** true = automatic rod control, false = manual with rod_command synced. */
+  value: boolean;
+}
+
+/** Set the SG collapsed-liquid-fraction setpoint for feedwater control [0.35..0.90]. */
+export interface SetLevelSetpointCommand {
+  type: 'set_level_setpoint';
+  /** Target SG collapsed liquid fraction within LEVEL_SETPOINT_MIN/MAX. */
+  value: number;
+}
+
+/**
+ * Set manual feedwater demand or return feedwater to AUTO.
+ * Numeric values are fractions of m_fw_max in [0, 1], where m_fw_max is
+ * 120 % of design feedwater flow; null selects AUTO. The UI should send the
+ * current demand fraction when entering MANUAL for a bumpless transfer, and
+ * AUTO resumes within the controller's ±20 % integral authority.
+ */
+export interface SetFeedwaterManualCommand {
+  type: 'set_feedwater_manual';
+  /** Manual demand fraction of m_fw_max [0..1], or null = AUTO. */
+  value: number | null;
 }
 
 /** Pause simulation time advancement (step loop keeps running). */
@@ -163,9 +338,11 @@ export interface ResumeCommand {
 }
 
 /**
- * Rebuild the engine at the design full-power state from t = 0: SCRAM
- * cleared, both banks back at their design positions, rod_command 0.5.
- * P_setpoint and speed are preserved. Also clears a model-limit halt.
+ * Rebuild the engine at the design full-power state from t = 0.
+ * Preserves P_setpoint, speed, pause state, turbine admission demand,
+ * rod_auto mode, and level_setpoint. Clears SCRAM, the turbine trip latch,
+ * feedwater_manual (AUTO), and any model-limit halt; both banks return to
+ * design positions and rod_command returns to 0.5.
  */
 export interface ResetCommand {
   type: 'reset';
@@ -206,6 +383,12 @@ export type Command =
   | SetRodCommand
   | ScramCommand
   | ResetScramCommand
+  | SetTurbineLoadCommand
+  | TurbineTripCommand
+  | ResetTurbineTripCommand
+  | SetRodAutoCommand
+  | SetLevelSetpointCommand
+  | SetFeedwaterManualCommand
   | PauseCommand
   | ResumeCommand
   | ResetCommand
@@ -251,6 +434,21 @@ const NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   'P_primary_Pa',
   'P_primary_MPa',
   'Q_sg',
+  'P_steam_Pa',
+  'P_steam_MPa',
+  'T_secondary',
+  'level_sg',
+  'm_steam',
+  'm_dump',
+  'P_electric',
+  'turbine_load',
+  'T_ref',
+  'm_fw',
+  'm_fw_max',
+  'm_fw_demand',
+  'rod_demand',
+  'turbine_load_demand',
+  'level_setpoint',
   'rho_rod',
   'rho_doppler',
   'rho_moderator',
@@ -260,12 +458,28 @@ const NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
 ];
 
 /** Required boolean keys that every valid Frame must contain. */
-const BOOLEAN_FRAME_KEYS: ReadonlyArray<keyof Frame> = ['running', 'scrammed'];
+const BOOLEAN_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
+  'turbine_trip_active',
+  'fw_saturated',
+  'rod_auto_acting',
+  'turbine_trip',
+  'rod_auto',
+  'running',
+  'scrammed',
+];
+
+/** Required nullable numeric keys that every valid Frame must contain. */
+const NULLABLE_NUMERIC_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
+  'time_to_level_floor_s',
+  'feedwater_manual',
+];
 
 /** Required keys that every valid Frame must contain. */
 const REQUIRED_FRAME_KEYS: ReadonlyArray<keyof Frame> = [
   ...NUMERIC_FRAME_KEYS,
   ...BOOLEAN_FRAME_KEYS,
+  ...NULLABLE_NUMERIC_FRAME_KEYS,
+  'model_limit',
 ];
 
 /**
@@ -282,6 +496,13 @@ export function isFrame(value: unknown): value is Frame {
     return false;
   }
   if (!BOOLEAN_FRAME_KEYS.every((k) => typeof obj[k] === 'boolean')) return false;
+  if (
+    !NULLABLE_NUMERIC_FRAME_KEYS.every(
+      (k) => obj[k] === null || (typeof obj[k] === 'number' && Number.isFinite(obj[k])),
+    )
+  ) {
+    return false;
+  }
   // model_limit must be present: null normally, a message while halted.
-  return 'model_limit' in obj && (obj.model_limit === null || typeof obj.model_limit === 'string');
+  return obj.model_limit === null || typeof obj.model_limit === 'string';
 }

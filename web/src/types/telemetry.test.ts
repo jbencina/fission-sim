@@ -17,16 +17,30 @@ describe('isFrame', () => {
     const frame = makeFrame();
     delete frame.power_thermal;
     expect(isFrame(frame)).toBe(false);
+
+    const missingNullable = makeFrame();
+    delete missingNullable.feedwater_manual;
+    expect(isFrame(missingNullable)).toBe(false);
   });
 
   it('rejects non-numeric values for numeric telemetry fields', () => {
     expect(isFrame(makeFrame({ power_thermal: '3000 MW' }))).toBe(false);
     expect(isFrame(makeFrame({ T_hot: null }))).toBe(false);
+    expect(isFrame(makeFrame({ m_fw_demand: '1669 kg/s' }))).toBe(false);
   });
 
   it('rejects non-finite numeric values', () => {
     expect(isFrame(makeFrame({ P_primary_MPa: Number.NaN }))).toBe(false);
     expect(isFrame(makeFrame({ rho_total: Number.POSITIVE_INFINITY }))).toBe(false);
+    expect(isFrame(makeFrame({ P_steam_Pa: Number.NEGATIVE_INFINITY }))).toBe(false);
+  });
+
+  it('accepts nullable numeric fields only when null or finite numbers', () => {
+    expect(isFrame(makeFrame({ feedwater_manual: null, time_to_level_floor_s: null }))).toBe(true);
+    expect(isFrame(makeFrame({ feedwater_manual: 0.25, time_to_level_floor_s: 90 }))).toBe(true);
+    expect(isFrame(makeFrame({ feedwater_manual: 'AUTO' }))).toBe(false);
+    expect(isFrame(makeFrame({ time_to_level_floor_s: Number.NaN }))).toBe(false);
+    expect(isFrame(makeFrame({ feedwater_manual: Number.POSITIVE_INFINITY }))).toBe(false);
   });
 
   it('accepts a model-limit explanation and requires the field to be string or null', () => {
@@ -40,5 +54,7 @@ describe('isFrame', () => {
   it('rejects non-boolean values for boolean telemetry fields', () => {
     expect(isFrame(makeFrame({ running: 'true' }))).toBe(false);
     expect(isFrame(makeFrame({ scrammed: 0 }))).toBe(false);
+    expect(isFrame(makeFrame({ turbine_trip_active: 'false' }))).toBe(false);
+    expect(isFrame(makeFrame({ fw_saturated: 0 }))).toBe(false);
   });
 });

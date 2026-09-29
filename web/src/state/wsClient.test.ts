@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connectTelemetry } from './wsClient';
+import { makeFrame } from '../test/makeFrame';
 
 /** Records every socket the client opens so tests can fire events on it. */
 class FakeWebSocket {
@@ -35,6 +36,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -64,6 +66,23 @@ describe('connectTelemetry error reporting', () => {
       ['server', 'rod command out of range'],
       ['connection', expect.stringMatching(/retrying/i)],
     ]);
+    client.close();
+  });
+
+  it('pushes only complete telemetry frames with the secondary-side keys', () => {
+    const onFrame = vi.fn();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const client = connectTelemetry(onFrame, vi.fn(), vi.fn());
+    const ws = FakeWebSocket.instances[0];
+    const valid = makeFrame();
+    const missingSecondaryKey: Record<string, unknown> = { ...valid };
+    delete missingSecondaryKey.P_steam_Pa;
+
+    ws.onmessage?.({ data: JSON.stringify(missingSecondaryKey) });
+    ws.onmessage?.({ data: JSON.stringify(valid) });
+
+    expect(onFrame).toHaveBeenCalledOnce();
+    expect(onFrame).toHaveBeenCalledWith(valid);
     client.close();
   });
 });
