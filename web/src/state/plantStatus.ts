@@ -307,18 +307,20 @@ export function deriveTurbineTripStatus(frame: TurbineTripFrame): TurbineTripSta
  */
 export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
   const tripStatus = deriveTurbineTripStatus(frame)
+  const expectedActing = frame.rod_auto && !frame.scrammed && !frame.turbine_trip
+
+  if (!frame.running && frame.rod_auto_acting !== expectedActing) {
+    return {
+      kind: 'pending',
+      label: 'PENDING',
+      detail: PENDING_DETAIL,
+      pending: true,
+      effectiveActing: frame.rod_auto_acting,
+      tone: 'warn',
+    }
+  }
 
   if (!frame.rod_auto) {
-    if (!frame.running && frame.rod_auto_acting) {
-      return {
-        kind: 'pending',
-        label: 'PENDING',
-        detail: PENDING_DETAIL,
-        pending: true,
-        effectiveActing: frame.rod_auto_acting,
-        tone: 'warn',
-      }
-    }
     return {
       kind: 'manual',
       label: 'MANUAL',
@@ -357,17 +359,6 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
       label: 'AUTO SUSPENDED',
       detail: 'Automatic rod motion is suspended by turbine trip.',
       pending: false,
-      effectiveActing: false,
-      tone: 'warn',
-    }
-  }
-
-  if (!frame.running) {
-    return {
-      kind: 'pending',
-      label: 'PENDING',
-      detail: PENDING_DETAIL,
-      pending: true,
       effectiveActing: false,
       tone: 'warn',
     }

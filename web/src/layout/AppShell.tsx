@@ -47,7 +47,7 @@ const AppShell: FC = () => (
           <div className="lg:flex lg:min-h-0 lg:flex-1 lg:flex-col lg:overflow-hidden">
             <PlantMimic />
           </div>
-          <div className="hidden border-t border-line-strong lg:block">
+          <div className="scroll-column hidden border-t border-line-strong lg:block lg:max-h-[13rem] lg:overflow-y-auto">
             <EventLog />
           </div>
         </div>

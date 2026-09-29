@@ -16,10 +16,10 @@ import { formatNumber } from '../ui/format'
 import { describeSchematicState, turbineTripStatus } from './loopState'
 import { type Band, getBand } from './thresholds'
 
-const LABEL = { fontSize: 13.5, letterSpacing: 1.05, fill: 'var(--ink-2)' } as const
+const LABEL = { fontSize: 14.8, letterSpacing: 1.05, fill: 'var(--ink-2)' } as const
 const VALUE = { fontSize: 17.5, fontWeight: 300, fill: 'var(--ink)' } as const
-const UNIT = { fontSize: 13.2, fontWeight: 400, fill: 'var(--ink-2)' } as const
-const STATUS = { fontSize: 13.2, fontWeight: 400, letterSpacing: 1.2 } as const
+const UNIT = { fontSize: 13.6, fontWeight: 400, fill: 'var(--ink-2)' } as const
+const STATUS = { fontSize: 13.6, fontWeight: 400, letterSpacing: 1.2 } as const
 const BAND_FILL: Record<Band, string> = {
   green: 'var(--ink)',
   amber: 'var(--warn-ink)',
@@ -115,8 +115,8 @@ const PlantMimic: FC = () => {
 
   return (
     <section aria-label="Primary and secondary plant schematic" className="flex min-h-0 flex-col lg:h-full">
-      <div ref={titleRef} className="flex items-center gap-2 px-4 pb-1 pt-3.5 sm:px-5">
-        <h2 className="eyebrow">
+      <div ref={titleRef} className="flex min-w-0 items-center gap-2 px-4 pb-1 pt-3.5 sm:px-5">
+        <h2 className="eyebrow min-w-0 truncate">
           Plant schematic{' '}
           <span className="normal-case tracking-normal text-ink">· {describeSchematicState(latest)}</span>
         </h2>
@@ -162,7 +162,7 @@ const PlantMimic: FC = () => {
           <text x="66" y="226" textAnchor="middle" data-font-role="label" {...LABEL}>
             PRESSURIZER
           </text>
-          <text x="66" y="326" textAnchor="middle" data-font-role="value" {...VALUE} fill={BAND_FILL[band]}>
+          <text x="58" y="326" textAnchor="middle" data-font-role="value" {...VALUE} fill={BAND_FILL[band]}>
             {formatNumber(pMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
           </text>
           {/* two-sided steam generator: primary tubes inside a secondary shell */}
@@ -220,31 +220,31 @@ const PlantMimic: FC = () => {
             )}
           </g>
           <rect x="282" y="180" width="74" height="154" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />
-          <text x="319" y="206" textAnchor="middle" data-font-role="label" {...LABEL}>
-            TURBINE
+          <text x="319" y="198" textAnchor="middle" data-font-role="label" {...LABEL}>
+            TURB
           </text>
-          <text x="319" y="225" textAnchor="middle" data-font-role="unit" {...UNIT}>
+          <text x="319" y="224" textAnchor="middle" data-font-role="unit" {...UNIT}>
             ADM
           </text>
-          <text x="319" y="246" textAnchor="middle" data-font-role="value" {...VALUE}>
+          <text x="319" y="252" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(admissionPercent, 0)} <tspan data-font-role="unit" {...UNIT}>%</tspan>
           </text>
-          <text x="319" y="272" textAnchor="middle" data-font-role="value" {...VALUE}>
+          <text x="319" y="280" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(electricMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
           </text>
           {tripActive && (
             <>
-              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--danger-ink)">
+              <text x="319" y="302" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--danger-ink)">
                 TRIPPED
               </text>
               {tripDetailLines.map((line, i) => (
                 <text
                   key={line}
                   x="319"
-                  y={316 + i * 15}
+                  y={326 + i * 16}
                   textAnchor="middle"
                   data-font-role="status"
-                  fontSize="13.2"
+                  fontSize="13.6"
                   fill="var(--danger-ink)"
                   letterSpacing="0.6"
                 >
@@ -255,15 +255,15 @@ const PlantMimic: FC = () => {
           )}
           {tripPending && (
             <>
-              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+              <text x="319" y="302" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
                 PENDING
               </text>
               <text
                 x="319"
-                y="316"
+                y="326"
                 textAnchor="middle"
                 data-font-role="status"
-                fontSize="13.2"
+                fontSize="13.6"
                 fill="var(--warn-ink)"
                 letterSpacing="0.4"
               >
@@ -273,15 +273,15 @@ const PlantMimic: FC = () => {
           )}
           {tripResetPending && (
             <>
-              <text x="319" y="298" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+              <text x="319" y="302" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
                 RESET
               </text>
               <text
                 x="319"
-                y="316"
+                y="326"
                 textAnchor="middle"
                 data-font-role="status"
-                fontSize="13.2"
+                fontSize="13.6"
                 fill="var(--warn-ink)"
                 letterSpacing="0.4"
               >
@@ -294,12 +294,12 @@ const PlantMimic: FC = () => {
           <path d="M356 418 H272" fill="none" stroke="var(--series-blue)" strokeWidth="2" />
           <path d="M272 418 l8 -4 v8z" fill="var(--series-blue)" />
           <text x="356" y="362" textAnchor="end" data-font-role="label" {...LABEL} fill="var(--series-blue)">
-            {feedwaterManual ? 'FW MAN' : 'FEEDWATER'}
+            {feedwaterManual ? 'FW MAN' : 'FEED'}
           </text>
           <text x="356" y="386" textAnchor="end" data-font-role="value" {...VALUE}>
             {formatNumber(mFeedwater, 0)}
           </text>
-          <text x="356" y="404" textAnchor="end" data-font-role="unit" {...UNIT}>
+          <text x="356" y="412" textAnchor="end" data-font-role="unit" {...UNIT}>
             kg/s
           </text>
           {/* reactor vessel and core */}
@@ -314,10 +314,10 @@ const PlantMimic: FC = () => {
           <text x="113" y="564" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(powerMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
           </text>
-          <text x="113" y="586" textAnchor="middle" data-font-role="unit" {...UNIT}>
+          <text x="113" y="584" textAnchor="middle" data-font-role="unit" {...UNIT}>
             fuel {tFuel} K
           </text>
-          <text x="113" y="604" textAnchor="middle" data-font-role="unit" {...UNIT}>
+          <text x="113" y="610" textAnchor="middle" data-font-role="unit" {...UNIT}>
             rods {formatNumber(inserted * 100, 0)} %
           </text>
 

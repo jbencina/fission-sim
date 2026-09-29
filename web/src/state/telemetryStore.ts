@@ -54,6 +54,13 @@ export interface TelemetryState {
   /** Explicit event hysteresis/debounce state carried between frames. */
   eventTracker: EventTracker;
 
+  /**
+   * Previous frame used only for event detection.
+   * Cleared on WebSocket disconnect so reconnects seed a fresh tracker
+   * instead of logging transitions across an unobserved gap.
+   */
+  eventBaseline: Frame | null;
+
   /** Current WebSocket connection state. */
   status: ConnectionStatus;
 
@@ -130,6 +137,7 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
   history: [],
   events: [],
   eventTracker: initialEventTracker(),
+  eventBaseline: null,
   status: 'connecting',
   lastError: null,
   connectionNoticeDismissed: false,
@@ -145,16 +153,18 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
           ? [...state.history, frame]
           : [...state.history.slice(1), frame];
       // Events restart on a reset too; otherwise the newest ones are kept.
-      const fresh = detectEvents(state.latest, frame, state.eventTracker);
+      const fresh = detectEvents(state.eventBaseline, frame, state.eventTracker);
       let events = state.events;
       if (timeRolledBack) events = fresh.events;
       else if (fresh.events.length > 0) events = [...state.events, ...fresh.events].slice(-EVENTS_CAP);
-      return { latest: frame, history, events, eventTracker: fresh.tracker };
+      return { latest: frame, history, events, eventTracker: fresh.tracker, eventBaseline: frame };
     }),
 
   setStatus: (status: ConnectionStatus) =>
     set((state) => {
-      if (status !== 'connected') return { status };
+      if (status !== 'connected') {
+        return { status, eventBaseline: null, eventTracker: initialEventTracker() };
+      }
       return {
         status,
         connectionNoticeDismissed: false,

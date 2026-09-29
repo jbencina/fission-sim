@@ -6,25 +6,22 @@
  * tested directly.
  */
 
+import {
+  PENDING_DETAIL,
+  deriveDumpStatus,
+  deriveLevelStatus,
+  deriveTurbineTripStatus,
+} from '../state/plantStatus'
 import type { Frame } from '../types/telemetry'
 
 /** Fraction by which core power may differ from SG heat and still count as steady. */
 const STEADY_BAND = 0.02
 
-/** Steam dump is called open above this visible-flow threshold [kg/s]. */
-const DUMP_OPEN_KG_PER_S = 1
-
-/** Illustrative lower edge of the normal SG collapsed-liquid-fraction band [fraction]. */
-const SG_LEVEL_LOW = 0.4
-
-/** Illustrative upper edge of the normal SG collapsed-liquid-fraction band [fraction]. */
-const SG_LEVEL_HIGH = 0.6
-
 /** User-facing pending text when a paused trip command has not affected the plant yet. */
-export const TRIP_PENDING = 'trip pending — applies when the simulation runs'
+export const TRIP_PENDING = `trip ${PENDING_DETAIL}`
 
 /** User-facing pending text when a paused trip reset has not affected the plant yet. */
-export const TRIP_RESET_PENDING = 'trip reset pending — applies when the simulation runs'
+export const TRIP_RESET_PENDING = `trip reset ${PENDING_DETAIL}`
 
 /** Turbine trip state shown by the schematic. */
 export interface TurbineTripStatus {
@@ -61,16 +58,14 @@ export function describeLoop(frame: Frame | null): string {
  */
 export function turbineTripStatus(frame: Frame | null): TurbineTripStatus | null {
   if (frame === null) return null
-  const selectedTrip = frame.turbine_trip || frame.scrammed
-  if (!frame.running && selectedTrip !== frame.turbine_trip_active) {
-    return selectedTrip
-      ? { kind: 'pending-trip', label: TRIP_PENDING }
-      : { kind: 'pending-reset', label: TRIP_RESET_PENDING }
+  const status = deriveTurbineTripStatus(frame)
+  if (status.kind === 'trip-pending') return { kind: 'pending-trip', label: TRIP_PENDING }
+  if (status.kind === 'reset-pending') return { kind: 'pending-reset', label: TRIP_RESET_PENDING }
+  if (!status.active) return null
+  return {
+    kind: 'active',
+    label: status.kind === 'valves-closing' ? 'trip clearing' : status.cause,
   }
-  if (!frame.turbine_trip_active) return null
-  if (frame.turbine_trip) return { kind: 'active', label: 'operator trip' }
-  if (frame.scrammed) return { kind: 'active', label: 'SCRAM (P-4)' }
-  return { kind: 'active', label: 'trip clearing' }
 }
 
 /** Human wording for an effective turbine trip cause, excluding pending states. */
@@ -91,10 +86,12 @@ export function describeSecondaryState(frame: Frame | null): string[] {
   const trip = turbineTripStatus(frame)
   if (trip?.kind === 'active') phrases.push('turbine tripped')
   if (trip?.kind === 'pending-trip' || trip?.kind === 'pending-reset') phrases.push(trip.label)
-  if (frame.m_dump > DUMP_OPEN_KG_PER_S) phrases.push('steam dump open')
-  if (frame.level_sg < SG_LEVEL_LOW) {
+  if (deriveDumpStatus(frame).open) phrases.push('steam dump open')
+
+  const level = deriveLevelStatus(frame)
+  if (level.band !== 'green' && level.level < 0.5) {
     phrases.push('SG level low')
-  } else if (frame.level_sg > SG_LEVEL_HIGH) {
+  } else if (level.band !== 'green' && level.level > 0.5) {
     phrases.push('SG level high')
   }
   return phrases

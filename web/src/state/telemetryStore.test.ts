@@ -92,6 +92,18 @@ describe('setStatus', () => {
     // beforeEach restored the store's initial state.
     expect(useTelemetryStore.getState().status).toBe('connecting');
   });
+
+  it('invalidates the event baseline and tracker when the socket disconnects', () => {
+    const store = useTelemetryStore.getState();
+    store.pushFrame(makeFrame(1, { m_dump: 1.2 }));
+    expect(useTelemetryStore.getState().eventBaseline?.t).toBe(1);
+    expect(useTelemetryStore.getState().eventTracker.dumpOpen).toBe(true);
+
+    store.setStatus('disconnected');
+
+    expect(useTelemetryStore.getState().eventBaseline).toBeNull();
+    expect(useTelemetryStore.getState().eventTracker.dumpOpen).toBe(false);
+  });
 });
 
 describe('error notice', () => {
@@ -185,5 +197,38 @@ describe('events', () => {
     pushFrame(makeFrame(1));
     for (let i = 2; i < 2 + EVENTS_CAP + 20; i++) pushFrame(makeFrame(i, { speed: i % 2 ? 1 : 2 }));
     expect(useTelemetryStore.getState().events).toHaveLength(EVENTS_CAP);
+  });
+
+  it('seeds feedwater saturation tracker from the first frame after reconnect without stale dwell events', () => {
+    const { pushFrame, setStatus } = useTelemetryStore.getState();
+    pushFrame(makeFrame(1, { fw_saturated: false, m_fw_demand: 100, m_fw_max: 2_000 }));
+    pushFrame(makeFrame(1.1, { fw_saturated: true, m_fw_demand: 2_000, m_fw_max: 2_000 }));
+    expect(useTelemetryStore.getState().events.map((event) => event.text)).not.toContain(
+      'Feedwater demand saturated at maximum',
+    );
+
+    setStatus('disconnected');
+    pushFrame(makeFrame(10, { fw_saturated: true, m_fw_demand: 2_000, m_fw_max: 2_000 }));
+
+    expect(useTelemetryStore.getState().eventTracker.feedwaterSaturation).toBe('maximum');
+    expect(useTelemetryStore.getState().events.map((event) => event.text)).toEqual([
+      'Telemetry link established',
+      'Telemetry link established',
+    ]);
+  });
+
+  it('seeds dump hysteresis from the first frame after reconnect instead of retaining stale open state', () => {
+    const { pushFrame, setStatus } = useTelemetryStore.getState();
+    pushFrame(makeFrame(1, { m_dump: 1.2 }));
+    expect(useTelemetryStore.getState().eventTracker.dumpOpen).toBe(true);
+
+    setStatus('disconnected');
+    pushFrame(makeFrame(10, { m_dump: 0.75 }));
+
+    expect(useTelemetryStore.getState().eventTracker.dumpOpen).toBe(false);
+    expect(useTelemetryStore.getState().events.map((event) => event.text)).toEqual([
+      'Telemetry link established',
+      'Telemetry link established',
+    ]);
   });
 });

@@ -134,6 +134,44 @@ describe('deriveRodModeStatus', () => {
     })
   })
 
+  it('uses pending wording for a paused trip command even when AUTO was acting before the pause', () => {
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: true,
+          turbine_trip: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+      pending: true,
+      effectiveActing: true,
+    })
+  })
+
+  it('uses pending wording for a paused SCRAM command even when AUTO was acting before the pause', () => {
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: true,
+          scrammed: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'pending',
+      detail: 'pending — applies when the simulation runs',
+      pending: true,
+      effectiveActing: true,
+    })
+  })
+
   it('does not call paused AUTO during SCRAM pending when the effective inactive state matches', () => {
     expect(
       deriveRodModeStatus(

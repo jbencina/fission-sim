@@ -21,9 +21,6 @@ import { criticalityWord } from './loopState'
 import { getBand } from './thresholds'
 import { TOOLTIPS } from './tooltips'
 
-/** Design thermal power [MW] (core.py `P_design` = 3.0e9 W). */
-const DESIGN_POWER_MW = 3000
-
 const celsius = (k: number | null): string | undefined =>
   k === null ? undefined : `${formatNumber(kelvinToCelsius(k), 1)} °C`
 
@@ -71,9 +68,6 @@ const StatusPanel: FC = () => {
         data-testid="status-power_thermal"
         tooltip={TOOLTIPS.power_thermal}
         value={formatNumber(powerMW, 1)}
-        secondary={
-          powerMW === null ? undefined : `${formatNumber((powerMW / DESIGN_POWER_MW) * 100, 0)} % of design`
-        }
       />
       <InfoRow
         data-testid="status-T_avg"
@@ -130,7 +124,6 @@ const StatusPanel: FC = () => {
           data-testid="status-P_steam_MPa"
           tooltip={TOOLTIPS.P_steam_MPa}
           value={formatNumber(pSteamMPa, 2)}
-          secondary={pSteamMPa === null ? undefined : 'dump 7.6 / full 8.2'}
           band={pSteamMPa === null ? 'green' : getBand('P_steam_MPa', pSteamMPa)}
         />
         <InfoRow

@@ -41,10 +41,10 @@ export const InfoRow: FC<ReadoutProps> = ({
     <div
       ref={ref}
       data-testid={testId}
-      className="flex min-h-[36px] items-center justify-between gap-3 border-t border-line py-1 first:border-t-0"
+      className="grid min-h-[36px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-line py-1 first:border-t-0"
     >
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="whitespace-nowrap text-[12.5px] leading-snug text-ink-2">{tooltip.title}</span>
+      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+        <span className="truncate text-[12.5px] leading-snug text-ink-2">{tooltip.title}</span>
         <InfoTip title={tooltip.title} body={tooltip.body} area={ref} align={align} />
       </div>
       <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap tabular-nums">
