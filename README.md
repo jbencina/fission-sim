@@ -8,7 +8,7 @@ and likely contains bugs and mistakes.
 
 Both a CLI and React UI are available to interact with the simulation.
 
-![fission-sim web UI — SCRAM transient with the primary-loop schematic, live trend charts, operator controls, readouts and the event log](assets/web-ui.png)
+![fission-sim web UI — secondary-side dashboard with the primary/secondary schematic, trend charts, controls, readouts and event log](assets/web-ui.png)
 
 Developer workflow, Web API details, architecture notes, the component
 contract, and a step-by-step engine tutorial live in
@@ -36,9 +36,10 @@ For Python-only use, run `uv sync`.
 ### Run The Dashboard
 
 The dashboard streams simulator telemetry at 10 Hz while running and exposes
-operator controls for rod command, SCRAM, pause/resume, reset, and simulation
-speed. The backend also supports a pressure-setpoint command for scripts and
-experiments.
+operator controls for the control bank, SCRAM, pause/resume, reset, simulation
+speed, turbine admission, SG collapsed liquid fraction, feedwater mode, and
+an unprotected turbine-trip exercise. The backend also supports a primary
+pressure-setpoint command for scripts and experiments.
 
     make dev
 
@@ -52,24 +53,56 @@ terminal).
 
 What to expect in the dashboard:
 
-- A wireframe schematic of the primary loop (core, hot leg, steam
-  generator, cold leg, pump, pressurizer) with live values, and an event
-  log of what the plant did: SCRAM, banks fully inserted, pauses, speed
-  and rod-command changes, and readouts crossing their alert bands.
-- Six live trend charts (power, reactivity, coolant and fuel temperature,
-  pressure, control rods) show a fixed window of the most recent 60 s of
-  simulated time, whatever the simulation speed. Hover a chart to read
-  values at that moment on every chart at once.
-- Every readout and chart has an explanation: hover it, or focus or tap
-  its info button. The controls show their help on hover and on keyboard
-  focus.
+- A wireframe schematic of the primary and secondary sides: core, hot/cold
+  legs, steam generator, turbine admission path, steam dump branch, feedwater
+  return, pump and pressurizer. It highlights dump flow when the dump opens
+  and labels turbine state, gross electric MW, SG collapsed liquid fraction
+  (4 SGs lumped, no shrink/swell), steam flow and feedwater flow.
+- An event log records plant-visible transitions: SCRAM, effective turbine
+  trips and their cause, steam dump opened/closed, rod AUTO/MANUAL changes,
+  feedwater AUTO/MANUAL, saturation, pauses, speed changes, and illustrative
+  pressure/level band crossings. The bands are dashboard cues, not trip
+  setpoints.
+- Ten live trend charts show the most recent 60 s of simulated time at every
+  speed: power, reactivity, coolant/T_ref, fuel temperature, primary pressure,
+  control-bank position/demand, steam pressure, SG collapsed liquid fraction
+  and setpoint, steam/dump/feedwater flows, and gross electric output. Hover a
+  chart to read values at that moment.
+- Readouts group core, primary loop, steam-generator, turbine, feedwater and
+  control-bank values. Secondary readouts include steam pressure, saturation
+  temperature, SG level and level error, `T_avg − T_ref`, gross electric MW,
+  turbine admission, steam/dump/feedwater flows, feed/steam mismatch, and
+  time to the SG level floor as a current-flow estimate.
+- Every readout and chart has an explanation: hover it, or focus or tap its
+  info button. The controls show their help on hover and on keyboard focus.
+  While paused or halted, a changed command can show as pending because the
+  selected command has updated but the physics has not yet stepped.
 - Backend and connection errors appear as a notice you can dismiss. If the
   simulation reaches a [model limit](#model-limits), a notice explaining
   which assumption failed stays on screen until you press
   **Reset Simulation**.
-- **SCRAM** drops both rod banks into the core. **Reset Scram** returns only
-  the operator's control bank; the shutdown bank stays in and the reactor
-  stays subcritical. **Reset Simulation** is the way back to full power.
+- **SCRAM** drops both rod banks into the core and trips turbine admission
+  through the P-4 interlock. **Reset Scram** returns only the operator's
+  control bank and sets turbine admission demand to 0; the shutdown bank
+  stays in and the reactor stays subcritical. **Reset Turbine Trip** also
+  sets admission demand to 0. **Reset Simulation** rebuilds the plant at full
+  power with actual admission initially 100 %, while preserving speed,
+  admission demand, rod AUTO/MANUAL mode and SG level setpoint; if demand is
+  low, actual admission then ramps down.
+
+Two useful secondary-side exercises:
+
+- **Unprotected turbine trip** — reset to design, keep rods MANUAL and
+  turbine admission demand at 100 %, then press **TRIP TURBINE**. Steam
+  pressure rises toward the dump band, the steam dump opens, turbine
+  admission closes, gross electric output falls, and events explain that a
+  real plant would normally trip the reactor above about 50 % power (P-9),
+  which is not modeled here.
+- **10 % admission reduction** — with rods AUTO selected, lower turbine
+  admission demand from 100 % to 90 %. Actual admission moves slowly because
+  the valve ramps at 5 percentage-points/min; `T_ref` falls, the automatic rod
+  controller moves rod demand to bring `T_avg` toward the new reference, and
+  SG level should stay near its 50 % setpoint under feedwater AUTO.
 
 > **LAN access** — both servers bind `0.0.0.0`, so the dashboard is reachable
 > from any host on your network at `http://<your-machine-ip>:5173` (Vite
@@ -182,11 +215,11 @@ domain checks), `boil_off_time_s`, and `time_to_level_floor_s`.
 | `rho_rod`, `rho_doppler`, `rho_moderator` | The three visible reactivity contributions. |
 | `T_hot`, `T_cold`, `T_avg`, `T_fuel` | Heat moving from fuel into coolant and around the primary loop. |
 | `P_primary_MPa` | Pressurizer-controlled primary-loop pressure. |
-| `turbine_load` vs. turbine `load` | Operator admission demand vs. actual rate-limited turbine admission. Admission is valve opening, not guaranteed megawatts. |
-| `P_steam`, `level_sg`, `level_margin_low`, `time_to_level_floor_s`, `boil_off_time_s`, `m_steam`, `m_dump`, `P_electric`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin; frozen-property trend estimate to the 0.30 model floor when net outflow is draining; total-liquid turnover cue (`M_l / (m_steam + m_dump)`, not time to a model limit or trip); turbine/dump flows; gross electric-power proxy; and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. |
-| `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual`, `fw_ctrl.mode`, `fw_ctrl.saturated` | Actual feedwater actuator flow, controller demand, operator level setpoint, optional manual feedwater override, and whether the controller is automatic/manual or clipped at a flow limit. Watch `m_fw_demand − m_fw` during fast transients: the actuator lags the controller by `tau_fw = 5 s`. |
+| `turbine_load_demand`, `turbine_load`, `P_electric` | Operator turbine-admission demand, actual rate-limited turbine admission, and gross electric proxy. Admission is valve opening, not guaranteed megawatts; actual admission ramps at 5 percentage-points/min and closes on an effective trip. |
+| `P_steam`, `level_sg`, `level_margin_low`, `time_to_level_floor_s`, `m_steam`, `m_dump`, `T_ref` | Secondary-side pressure/inventory and tube-cover margin; current-flow estimate to the 0.30 model floor when net outflow is draining; turbine/dump flows; and admission-based rod-control temperature reference. `level_sg` is SG collapsed liquid fraction: four SGs lumped, no indicated-level shrink/swell. The dashboard's steam-pressure bands mark dump behavior cues, not trip setpoints. |
+| `m_fw`, `m_fw_demand`, `level_setpoint`, `feedwater_manual`, `feedwater_manual_effective`, `fw_ctrl.saturated` | Actual feedwater actuator flow, controller demand, operator level setpoint, selected/effective manual override, and whether the controller is clipped at a flow limit. Watch `m_fw_demand − m_fw` during fast transients: the actuator lags the controller by `tau_fw = 5 s`. |
 | `Q_sg` | Heat removed by the steam generator. Compare with core power. |
-| `rod_command` vs. `rod_position` | Requested control-bank position vs. where the bank actually is (it moves at 1 %/s). |
+| `rod_command`, `rod_demand`, `rod_position`, `rod_auto_acting` | Retained manual command, active demand, actual bank position, and whether automatic Tavg rod control is really acting. In AUTO the bank follows `rod_demand`; switching to MANUAL synchronizes `rod_command` to the actual position. |
 
 In the measured M3 acceptance scenarios, a 10 percentage-point turbine-
 admission reduction at 5 points/min with rods manual is only about a 3 % power
@@ -2400,11 +2433,11 @@ delivered auxiliary-feedwater heat removal; a low-power feedwater mode; and
 normal-feedwater isolation logic that can override manual demand before M4's
 SG level validity limits.
 
-Phase D dashboard controls that arrive before or alongside M5 must keep
-ordinary level setpoints inside an operating band within the validity limits
-(0.35–0.90, not the full 0.30–0.95 domain). Dashboard feedwater mode
-transfers rely on the controller's tracked PI/manual-output state; a
-mode-only transfer should not silently discard that tracking.
+The Phase D dashboard keeps ordinary level setpoints inside an operating band
+within the validity limits (0.35–0.90, not the full 0.30–0.95 domain).
+Dashboard feedwater mode transfers rely on the controller's tracked
+PI/manual-output state; a mode-only transfer should not silently discard that
+tracking.
 
 **Planned after M5.** Items are planned, not built:
 
@@ -2431,6 +2464,6 @@ mode-only transfer should not silently discard that tracking.
 - Decay heat and post-trip secondary cooling, including residual-heat removal
   assumptions after the chain reaction is shut down.
 - Higher-fidelity secondary/turbine physics, PORV/CVCS behavior, and multi-loop
-  geometry have no current milestone. Phase D dashboard integration is outside
-  the current M3/M4 run; the web runtime keeps working with the standard plant
-  but gains no new operator commands in this slice.
+  geometry have no current milestone. The current dashboard exposes the M3/M4
+  secondary-side controls and readouts, but those controls remain educational
+  L1 exercises rather than plant procedures.

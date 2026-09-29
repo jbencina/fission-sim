@@ -35,14 +35,17 @@ colour-prefixed output. Press **Ctrl-C** to stop both processes.
 Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready. During development, Vite proxies `/api` and `/ws` to the
 backend. If port 8000 is already taken on a shared machine, start the backend
-on another port and tell Vite which API port to proxy:
+on another port and tell Vite which API port to proxy. You can also give
+Vite an explicit web port and require it to be free:
 
-    uv run uvicorn fission_sim.api.app:app --port 8761
-    FISSION_SIM_API_PORT=8761 npm run dev --prefix web
+    uv run uvicorn fission_sim.api.app:app --host 127.0.0.1 --port 8767
+    FISSION_SIM_API_PORT=8767 npm run dev --prefix web -- --port 5187 --strictPort
 
-Both servers bind `0.0.0.0`, so the dashboard is reachable from any host on
-your network at `http://<your-machine-ip>:5173`. There is no authentication;
-only expose this on a trusted network.
+With `make dev`, both servers bind `0.0.0.0`, so the dashboard is reachable
+from any host on your network at `http://<your-machine-ip>:5173`. In the
+manual override above, the backend is loopback-only and Vite remains the
+network-facing proxy. There is no authentication; only expose this on a
+trusted network.
 
 The `make dev` launcher is Unix-only. On Windows, run the two processes in
 separate terminals:
@@ -64,8 +67,8 @@ run with `uv run python examples/<name>.py`.
 | `make dev` | Start backend + frontend together |
 | `make api` | Backend only (`uvicorn` on port 8000) |
 | `make web` | Frontend only (Vite dev server on port 5173) |
-| `make install-e2e` | Install Chromium for the Playwright smoke test |
-| `make e2e` | Run Playwright smoke test against an already-running stack |
+| `make install-e2e` | Install Chromium for the Playwright e2e suite |
+| `make e2e` | Run Playwright e2e specs against an already-running stack |
 | `make test` | Full test suite: `uv run pytest` + `npm run test -- --run` |
 | `make lint` | Python (`ruff check`) + TypeScript (`eslint`) linting |
 
@@ -87,29 +90,37 @@ Run linting:
 runs it, so a change to the plant wiring that breaks the tutorial fails the
 test suite.
 
-## End-To-End Smoke Test
+## End-To-End Tests
 
-The Playwright smoke test runs two checks in a real browser: the educational
-help for a control and for a status readout can be opened with the keyboard
-alone, and a SCRAM (after a reset to a known running state) produces a large
-power drop.
+The Playwright suite runs browser-level checks against an already-running
+stack. `web/e2e/smoke.spec.ts` verifies keyboard-reachable educational help,
+a SCRAM power drop, an unprotected turbine trip that raises steam pressure and
+opens the dump path, and the rod AUTO/MANUAL bumpless transfer. The same
+`npm run e2e` command also runs `web/e2e/schematic-geometry.spec.ts`, which
+drives steady, trip, SCRAM, feedwater-manual and paused-pending states and
+checks that the SVG schematic labels clear strokes at desktop and mobile
+viewports.
 
 Install the browser once:
 
     make install-e2e
 
-Start the stack in one terminal:
+Start the default stack in one terminal:
 
     make dev
 
-Run the smoke test in another:
+Run the whole e2e suite in another:
 
     make e2e
 
 By default Playwright opens `http://127.0.0.1:5173`. Override the browser
-target when Vite is using a non-default port:
+target when Vite is using a non-default port. The backend port is selected
+when Vite starts via `FISSION_SIM_API_PORT`; Playwright only needs the Vite
+URL:
 
-    E2E_BASE_URL=http://127.0.0.1:5182 npm run e2e --prefix web
+    uv run uvicorn fission_sim.api.app:app --host 127.0.0.1 --port 8767
+    FISSION_SIM_API_PORT=8767 npm run dev --prefix web -- --port 5187 --strictPort
+    E2E_BASE_URL=http://127.0.0.1:5187 npm run e2e --prefix web
 
 ## Web API Reference
 
@@ -253,9 +264,29 @@ Every numeric `value` must be a JSON number (not a string or boolean) and
 finite; non-standard JSON literals accepted by Python such as `NaN` and
 `Infinity` are rejected. While the simulation is paused or halted, a command
 that changes what the frame reports (rod command, SCRAM latch, speed, pause
-state, turbine/load mode, level setpoint, or feedwater mode) is published as
-one new frame with `t` unchanged, so every client sees it. A command that
-changes nothing visible publishes nothing.
+state, turbine admission demand/trip, rod mode, level setpoint, or feedwater
+mode) is published as one new frame with `t` unchanged, so every client sees
+it. A command that changes nothing visible publishes nothing. When selected
+command fields disagree with last-stepped effective fields while not running,
+the frontend labels the state as pending instead of presenting it as already
+applied.
+
+| Command | Payload | Effect |
+|---|---|---|
+| `set_rod_command` | `value` in `[0, 1]` | Stores the manual control-bank command. |
+| `set_rod_auto` | JSON boolean `value` | Selects AUTO Tavg rod control or MANUAL; AUTO→MANUAL copies actual rod position into `rod_command`. |
+| `scram` | none | Latches SCRAM and drops the control and shutdown banks. |
+| `reset_scram` | none | Clears the SCRAM latch, leaves the shutdown bank inserted, and sets turbine admission demand to 0. |
+| `set_turbine_load` | `value` in `[0, 1]` | Sets turbine admission demand; actual admission ramps at 5 percentage-points/min while not tripped. |
+| `turbine_trip` | none | Sets the operator turbine-trip latch. |
+| `reset_turbine_trip` | none | Clears the operator latch and sets turbine admission demand to 0. |
+| `pause` | none | Stops advancing simulated time. |
+| `resume` | none | Resumes simulated time unless a model-limit halt is active. |
+| `reset` | none | Rebuilds the plant at design full-power state; preserves selected settings listed below. |
+| `set_speed` | one of `1`, `2`, `5`, `10` | Sets the wall-clock-to-simulation speed multiplier. |
+| `set_pressure_setpoint` | `value` in `[10e6, 20e6]` Pa | Sets the pressurizer controller pressure target; not shown in the dashboard controls. |
+| `set_level_setpoint` | `value` in `[0.35, 0.90]` | Sets the SG collapsed-liquid-fraction target. |
+| `set_feedwater_manual` | `value` in `[0, 1]` or `null` | Selects manual feedwater demand as a fraction of `m_fw_max`, or AUTO with `null`. |
 
 **`set_rod_command`** - move the control bank toward a target position.
 
@@ -380,11 +411,13 @@ No extra fields. Refused with an error frame while a model limit is active
 ```
 
 No extra fields. The physical state (neutron population, temperatures,
-pressurizer and SG inventory, turbine admission, and both rod banks) is
-rebuilt at t = 0 using the kept admission demand and rod-control mode.
-`rod_command` returns to 0.5; the SCRAM latch, operator turbine-trip latch,
-and manual feedwater override are cleared. A model-limit halt is cleared and
-the simulation runs again. `P_setpoint`, `speed`, `turbine_load_demand`,
+pressurizer and SG inventory, actual turbine admission, and both rod banks) is
+rebuilt at the design full-power state at t = 0: actual turbine admission
+starts at 100 %. The selected admission demand is kept, so a kept demand below
+100 % immediately ramps the actual valve down after reset. `rod_command`
+returns to 0.5; the SCRAM latch, operator turbine-trip latch, and manual
+feedwater override are cleared. A model-limit halt is cleared and the
+simulation runs again. `P_setpoint`, `speed`, `turbine_load_demand`,
 `rod_auto`, and `level_setpoint` are kept, and so is a pause the operator
 chose. One frame at t = 0 is published. Calling `SimRuntime.reset()` directly
 does exactly the same.
@@ -513,15 +546,20 @@ Authentication, persistence, multi-user support, and replay are not
 implemented.
 
 A frame's path through the frontend: `wsClient.ts` receives it, the Zustand
-store in `telemetryStore.ts` keeps it as `latest` and appends it to a history
-of up to 600 frames, `chartData.ts` turns the history into chart columns
-using the series listed in `chartSpecs.ts`, and the charts and status
-readouts render it.
+store in `telemetryStore.ts` keeps it as `latest`, appends it to a history
+of up to 600 frames, and carries an explicit event tracker. `plantStatus.ts`
+derives shared one-frame classifications — turbine-trip cause/pending state,
+rod AUTO ACTIVE/AUTO SUSPENDED/MANUAL, feedwater AUTO/MANUAL/saturation, dump
+open, and SG level band — so controls, schematic, readouts and events use the
+same wording. `events.ts` compares consecutive frames plus tracker state to
+log transitions with dump hysteresis and feedwater-saturation debounce.
+`chartData.ts` turns history into chart columns using the series listed in
+`chartSpecs.ts`, and the charts and status readouts render it.
 
 - Charts show a fixed window of the most recent 60 s of simulated time, at
   every speed, with every frame in the window drawn.
 - The charts redraw on every display refresh, not only when a frame
-  arrives. One `requestAnimationFrame` loop (`ticker.ts`) drives all six;
+  arrives. One `requestAnimationFrame` loop (`ticker.ts`) drives all charts;
   their right edge follows `displayClock.ts`, which advances continuously
   one frame period behind the newest frame, so traces scroll smoothly
   instead of stepping ten times a second. Each y axis is sticky and eases
@@ -531,9 +569,9 @@ readouts render it.
   white ink and hairlines, amber for caution and red for alarm. There is no
   light theme. Text is IBM Plex Sans and every number IBM Plex Mono,
   self-hosted from `@fontsource`.
-- `widgets/PlantMimic.tsx` draws the loop schematic from the latest frame;
-  `widgets/loopState.ts` words its title. `state/events.ts` derives plant
-  events from consecutive frames and the store keeps the newest 100 for
+- `widgets/PlantMimic.tsx` draws the primary/secondary schematic from the
+  latest frame; `widgets/loopState.ts` words its title using the shared
+  status helpers. The store keeps the newest 100 events for
   `widgets/EventLog.tsx`.
 - Backend error frames and connection errors go through the store's
   `reportError` and appear as a dismissible notice (`clearError` hides it).
