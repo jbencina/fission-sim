@@ -187,7 +187,13 @@ describe('describeSecondaryState', () => {
       turbine_trip: false,
       scrammed: false,
     })
+
     expect(describeSecondaryState(f)).toEqual(['trip reset pending — applies when the simulation runs'])
+  })
+
+  it('adds shutdown-bank inserted wording after Reset Scram leaves the effective bank in', () => {
+    const f = makeFrame(1, { shutdown_position: 0.2 })
+    expect(describeSecondaryState(f)).toEqual(['shutdown bank inserted — restart requires Reset Simulation'])
   })
 
   it('adds a high SG level phrase outside the illustrative 40-60 percent band', () => {
@@ -216,6 +222,18 @@ describe('describeSchematicState', () => {
       level_sg: 0.38,
     })
     expect(describeSchematicState(f)).toBe('critical, steady · turbine tripped · steam dump open · SG level low')
+  })
+
+  it('appends the shutdown-bank indication to the schematic title text', () => {
+    const f = makeFrame(1, {
+      rho_total: -0.01,
+      power_thermal: 100e6,
+      Q_sg: 200e6,
+      shutdown_position: 0,
+    })
+    expect(describeSchematicState(f)).toBe(
+      'subcritical, cooling · shutdown bank inserted — restart requires Reset Simulation',
+    )
   })
 
   it('appends running trip-transient wording without paused pending copy', () => {

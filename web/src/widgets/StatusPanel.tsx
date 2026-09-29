@@ -13,11 +13,17 @@
  */
 
 import type { FC, ReactNode } from 'react'
-import { deriveLevelStatus, feedwaterSaturation } from '../state/plantStatus'
+import {
+  SHUTDOWN_BANK_INSERTED_TEXT,
+  deriveFeedwaterModeStatus,
+  deriveLevelStatus,
+  isShutdownBankInserted,
+} from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { formatNumber, formatSignedNumber, kelvinToCelsius } from '../ui/format'
 import { InfoRow } from './Readouts'
 import { criticalityWord } from './loopState'
+import { formatLevelFloorEstimate } from './readoutFormat'
 import { getBand } from './thresholds'
 import { TOOLTIPS } from './tooltips'
 
@@ -47,18 +53,28 @@ const StatusPanel: FC = () => {
   const levelErrorPct = latest ? (latest.level_setpoint - latest.level_sg) * 100 : null
   const tAvgMinusRef = latest ? latest.T_avg - latest.T_ref : null
   const feedSteamMismatch = latest ? latest.m_fw - (latest.m_steam + latest.m_dump) : null
-  const fwSaturation = latest ? feedwaterSaturation(latest) : null
+  const feedwaterStatus = latest ? deriveFeedwaterModeStatus(latest) : null
   const levelStatus = latest ? deriveLevelStatus(latest) : null
+  const levelFloorEstimate = formatLevelFloorEstimate(latest?.time_to_level_floor_s)
+  const shutdownInserted = latest ? isShutdownBankInserted(latest) : false
   const fwDemandSecondary =
     latest === null
       ? undefined
-      : fwSaturation === 'zero'
-        ? 'saturated at zero'
-        : fwSaturation === 'maximum'
-          ? 'saturated at maximum'
-          : fwSaturation === 'other'
-            ? 'saturated'
-            : `${formatNumber((latest.m_fw_demand / latest.m_fw_max) * 100, 0)} % max`
+      : feedwaterStatus?.pending
+        ? `${feedwaterStatus.selectedMode.toUpperCase()} pending`
+        : feedwaterStatus?.effectiveMode === 'manual'
+          ? feedwaterStatus.manualDemandLimit === 'zero'
+            ? 'manual demand at zero'
+            : feedwaterStatus.manualDemandLimit === 'maximum'
+              ? 'manual demand at maximum'
+              : `manual ${formatNumber((latest.m_fw_demand / latest.m_fw_max) * 100, 0)} % max`
+          : feedwaterStatus?.saturation === 'zero'
+            ? 'AUTO saturated at zero'
+            : feedwaterStatus?.saturation === 'maximum'
+              ? 'AUTO saturated at maximum'
+              : feedwaterStatus?.saturation === 'other'
+                ? 'AUTO saturated'
+                : `AUTO ${formatNumber((latest.m_fw_demand / latest.m_fw_max) * 100, 0)} % max`
 
   return (
     <section aria-label="Plant status" className="panel p-4">
@@ -136,7 +152,7 @@ const StatusPanel: FC = () => {
           data-testid="status-level_sg"
           tooltip={TOOLTIPS.level_sg}
           value={formatNumber(levelSgPct, 1)}
-          secondary="valid 30–95 %"
+          secondary="model limits 30–95 %"
           band={levelStatus?.band ?? 'green'}
         />
         <InfoRow
@@ -154,7 +170,8 @@ const StatusPanel: FC = () => {
         <InfoRow
           data-testid="status-time_to_level_floor_s"
           tooltip={TOOLTIPS.time_to_level_floor_s}
-          value={formatNumber(latest?.time_to_level_floor_s, 0)}
+          value={levelFloorEstimate.value}
+          showUnits={levelFloorEstimate.showUnits}
           secondary={latest?.time_to_level_floor_s == null ? undefined : 'current-flow estimate'}
         />
       </Group>
@@ -195,7 +212,7 @@ const StatusPanel: FC = () => {
           tooltip={TOOLTIPS.m_fw_demand}
           value={formatNumber(latest?.m_fw_demand, 1)}
           secondary={fwDemandSecondary}
-          band={latest?.fw_saturated ? 'amber' : 'green'}
+          band={feedwaterStatus?.tone === 'warn' ? 'amber' : 'green'}
         />
         <InfoRow
           data-testid="status-feed_steam_mismatch"
@@ -214,6 +231,13 @@ const StatusPanel: FC = () => {
           data-testid="status-rod_command"
           tooltip={TOOLTIPS.rod_command}
           value={formatNumber(latest ? latest.rod_command * 100 : null, 1)}
+        />
+        <InfoRow
+          data-testid="status-shutdown_position"
+          tooltip={TOOLTIPS.shutdown_position}
+          value={formatNumber(latest ? latest.shutdown_position * 100 : null, 1)}
+          secondary={shutdownInserted ? SHUTDOWN_BANK_INSERTED_TEXT : 'fully withdrawn'}
+          band={shutdownInserted ? 'amber' : 'green'}
         />
       </Group>
     </section>

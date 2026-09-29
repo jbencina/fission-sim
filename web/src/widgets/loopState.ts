@@ -8,9 +8,11 @@
 
 import {
   PENDING_DETAIL,
+  SHUTDOWN_BANK_INSERTED_TEXT,
   deriveDumpStatus,
   deriveLevelStatus,
   deriveTurbineTripStatus,
+  isShutdownBankInserted,
 } from '../state/plantStatus'
 import type { Frame } from '../types/telemetry'
 
@@ -93,6 +95,7 @@ export function describeSecondaryState(frame: Frame | null): string[] {
     phrases.push(trip.label)
   }
   if (deriveDumpStatus(frame).open) phrases.push('steam dump open')
+  if (isShutdownBankInserted(frame)) phrases.push(SHUTDOWN_BANK_INSERTED_TEXT)
 
   const level = deriveLevelStatus(frame)
   if (level.band !== 'green' && level.level < 0.5) {

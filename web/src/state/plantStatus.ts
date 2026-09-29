@@ -24,6 +24,9 @@ export type TurbineTripCause = 'operator trip' | 'SCRAM (P-4)' | 'valves closing
 /** Feedwater-controller saturation limit. */
 export type FeedwaterSaturation = 'zero' | 'maximum' | 'other' | null
 
+/** Manual feedwater demand limit when the operator, not AUTO, owns demand. */
+export type ManualFeedwaterLimit = 'zero' | 'maximum' | null
+
 /** Steam-dump hysteresis input retained by callers such as the event log. */
 export interface DumpHysteresisInput {
   /** Whether the dump was previously considered open. */
@@ -88,6 +91,8 @@ export interface FeedwaterModeStatus {
   effectiveDemandKgS: number
   /** Active saturation classification, if the effective controller is clipped. */
   saturation: FeedwaterSaturation
+  /** Active manual-demand limit, if MANUAL is effective and demand is clipped. */
+  manualDemandLimit: ManualFeedwaterLimit
   /** Visual severity for status text. */
   tone: StatusTone
 }
@@ -114,6 +119,9 @@ export interface LevelStatus {
 
 /** Pending explanation shared across controls, readouts and events. */
 export const PENDING_DETAIL = 'pending — applies when the simulation runs'
+
+/** Persistent status shown after SCRAM reset while the shutdown bank remains inserted. */
+export const SHUTDOWN_BANK_INSERTED_TEXT = 'shutdown bank inserted — restart requires Reset Simulation'
 
 /** Dump opens above this steam flow [kg/s]. */
 export const DUMP_FLOW_OPEN_KG_S = 1
@@ -147,6 +155,7 @@ type FeedwaterStatusFrame = Pick<
 >
 type DumpStatusFrame = Pick<Frame, 'm_dump'>
 type LevelStatusFrame = Pick<Frame, 'level_sg' | 'level_setpoint'>
+type ShutdownBankFrame = Pick<Frame, 'shutdown_position'>
 
 function demandTolerance(maxKgS: number): number {
   return Math.max(DEMAND_TOL_ABS_KG_S, Math.abs(maxKgS) * DEMAND_TOL_REL)
@@ -159,6 +168,14 @@ function demandChanged(a: number | null, b: number | null, maxKgS: number): bool
 
 function feedwaterDemandFromFraction(fraction: number | null, maxKgS: number): number | null {
   return fraction === null ? null : clampFraction(fraction) * Math.max(maxKgS, 0)
+}
+
+function manualFeedwaterLimit(demandKgS: number | null, maxKgS: number): ManualFeedwaterLimit {
+  if (demandKgS === null) return null
+  const tolerance = Math.max(FLOW_EPS_KG_S, Math.abs(maxKgS) * FEEDWATER_SATURATION_REL_TOL)
+  if (demandKgS <= tolerance) return 'zero'
+  if (maxKgS - demandKgS <= tolerance) return 'maximum'
+  return null
 }
 
 /**
@@ -310,6 +327,28 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
   const expectedActing = frame.rod_auto && !frame.scrammed && !frame.turbine_trip
 
   if (!frame.running && frame.rod_auto_acting !== expectedActing) {
+    if (frame.rod_auto && expectedActing) {
+      return {
+        kind: 'pending',
+        label: 'PENDING',
+        detail: `AUTO selected; ${PENDING_DETAIL}.`,
+        pending: true,
+        effectiveActing: frame.rod_auto_acting,
+        tone: 'warn',
+      }
+    }
+
+    if (!frame.rod_auto) {
+      return {
+        kind: 'pending',
+        label: 'PENDING',
+        detail: `MANUAL selected; ${PENDING_DETAIL}.`,
+        pending: true,
+        effectiveActing: frame.rod_auto_acting,
+        tone: 'warn',
+      }
+    }
+
     return {
       kind: 'pending',
       label: 'PENDING',
@@ -317,6 +356,30 @@ export function deriveRodModeStatus(frame: RodStatusFrame): RodModeStatus {
       pending: true,
       effectiveActing: frame.rod_auto_acting,
       tone: 'warn',
+    }
+  }
+
+  if (!frame.running && frame.rod_auto && !frame.rod_auto_acting) {
+    if (frame.turbine_trip && tripStatus.pending) {
+      return {
+        kind: 'auto-suspended',
+        label: 'AUTO INACTIVE',
+        detail: 'AUTO selected; inactive; the queued trip inhibits it on resume.',
+        pending: false,
+        effectiveActing: false,
+        tone: 'warn',
+      }
+    }
+
+    if (frame.scrammed && tripStatus.pending) {
+      return {
+        kind: 'auto-suspended',
+        label: 'AUTO INACTIVE',
+        detail: 'AUTO selected; inactive; the queued SCRAM inhibits it on resume.',
+        pending: false,
+        effectiveActing: false,
+        tone: 'warn',
+      }
     }
   }
 
@@ -439,6 +502,8 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
     (selectedMode !== effectiveMode || demandChanged(selectedDemandKgS, effectiveSelectedDemandKgS, frame.m_fw_max))
   const activeMode: 'auto' | 'manual' = pending || frame.running ? effectiveMode : selectedMode
   const saturation = activeMode === 'auto' ? feedwaterSaturation(frame) : null
+  const activeManualDemandKgS = activeMode === 'manual' ? (effectiveSelectedDemandKgS ?? frame.m_fw_demand) : null
+  const manualDemandLimit = activeMode === 'manual' ? manualFeedwaterLimit(activeManualDemandKgS, frame.m_fw_max) : null
   const common = {
     pending,
     selectedMode,
@@ -447,6 +512,7 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
     effectiveSelectedDemandKgS,
     effectiveDemandKgS: frame.m_fw_demand,
     saturation,
+    manualDemandLimit,
   }
 
   if (pending) {
@@ -460,6 +526,26 @@ export function deriveFeedwaterModeStatus(frame: FeedwaterStatusFrame): Feedwate
   }
 
   if (activeMode === 'manual') {
+    if (manualDemandLimit === 'zero') {
+      return {
+        ...common,
+        kind: 'manual',
+        label: 'MANUAL · manual demand at zero',
+        detail: 'Operator manual feedwater demand is active at 0 kg/s.',
+        tone: 'warn',
+      }
+    }
+
+    if (manualDemandLimit === 'maximum') {
+      return {
+        ...common,
+        kind: 'manual',
+        label: 'MANUAL · manual demand at maximum',
+        detail: 'Operator manual feedwater demand is active at maximum feedwater flow.',
+        tone: 'warn',
+      }
+    }
+
     return {
       ...common,
       kind: 'manual',
@@ -563,4 +649,23 @@ export function deriveLevelStatus(frame: LevelStatusFrame): LevelStatus {
     error: frame.level_setpoint - level,
     outsideModelValidity: level < LEVEL_VALID_LOW || level > LEVEL_VALID_HIGH,
   }
+}
+
+/**
+ * Report whether the shutdown bank is no longer fully withdrawn.
+ *
+ * Parameters
+ * ----------
+ * frame:
+ *   Telemetry field carrying shutdown-bank position [% withdrawn as a
+ *   fraction]. Normal operation is 1.0; SCRAM drives it toward 0.
+ *
+ * Returns
+ * -------
+ * boolean
+ *   True when the effective shutdown bank is inserted enough that only Reset
+ *   Simulation restores the design full-power bank state.
+ */
+export function isShutdownBankInserted(frame: ShutdownBankFrame): boolean {
+  return frame.shutdown_position < 0.99
 }

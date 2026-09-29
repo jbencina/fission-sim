@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { Frame } from '../types/telemetry'
 import { makeFrame } from '../test/makeFrame'
-import { type EventTracker, detectEvents, initialEventTracker } from './events'
+import { EVENT_CATEGORIES, type EventTracker, detectEvents, initialEventTracker } from './events'
 
 function detectionTexts(prev: Frame | null, next: Frame, tracker?: EventTracker): string[] {
   return detectEvents(prev, next, tracker).events.map((e) => `${e.level}:${e.text}`)
+}
+
+function detectionCategories(prev: Frame | null, next: Frame, tracker?: EventTracker): string[] {
+  return detectEvents(prev, next, tracker).events.map((e) => `${e.category}:${e.level}:${e.text}`)
 }
 
 function runFrames(frames: Frame[]): { texts: string[]; tracker: EventTracker } {
@@ -43,6 +47,15 @@ describe('detectEvents', () => {
     expect(detectionTexts(a, b)).toEqual(['alarm:SCRAM latched, both banks dropping'])
     expect(detectionTexts(b, c)).toEqual(['alarm:Both banks fully inserted, about −7,000 pcm'])
     expect(detectionTexts(c, d)).toEqual([])
+  })
+
+  it('uses pending insertion wording when SCRAM is selected while paused', () => {
+    expect(
+      detectionTexts(
+        makeFrame(1, { running: false, scrammed: false }),
+        makeFrame(1, { running: false, scrammed: true }),
+      ),
+    ).toEqual(['alarm:SCRAM selected; insertion pending on resume'])
   })
 
   it('does not repeat full insertion when the page joins after a SCRAM', () => {
@@ -297,7 +310,7 @@ describe('detectEvents', () => {
         makeFrame(1, { feedwater_manual: null, feedwater_manual_effective: null }),
         makeFrame(2, { feedwater_manual: 0.4, feedwater_manual_effective: 0.4 }),
       ),
-    ).toEqual(['info:Feedwater set to MANUAL (40 % max)'])
+    ).toEqual(['info:Feedwater set to MANUAL; manual demand 40 % max (801 kg/s)'])
     expect(
       detectionTexts(
         makeFrame(1, { feedwater_manual: 0.4, feedwater_manual_effective: 0.4 }),
@@ -309,13 +322,73 @@ describe('detectEvents', () => {
         makeFrame(1, { running: false, feedwater_manual: null, feedwater_manual_effective: null }),
         makeFrame(2, { running: false, feedwater_manual: 0.4, feedwater_manual_effective: null }),
       ),
-    ).toEqual(['info:Feedwater set to MANUAL (40 % max) (pending — applies when the simulation runs)'])
+    ).toEqual(['info:Feedwater set to MANUAL; manual demand 40 % max (801 kg/s) (pending — applies when the simulation runs)'])
     expect(
       detectionTexts(
         makeFrame(1, { running: false, feedwater_manual: 0.4, feedwater_manual_effective: 0.4 }),
         makeFrame(2, { running: false, feedwater_manual: null, feedwater_manual_effective: 0.4 }),
       ),
     ).toEqual(['info:Feedwater set to AUTO (pending — applies when the simulation runs)'])
+  })
+
+  it('reports committed feedwater manual-demand changes with flow and pending wording', () => {
+    expect(
+      detectionTexts(
+        makeFrame(1, { feedwater_manual: 0.4, feedwater_manual_effective: 0.4 }),
+        makeFrame(2, { feedwater_manual: 0, feedwater_manual_effective: 0, m_fw_demand: 0 }),
+      ),
+    ).toEqual(['info:Feedwater manual demand set to 0 % max (0 kg/s)'])
+
+    expect(
+      detectionTexts(
+        makeFrame(1, {
+          running: false,
+          feedwater_manual: 0.4,
+          feedwater_manual_effective: 0.4,
+          m_fw_demand: 801.124,
+        }),
+        makeFrame(1, {
+          running: false,
+          feedwater_manual: 0,
+          feedwater_manual_effective: 0.4,
+          m_fw_demand: 801.124,
+        }),
+      ),
+    ).toEqual([
+      'info:Feedwater manual demand set to 0 % max (0 kg/s) (pending — applies when the simulation runs)',
+    ])
+  })
+
+  it('does not log AUTO saturation events for an effective MANUAL cutoff', () => {
+    const frames = [
+      makeFrame(0, { feedwater_manual: 0, feedwater_manual_effective: 0, fw_saturated: false, m_fw_demand: 0 }),
+      makeFrame(0.1, { feedwater_manual: 0, feedwater_manual_effective: 0, fw_saturated: true, m_fw_demand: 0 }),
+      makeFrame(0.5, { feedwater_manual: 0, feedwater_manual_effective: 0, fw_saturated: true, m_fw_demand: 0 }),
+    ]
+    expect(runFrames(frames).texts).toEqual(['info:Telemetry link established'])
+  })
+
+  it('coalesces rapid repeated routine demand changes', () => {
+    const frames = [
+      makeFrame(0, { turbine_load_demand: 1, turbine_load_demand_effective: 1 }),
+      makeFrame(0.1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }),
+      makeFrame(0.2, { turbine_load_demand: 0.98, turbine_load_demand_effective: 0.98 }),
+      makeFrame(0.3, { turbine_load_demand: 0.97, turbine_load_demand_effective: 0.97 }),
+      makeFrame(1.2, { turbine_load_demand: 0.9, turbine_load_demand_effective: 0.9 }),
+    ]
+    expect(runFrames(frames).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Turbine admission demand set to 99 %',
+      'info:Turbine admission demand set to 90 %',
+    ])
+  })
+
+  it('exports event categories and tags routine command events', () => {
+    expect(EVENT_CATEGORIES).toEqual(['plant', 'command', 'alarm'])
+    expect(detectionCategories(makeFrame(1), makeFrame(2, { speed: 5 }))).toEqual(['command:info:Speed set to 5×'])
+    expect(detectionCategories(makeFrame(1), makeFrame(2, { turbine_trip: true }))).toEqual([
+      'alarm:warn:Turbine trip selected',
+    ])
   })
 
   it('debounces feedwater saturation alternation at 10 Hz and logs sustained transitions', () => {

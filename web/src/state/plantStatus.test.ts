@@ -10,6 +10,7 @@ import {
   deriveTurbineTripStatus,
   feedwaterDemandFraction,
   feedwaterSaturation,
+  isShutdownBankInserted,
   turbineTripCause,
 } from './plantStatus'
 
@@ -119,7 +120,7 @@ describe('deriveRodModeStatus', () => {
       deriveRodModeStatus(makeFrame(1, { running: false, rod_auto: false, rod_auto_acting: true })),
     ).toMatchObject({
       kind: 'pending',
-      detail: 'pending — applies when the simulation runs',
+      detail: 'MANUAL selected; pending — applies when the simulation runs.',
       pending: true,
     })
   })
@@ -129,8 +130,27 @@ describe('deriveRodModeStatus', () => {
       deriveRodModeStatus(makeFrame(1, { running: false, rod_auto: true, rod_auto_acting: false })),
     ).toMatchObject({
       kind: 'pending',
-      detail: 'pending — applies when the simulation runs',
+      detail: 'AUTO selected; pending — applies when the simulation runs.',
       pending: true,
+    })
+  })
+
+  it('names the queued trip that will inhibit paused AUTO on resume', () => {
+    expect(
+      deriveRodModeStatus(
+        makeFrame(1, {
+          running: false,
+          rod_auto: true,
+          rod_auto_acting: false,
+          turbine_trip: true,
+          turbine_trip_active: false,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'auto-suspended',
+      label: 'AUTO INACTIVE',
+      detail: 'AUTO selected; inactive; the queued trip inhibits it on resume.',
+      pending: false,
     })
   })
 
@@ -255,6 +275,41 @@ describe('feedwater status helpers', () => {
     })
   })
 
+  it('uses manual-demand wording instead of saturation while MANUAL is effective', () => {
+    expect(
+      deriveFeedwaterModeStatus(
+        makeFrame(1, {
+          feedwater_manual: 0,
+          feedwater_manual_effective: 0,
+          fw_saturated: true,
+          m_fw_demand: 0,
+          m_fw_max: 2_000,
+        }),
+      ),
+    ).toMatchObject({
+      kind: 'manual',
+      label: 'MANUAL · manual demand at zero',
+      manualDemandLimit: 'zero',
+      saturation: null,
+    })
+
+    expect(
+      deriveFeedwaterModeStatus(
+        makeFrame(1, {
+          feedwater_manual: 1,
+          feedwater_manual_effective: 1,
+          fw_saturated: true,
+          m_fw_demand: 2_000,
+          m_fw_max: 2_000,
+        }),
+      ),
+    ).toMatchObject({
+      label: 'MANUAL · manual demand at maximum',
+      manualDemandLimit: 'maximum',
+      saturation: null,
+    })
+  })
+
   it('uses pending wording for paused AUTO to MANUAL and MANUAL to AUTO changes', () => {
     expect(
       deriveFeedwaterModeStatus(
@@ -359,6 +414,14 @@ describe('deriveLevelStatus', () => {
     expect(deriveLevelStatus(makeFrame(1, { level_sg: 0.29 }))).toMatchObject({
       band: 'red',
       outsideModelValidity: true,
+    })
+  })
+
+  describe('isShutdownBankInserted', () => {
+    it('reports a retained shutdown bank below the withdrawn tolerance', () => {
+      expect(isShutdownBankInserted(makeFrame(1, { shutdown_position: 1 }))).toBe(false)
+      expect(isShutdownBankInserted(makeFrame(1, { shutdown_position: 0.989 }))).toBe(true)
+      expect(isShutdownBankInserted(makeFrame(1, { shutdown_position: 0 }))).toBe(true)
     })
   })
 })

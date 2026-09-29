@@ -10,7 +10,11 @@
  */
 
 import { type FC, useRef } from 'react'
-import { deriveFeedwaterModeStatus } from '../state/plantStatus'
+import {
+  SHUTDOWN_BANK_INSERTED_TEXT,
+  deriveFeedwaterModeStatus,
+  isShutdownBankInserted,
+} from '../state/plantStatus'
 import { useTelemetryStore } from '../state/telemetryStore'
 import { InfoTip } from '../ui/InfoTip'
 import { formatNumber } from '../ui/format'
@@ -40,6 +44,11 @@ function insertedFraction(rodPosition: number | undefined): number {
   return 1 - Math.min(1, Math.max(0, rodPosition))
 }
 
+function clampedFraction(value: number | undefined, fallback = 0.5): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
 /** Short trip wording that fits inside the turbine body at dashboard scale. */
 function turbineTripLines(label: string | undefined): string[] {
   if (label === 'operator trip') return ['OP TRIP']
@@ -53,10 +62,15 @@ const PlantMimic: FC = () => {
   const titleRef = useRef<HTMLDivElement>(null)
 
   const inserted = insertedFraction(latest?.rod_position)
+  const rodWithdrawnFraction = clampedFraction(latest?.rod_position)
   const powerMW = latest ? latest.power_thermal / 1e6 : null
   const sgMW = latest ? latest.Q_sg / 1e6 : null
   const pMPa = latest?.P_primary_MPa ?? null
   const band: Band = pMPa === null ? 'green' : getBand('P_primary_MPa', pMPa)
+  const pzrLevelFraction = clampedFraction(latest?.pzr_level)
+  const pzrLevelPercent = latest === null ? null : pzrLevelFraction * 100
+  const pzrFillHeight = 68 * pzrLevelFraction
+  const pzrFillY = 244 + (68 - pzrFillHeight)
   const tFuel = formatNumber(latest?.T_fuel ?? null, 0)
   const tHot = formatNumber(latest?.T_hot ?? null, 1)
   const tCold = formatNumber(latest?.T_cold ?? null, 1)
@@ -112,10 +126,17 @@ const PlantMimic: FC = () => {
     0,
   )} kilograms per second${feedwaterPendingSummary}`
   const tripDetailLines = turbineTripLines(trip?.label)
+  const shutdownInserted = latest ? isShutdownBankInserted(latest) : false
 
   const summary =
-    `Core ${formatNumber(powerMW, 0)} MW, fuel ${tFuel} K, control bank ${formatNumber(inserted * 100, 0)} % inserted; ` +
-    `primary pressure ${formatNumber(pMPa, 2)} MPa; hot leg ${tHot} K, cold leg ${tCold} K, average ${tAvg} K. ` +
+    `Core ${formatNumber(powerMW, 0)} MW, fuel ${tFuel} K, control bank ${formatNumber(
+      rodWithdrawnFraction * 100,
+      0,
+    )} % withdrawn; ${shutdownInserted ? `${SHUTDOWN_BANK_INSERTED_TEXT}; ` : ''}` +
+    `primary pressure ${formatNumber(pMPa, 2)} MPa, pressurizer level ${formatNumber(
+      pzrLevelPercent,
+      0,
+    )} percent; hot leg ${tHot} K, cold leg ${tCold} K, average ${tAvg} K. ` +
     `Steam generator heat ${formatNumber(sgMW, 0)} MW; ${sgLevelAria}; steam pressure ${formatNumber(
       pSteamMPa,
       2,
@@ -126,12 +147,17 @@ const PlantMimic: FC = () => {
 
   return (
     <section aria-label="Primary and secondary plant schematic" className="flex min-h-0 flex-col lg:h-full">
-      <div ref={titleRef} className="flex min-w-0 items-center gap-2 px-4 pb-1 pt-3.5 sm:px-5">
-        <h2 className="eyebrow min-w-0 truncate">
-          Plant schematic{' '}
-          <span className="normal-case tracking-normal text-ink">· {describeSchematicState(latest)}</span>
-        </h2>
-        <InfoTip title="Plant schematic" body={SCHEMATIC_HELP} area={titleRef} />
+      <div ref={titleRef} className="px-4 pb-1 pt-3.5 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2">
+          <h2 className="eyebrow min-w-0 truncate">
+            Plant schematic{' '}
+            <span className="normal-case tracking-normal text-ink">· {describeSchematicState(latest)}</span>
+          </h2>
+          <InfoTip title="Plant schematic" body={SCHEMATIC_HELP} area={titleRef} />
+        </div>
+        <p className="mt-1 text-[10.5px] leading-tight text-ink-3">
+          SG collapsed; 4 SGs lumped; no shrink/swell; not narrow-range
+        </p>
       </div>
       <div className="min-h-0 flex-1 px-2 pb-2">
         <svg
@@ -168,7 +194,8 @@ const PlantMimic: FC = () => {
           {/* pressurizer on its surge line */}
           <path d="M156 278 H178 V300 H184" fill="none" stroke="var(--line-strong)" strokeWidth="1" />
           <rect x="112" y="242" width="44" height="72" fill="var(--canvas)" stroke={BAND_FILL[band]} strokeWidth="1.5" />
-          <rect x="114" y="285" width="40" height="27" fill="var(--line)" />
+          <rect x="114" y={pzrFillY} width="40" height={pzrFillHeight} fill="var(--line)" />
+          <line x1="114" y1={pzrFillY} x2="154" y2={pzrFillY} stroke="var(--line-strong)" strokeWidth="0.8" />
           <path d="M112 303 H94" fill="none" stroke={BAND_FILL[band]} strokeWidth="1" />
           <text x="66" y="226" textAnchor="middle" data-font-role="label" {...LABEL}>
             PRESSURIZER
@@ -196,7 +223,7 @@ const PlantMimic: FC = () => {
             {formatNumber(pSteamMPa, 2)} <tspan data-font-role="unit" {...UNIT}>MPa</tspan>
           </text>
           <text x="218" y="456" textAnchor="middle" data-font-role="label" {...LABEL}>
-            SG LEVEL
+            COLLAPSED
           </text>
           <text x="218" y="480" textAnchor="middle" data-font-role="value" {...VALUE} fill={sgLevelInk}>
             {formatNumber(sgLevelPercent, 0)} <tspan data-font-role="unit" {...UNIT}>%</tspan>
@@ -348,12 +375,35 @@ const PlantMimic: FC = () => {
           <text x="113" y="564" textAnchor="middle" data-font-role="value" {...VALUE}>
             {formatNumber(powerMW, 0)} <tspan data-font-role="unit" {...UNIT}>MW</tspan>
           </text>
-          <text x="113" y="584" textAnchor="middle" data-font-role="unit" {...UNIT}>
-            fuel {tFuel} K
+          <text
+            x="145"
+            y="584"
+            textAnchor="middle"
+            data-font-role="unit"
+            fontSize="13.6"
+            fill="var(--ink-2)"
+            letterSpacing="0.1"
+          >
+            control bank {formatNumber(rodWithdrawnFraction * 100, 0)} % withdrawn
           </text>
-          <text x="113" y="610" textAnchor="middle" data-font-role="unit" {...UNIT}>
-            rods {formatNumber(inserted * 100, 0)} %
-          </text>
+          {shutdownInserted && (
+            <>
+              <text x="113" y="632" textAnchor="middle" data-font-role="status" {...STATUS} fill="var(--warn-ink)">
+                shutdown bank inserted
+              </text>
+              <text
+                x="113"
+                y="650"
+                textAnchor="middle"
+                data-font-role="status"
+                fontSize="12"
+                fill="var(--warn-ink)"
+                letterSpacing="0.2"
+              >
+                Reset Simulation required
+              </text>
+            </>
+          )}
 
           {/* pump on the cold leg */}
           <circle cx="278" cy="618" r="15" fill="var(--canvas)" stroke="var(--line-strong)" strokeWidth="1.5" />

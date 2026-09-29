@@ -20,9 +20,11 @@ export interface ReadoutProps {
   tooltip: TooltipEntry
   /** Formatted value, e.g. "3,000.0" or "—". */
   value: string
-  /** Optional annotation shown before the value, e.g. "309.9 °C". */
+  /** Optional qualifier shown on a second line below the label. */
   secondary?: string
   band?: Band
+  /** Whether to append tooltip.units after the value. */
+  showUnits?: boolean
   /** Popover alignment; 'end' opens leftward from the right edge. */
   align?: 'start' | 'end'
   'data-testid'?: string
@@ -33,6 +35,7 @@ export const InfoRow: FC<ReadoutProps> = ({
   value,
   secondary,
   band = 'green',
+  showUnits = true,
   align = 'start',
   'data-testid': testId,
 }) => {
@@ -41,17 +44,19 @@ export const InfoRow: FC<ReadoutProps> = ({
     <div
       ref={ref}
       data-testid={testId}
-      className="grid min-h-[36px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-line py-1 first:border-t-0"
+      className="grid min-h-[40px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-t border-line py-1.5 first:border-t-0"
     >
-      <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
-        <span className="truncate text-[12.5px] leading-snug text-ink-2">{tooltip.title}</span>
-        <InfoTip title={tooltip.title} body={tooltip.body} area={ref} align={align} />
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="whitespace-nowrap text-[12.5px] leading-snug text-ink-2">{tooltip.title}</span>
+          <InfoTip title={tooltip.title} body={tooltip.body} area={ref} align={align} />
+        </div>
+        {secondary && <div className="mt-0.5 text-[10.5px] leading-tight text-ink-3">{secondary}</div>}
       </div>
       <div className="flex shrink-0 items-baseline gap-2 whitespace-nowrap tabular-nums">
-        {secondary && <span className="text-[10.5px] text-ink-3 lg:hidden xl:inline">{secondary}</span>}
         <span className={`font-mono text-[13px] ${ROW_BAND[band]}`}>
           <span data-testid={testId ? `${testId}-value` : undefined}>{value}</span>
-          {tooltip.units && value !== EMPTY_VALUE && (
+          {showUnits && tooltip.units && value !== EMPTY_VALUE && (
             <span className="ml-1 font-sans text-[11px] text-ink-2">{tooltip.units}</span>
           )}
         </span>

@@ -19,18 +19,32 @@ import {
   deriveFeedwaterModeStatus,
   deriveRodModeStatus,
   deriveTurbineTripStatus,
-  feedwaterSaturation,
   type FeedwaterSaturation,
 } from './plantStatus'
 
 export type EventLevel = 'info' | 'warn' | 'alarm'
+
+/**
+ * Event category exported for the event-log UI's filter controls.
+ *
+ * `command` marks routine operator commands such as slider/setpoint changes;
+ * `plant` marks plant-visible state transitions; `alarm` marks protective,
+ * trip, halt, or red-band conditions that should stay visible by default.
+ */
+export const EVENT_CATEGORIES = ['plant', 'command', 'alarm'] as const
+
+/** Category used to filter events without parsing their text. */
+export type EventCategory = (typeof EVENT_CATEGORIES)[number]
 
 export interface PlantEvent {
   /** Simulation time of the frame that revealed the event [s]. */
   t: number
   text: string
   level: EventLevel
+  category: EventCategory
 }
+
+type CommandCoalesceKey = 'rod-command' | 'turbine-admission-demand' | 'level-setpoint' | 'feedwater-manual-demand'
 
 /** Explicit state carried by the store between pure event detections. */
 export interface EventTracker {
@@ -44,6 +58,8 @@ export interface EventTracker {
   feedwaterSaturationCandidate: FeedwaterSaturation
   /** Simulation time when the candidate saturation state first appeared [s]. */
   feedwaterSaturationCandidateSince: number | null
+  /** Last emitted time for routine command events that should not flood the log. */
+  commandCoalesceTimes: Partial<Record<CommandCoalesceKey, number>>
 }
 
 /** Result of pure event detection: new events plus the next tracker. */
@@ -60,6 +76,9 @@ const FULLY_IN = 0.005
 
 /** Dwell required before feedwater saturation enter/leave events are logged [s]. */
 export const FEEDWATER_SATURATION_DWELL_S = 0.3
+
+/** Simulated-time window within which repeated demand changes are one command event [s]. */
+export const COMMAND_COALESCE_WINDOW_S = 0.75
 
 const BAND_LEVEL: Record<Band, EventLevel> = { green: 'info', amber: 'warn', red: 'alarm' }
 
@@ -106,9 +125,10 @@ export function initialEventTracker(frame: Frame | null = null): EventTracker {
   return {
     dumpOpen: frame === null ? false : deriveDumpStatus(frame).open,
     rodAutoActing: frame?.rod_auto_acting ?? false,
-    feedwaterSaturation: frame === null ? null : feedwaterSaturation(frame),
+    feedwaterSaturation: frame === null ? null : deriveFeedwaterModeStatus(frame).saturation,
     feedwaterSaturationCandidate: null,
     feedwaterSaturationCandidateSince: null,
+    commandCoalesceTimes: {},
   }
 }
 
@@ -131,12 +151,47 @@ function feedwaterSaturationText(kind: Exclude<FeedwaterSaturation, null>): stri
   return 'Feedwater demand saturated'
 }
 
+function feedwaterManualDemandValueText(fraction: number, maxKgS: number): string {
+  return `${formatNumber(fraction * 100, 0)} % max (${formatNumber(fraction * maxKgS, 0)} kg/s)`
+}
+
+function feedwaterManualDemandText(fraction: number, maxKgS: number): string {
+  return `manual demand ${feedwaterManualDemandValueText(fraction, maxKgS)}`
+}
+
 function pendingSuffix(pending: boolean): string {
   return pending ? ` (${PENDING_DETAIL})` : ''
 }
 
 function turbineAdmissionPending(frame: Frame): boolean {
   return !frame.running && Math.abs(frame.turbine_load_demand - frame.turbine_load_demand_effective) > 1e-6
+}
+
+function commandEventShouldEmit(tracker: EventTracker, key: CommandCoalesceKey, t: number): boolean {
+  const last = tracker.commandCoalesceTimes[key]
+  return last === undefined || t - last > COMMAND_COALESCE_WINDOW_S
+}
+
+function recordCommandEventTime(tracker: EventTracker, key: CommandCoalesceKey, t: number): EventTracker {
+  return {
+    ...tracker,
+    commandCoalesceTimes: {
+      ...tracker.commandCoalesceTimes,
+      [key]: t,
+    },
+  }
+}
+
+function pushCoalescedCommandEvent(
+  tracker: EventTracker,
+  key: CommandCoalesceKey,
+  t: number,
+  out: PlantEvent[],
+  event: PlantEvent,
+): EventTracker {
+  const nextTracker = recordCommandEventTime(tracker, key, t)
+  if (commandEventShouldEmit(tracker, key, t)) out.push(event)
+  return nextTracker
 }
 
 function updateFeedwaterSaturationTracker(
@@ -200,7 +255,12 @@ export function detectEvents(
   next: Frame,
   tracker: EventTracker = initialEventTracker(prev),
 ): EventDetection {
-  const at = (text: string, level: EventLevel): PlantEvent => ({ t: next.t, text, level })
+  const at = (text: string, level: EventLevel, category: EventCategory = level === 'alarm' ? 'alarm' : 'plant'): PlantEvent => ({
+    t: next.t,
+    text,
+    level,
+    category,
+  })
 
   if (prev === null) return { events: [at('Telemetry link established', 'info')], tracker: initialEventTracker(next) }
   if (next.t < prev.t) return { events: [at('Simulation reset to the design state', 'info')], tracker: initialEventTracker(next) }
@@ -211,7 +271,11 @@ export function detectEvents(
   const rodStatus = deriveRodModeStatus(next)
   const feedwaterStatus = deriveFeedwaterModeStatus(next)
 
-  if (!prev.scrammed && next.scrammed) out.push(at('SCRAM latched, both banks dropping', 'alarm'))
+  if (!prev.scrammed && next.scrammed) {
+    out.push(
+      at(next.running ? 'SCRAM latched, both banks dropping' : 'SCRAM selected; insertion pending on resume', 'alarm'),
+    )
+  }
   if (next.scrammed && prev.rod_position > FULLY_IN && next.rod_position <= FULLY_IN) {
     out.push(at('Both banks fully inserted, about −7,000 pcm', 'alarm'))
   }
@@ -224,7 +288,7 @@ export function detectEvents(
     out.push(at('Turbine trip cleared', 'info'))
   }
   if (!prev.turbine_trip && next.turbine_trip && !next.turbine_trip_active) {
-    out.push(at(`Turbine trip selected${pendingSuffix(tripStatus.pending)}`, 'warn'))
+    out.push(at(`Turbine trip selected${pendingSuffix(tripStatus.pending)}`, 'warn', 'alarm'))
   }
   if (prev.turbine_trip && !next.turbine_trip) {
     const demand = formatNumber(next.turbine_load_demand * 100, 0)
@@ -232,6 +296,7 @@ export function detectEvents(
       at(
         `Turbine trip latch reset; admission demand set to ${demand} %${pendingSuffix(tripStatus.pending)}`,
         'info',
+        'command',
       ),
     )
   }
@@ -245,30 +310,47 @@ export function detectEvents(
   if (nextTracker.dumpOpen && !dumpStatus.open) out.push(at('Steam dump closed', 'info'))
   nextTracker.dumpOpen = dumpStatus.open
 
-  if (prev.running && !next.running) out.push(at('Paused', 'info'))
-  if (!prev.running && next.running) out.push(at('Resumed', 'info'))
-  if (prev.speed !== next.speed) out.push(at(`Speed set to ${next.speed}×`, 'info'))
+  if (prev.running && !next.running) out.push(at('Paused', 'info', 'command'))
+  if (!prev.running && next.running) out.push(at('Resumed', 'info', 'command'))
+  if (prev.speed !== next.speed) out.push(at(`Speed set to ${next.speed}×`, 'info', 'command'))
   if (prev.rod_command !== next.rod_command) {
-    out.push(at(`Rod command set to ${formatNumber(next.rod_command * 100, 0)} %`, 'info'))
+    nextTracker = pushCoalescedCommandEvent(
+      nextTracker,
+      'rod-command',
+      next.t,
+      out,
+      at(`Rod command set to ${formatNumber(next.rod_command * 100, 0)} %`, 'info', 'command'),
+    )
   }
   if (prev.turbine_load_demand !== next.turbine_load_demand) {
-    out.push(
+    nextTracker = pushCoalescedCommandEvent(
+      nextTracker,
+      'turbine-admission-demand',
+      next.t,
+      out,
       at(
         `Turbine admission demand set to ${formatNumber(next.turbine_load_demand * 100, 0)} %${pendingSuffix(
           turbineAdmissionPending(next),
         )}`,
         'info',
+        'command',
       ),
     )
   }
   if (prev.level_setpoint !== next.level_setpoint) {
-    out.push(at(`SG level setpoint set to ${formatNumber(next.level_setpoint * 100, 0)} %`, 'info'))
+    nextTracker = pushCoalescedCommandEvent(
+      nextTracker,
+      'level-setpoint',
+      next.t,
+      out,
+      at(`SG level setpoint set to ${formatNumber(next.level_setpoint * 100, 0)} %`, 'info', 'command'),
+    )
   }
   if (!prev.rod_auto && next.rod_auto) {
-    out.push(at(`Rod control set to AUTO${pendingSuffix(rodStatus.pending)}`, 'info'))
+    out.push(at(`Rod control set to AUTO${pendingSuffix(rodStatus.pending)}`, 'info', 'command'))
   }
   if (prev.rod_auto && !next.rod_auto) {
-    out.push(at(`Rod control set to MANUAL${pendingSuffix(rodStatus.pending)}`, 'info'))
+    out.push(at(`Rod control set to MANUAL${pendingSuffix(rodStatus.pending)}`, 'info', 'command'))
   }
 
   if (
@@ -286,22 +368,46 @@ export function detectEvents(
   nextTracker.rodAutoActing = next.rod_auto_acting
 
   if (prev.feedwater_manual === null && next.feedwater_manual !== null) {
-    out.push(
+    nextTracker = pushCoalescedCommandEvent(
+      nextTracker,
+      'feedwater-manual-demand',
+      next.t,
+      out,
       at(
-        `Feedwater set to MANUAL (${formatNumber(next.feedwater_manual * 100, 0)} % max)${pendingSuffix(
+        `Feedwater set to MANUAL; ${feedwaterManualDemandText(next.feedwater_manual, next.m_fw_max)}${pendingSuffix(
           feedwaterStatus.pending,
         )}`,
         'info',
+        'command',
       ),
     )
   }
   if (prev.feedwater_manual !== null && next.feedwater_manual === null) {
-    out.push(at(`Feedwater set to AUTO${pendingSuffix(feedwaterStatus.pending)}`, 'info'))
+    out.push(at(`Feedwater set to AUTO${pendingSuffix(feedwaterStatus.pending)}`, 'info', 'command'))
+  }
+  if (
+    prev.feedwater_manual !== null &&
+    next.feedwater_manual !== null &&
+    prev.feedwater_manual !== next.feedwater_manual
+  ) {
+    nextTracker = pushCoalescedCommandEvent(
+      nextTracker,
+      'feedwater-manual-demand',
+      next.t,
+      out,
+      at(
+        `Feedwater manual demand set to ${feedwaterManualDemandValueText(next.feedwater_manual, next.m_fw_max)}${pendingSuffix(
+          feedwaterStatus.pending,
+        )}`,
+        'info',
+        'command',
+      ),
+    )
   }
 
   nextTracker = updateFeedwaterSaturationTracker(
     nextTracker,
-    feedwaterSaturation(next),
+    feedwaterStatus.saturation,
     next.t,
     out,
     at,

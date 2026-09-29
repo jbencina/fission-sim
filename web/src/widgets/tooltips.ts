@@ -43,6 +43,17 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
       'reactor would still produce more heat than this after shutdown.',
   },
 
+  shutdown_position: {
+    title: 'Shutdown bank',
+    units: '%',
+    body:
+      'Shutdown-bank position in % of travel withdrawn. It is fully withdrawn ' +
+      '(100 %) during normal operation, drops to inserted during a SCRAM, and ' +
+      'stays inserted after Reset Scram. This simulator does not model a real ' +
+      'post-trip restart sequence; only Reset Simulation rebuilds the plant ' +
+      'with the shutdown bank withdrawn.',
+  },
+
   T_hot: {
     title: 'Hot leg',
     units: 'K',
@@ -149,13 +160,13 @@ export const TOOLTIPS: Record<string, TooltipEntry> = {
   },
 
   level_sg: {
-    title: 'SG level',
+    title: 'SG collapsed',
     units: '%',
     body:
       'Collapsed liquid fraction in the steam generators: liquid inventory ' +
       'expressed as a fraction of the total shell volume. It is four steam ' +
       'generators lumped together and does not include two-phase shrink/swell, ' +
-      'so it is not a direct sight-glass water level. Design is 50 %. The ' +
+      'so it is not a narrow-range level indication or sight-glass water level. Design is 50 %. The ' +
       'model validity limits are 30 % (tube-uncovery floor) and 95 % ' +
       '(overfill); display bands are illustrative, not trip setpoints.',
   },
