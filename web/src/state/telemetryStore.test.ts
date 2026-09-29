@@ -11,7 +11,7 @@
  */
 
 import { beforeEach, describe, expect, it } from 'vitest';
-import { HISTORY_MAX_FRAMES, HISTORY_RETENTION_S, trimHistory, useTelemetryStore } from './telemetryStore';
+import { HISTORY_MAX_FRAMES, HISTORY_RETENTION_S, setTelemetryReceiptClockForTest, trimHistory, useTelemetryStore } from './telemetryStore';
 import { EVENTS_CAP } from './events';
 import { makeFrame } from '../test/makeFrame';
 
@@ -21,6 +21,7 @@ import { makeFrame } from '../test/makeFrame';
 // ---------------------------------------------------------------------------
 beforeEach(() => {
   useTelemetryStore.setState(useTelemetryStore.getInitialState(), true);
+  setTelemetryReceiptClockForTest(null);
 });
 
 // ---------------------------------------------------------------------------
@@ -252,6 +253,12 @@ describe('events', () => {
   });
 
   it('updates consecutive routine demand events to the final value in the store', () => {
+    let now = 0;
+    setTelemetryReceiptClockForTest(() => {
+      const value = now;
+      now += 100;
+      return value;
+    });
     const { pushFrame } = useTelemetryStore.getState();
     pushFrame(makeFrame(0, { turbine_load_demand: 1, turbine_load_demand_effective: 1 }));
     pushFrame(makeFrame(0.1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }));
@@ -261,6 +268,22 @@ describe('events', () => {
     expect(useTelemetryStore.getState().events.map((event) => event.text)).toEqual([
       'Telemetry link established',
       'Turbine admission demand set to 97 %',
+    ]);
+  });
+
+  it('preserves same-key store command events when receipt times are separated', () => {
+    const times = [0, 100, 15_000, 30_000];
+    setTelemetryReceiptClockForTest(() => times.shift() ?? 30_000);
+    const { pushFrame } = useTelemetryStore.getState();
+    pushFrame(makeFrame(0, { turbine_load_demand: 1, turbine_load_demand_effective: 1 }));
+    pushFrame(makeFrame(1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }));
+    pushFrame(makeFrame(15, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }));
+    pushFrame(makeFrame(30, { turbine_load_demand: 0.98, turbine_load_demand_effective: 0.98 }));
+
+    expect(useTelemetryStore.getState().events.map((event) => event.text)).toEqual([
+      'Telemetry link established',
+      'Turbine admission demand set to 99 %',
+      'Turbine admission demand set to 98 %',
     ]);
   });
 });

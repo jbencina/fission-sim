@@ -159,6 +159,18 @@ export function trimHistory(history: readonly Frame[], frame: Frame): Frame[] {
     : timeTrimmed;
 }
 
+let _receiptClock = (): number => Date.now();
+
+/**
+ * Override the telemetry receipt clock in tests.
+ *
+ * Passing null restores Date.now(). Production code never calls this; it keeps
+ * command-event burst coalescing testable without tying it to simulation time.
+ */
+export function setTelemetryReceiptClockForTest(fn: (() => number) | null): void {
+  _receiptClock = fn ?? (() => Date.now());
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -180,7 +192,7 @@ export const useTelemetryStore = create<TelemetryState>()((set) => ({
       const timeRolledBack = state.latest !== null && frame.t < state.latest.t;
       const history = timeRolledBack ? [frame] : trimHistory(state.history, frame);
       // Events restart on a reset too; otherwise the newest ones are kept.
-      const fresh = detectEvents(state.eventBaseline, frame, state.eventTracker);
+      const fresh = detectEvents(state.eventBaseline, frame, state.eventTracker, _receiptClock());
       let events = state.events;
       if (timeRolledBack) events = fresh.events;
       else if (fresh.events.length > 0) events = mergeCoalescedEvents(state.events, fresh.events).slice(-EVENTS_CAP);

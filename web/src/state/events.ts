@@ -39,6 +39,8 @@ export type EventCategory = (typeof EVENT_CATEGORIES)[number]
 export interface PlantEvent {
   /** Simulation time of the frame that revealed the event [s]. */
   t: number
+  /** Browser receipt time for coalescing operator-command bursts [ms]. */
+  receivedAtMs: number
   text: string
   level: EventLevel
   category: EventCategory
@@ -80,6 +82,9 @@ const FULLY_IN = 0.005
 
 /** Dwell required before feedwater saturation enter/leave events are logged [s]. */
 export const FEEDWATER_SATURATION_DWELL_S = 0.3
+
+/** Wall-clock receipt-time window for merging one operator interaction [ms]. */
+export const COMMAND_COALESCE_WINDOW_MS = 1_000
 
 const BAND_LEVEL: Record<Band, EventLevel> = { green: 'info', amber: 'warn', red: 'alarm' }
 
@@ -205,7 +210,7 @@ function updateFeedwaterSaturationTracker(
 }
 
 /**
- * Append new events, replacing only consecutive same-kind routine commands.
+ * Append new events, replacing only same-interaction routine commands.
  *
  * Parameters
  * ----------
@@ -218,15 +223,21 @@ function updateFeedwaterSaturationTracker(
  * -------
  * PlantEvent[]
  *   Event history where consecutive demand changes with the same
- *   `coalesceKey` keep only the final value. Distinct actions, mode
- *   transfers, alarms and commands separated by any other event are never
- *   merged.
+ *   `coalesceKey` keep only the final value if their browser receipt times
+ *   are within `COMMAND_COALESCE_WINDOW_MS`. Distinct actions, mode transfers,
+ *   alarms, commands separated by any other event, and later adjustments are
+ *   never merged.
  */
 export function mergeCoalescedEvents(existing: PlantEvent[], fresh: PlantEvent[]): PlantEvent[] {
   const merged = [...existing]
   for (const event of fresh) {
     const last = merged[merged.length - 1]
-    if (event.coalesceKey !== undefined && last?.coalesceKey === event.coalesceKey) {
+    if (
+      event.coalesceKey !== undefined &&
+      last?.coalesceKey === event.coalesceKey &&
+      event.receivedAtMs >= last.receivedAtMs &&
+      event.receivedAtMs - last.receivedAtMs <= COMMAND_COALESCE_WINDOW_MS
+    ) {
       merged[merged.length - 1] = event
     } else {
       merged.push(event)
@@ -248,6 +259,10 @@ export function mergeCoalescedEvents(existing: PlantEvent[], fresh: PlantEvent[]
  *   Explicit state retained by the caller for hysteresis/debounce. When
  *   omitted, it is seeded from `prev`, which is convenient for unit tests
  *   that examine one transition.
+ * receivedAtMs:
+ *   Browser receipt time [ms]. The telemetry store supplies a clock that
+ *   advances while paused so command burst coalescing is not tied to
+ *   simulation time.
  *
  * Returns
  * -------
@@ -258,6 +273,7 @@ export function detectEvents(
   prev: Frame | null,
   next: Frame,
   tracker: EventTracker = initialEventTracker(prev),
+  receivedAtMs = 0,
 ): EventDetection {
   const at = (
     text: string,
@@ -266,6 +282,7 @@ export function detectEvents(
     coalesceKey?: CommandCoalesceKey,
   ): PlantEvent => ({
     t: next.t,
+    receivedAtMs,
     text,
     level,
     category,

@@ -31,12 +31,13 @@ function runFrames(frames: Frame[]): { texts: string[]; tracker: EventTracker } 
   return { texts, tracker }
 }
 
-function runMergedFrames(frames: Frame[]): { texts: string[]; tracker: EventTracker } {
+function runMergedFrames(frames: Frame[], receivedAtMs = frames.map((_, i) => i * 100)): { texts: string[]; tracker: EventTracker } {
   let prev: Frame | null = null
   let tracker = initialEventTracker()
   let events: PlantEvent[] = []
-  for (const frame of frames) {
-    const result = detectEvents(prev, frame, tracker)
+  for (let i = 0; i < frames.length; i += 1) {
+    const frame = frames[i]
+    const result = detectEvents(prev, frame, tracker, receivedAtMs[i])
     events = mergeCoalescedEvents(events, result.events)
     tracker = result.tracker
     prev = frame
@@ -422,6 +423,47 @@ describe('detectEvents', () => {
     ])
   })
 
+  it('coalesces rapid repeated paused demand changes despite frozen simulation time', () => {
+    const frames = [
+      makeFrame(1, { running: false, turbine_load_demand: 1, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.99, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.98, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.97, turbine_load_demand_effective: 1 }),
+    ]
+    expect(runMergedFrames(frames).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Turbine admission demand set to 97 % (pending — applies when the simulation runs)',
+    ])
+  })
+
+  it('keeps separate running command adjustments when receipt times are far apart', () => {
+    const frames = [
+      makeFrame(0, { turbine_load_demand: 1, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }),
+      makeFrame(15, { turbine_load_demand: 0.99, turbine_load_demand_effective: 0.99 }),
+      makeFrame(30, { turbine_load_demand: 0.98, turbine_load_demand_effective: 0.98 }),
+    ]
+    expect(runMergedFrames(frames, [0, 100, 15_000, 30_000]).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Turbine admission demand set to 99 %',
+      'info:Turbine admission demand set to 98 %',
+    ])
+  })
+
+  it('keeps separate paused command adjustments when receipt times are far apart', () => {
+    const frames = [
+      makeFrame(1, { running: false, turbine_load_demand: 1, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.99, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.99, turbine_load_demand_effective: 1 }),
+      makeFrame(1, { running: false, turbine_load_demand: 0.98, turbine_load_demand_effective: 1 }),
+    ]
+    expect(runMergedFrames(frames, [0, 100, 15_000, 30_000]).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Turbine admission demand set to 99 % (pending — applies when the simulation runs)',
+      'info:Turbine admission demand set to 98 % (pending — applies when the simulation runs)',
+    ])
+  })
+
   it('keeps distinct paused feedwater actions while coalescing same-kind manual demand changes', () => {
     const frames = [
       makeFrame(1, { running: false, feedwater_manual: null, feedwater_manual_effective: null }),
@@ -436,6 +478,21 @@ describe('detectEvents', () => {
       'info:Feedwater manual demand set to 0 % max (0 kg/s) (pending — applies when the simulation runs)',
       'info:Feedwater set to AUTO',
       'info:Feedwater set to MANUAL; manual demand 40 % max (801 kg/s) (pending — applies when the simulation runs)',
+    ])
+  })
+
+  it('never merges mode transfers even when they arrive inside the coalescing window', () => {
+    const frames = [
+      makeFrame(1, { running: false, rod_auto: false, rod_auto_acting: false }),
+      makeFrame(1, { running: false, rod_auto: true, rod_auto_acting: false }),
+      makeFrame(1, { running: false, rod_auto: false, rod_auto_acting: false }),
+      makeFrame(1, { running: false, rod_auto: true, rod_auto_acting: false }),
+    ]
+    expect(runMergedFrames(frames).texts).toEqual([
+      'info:Telemetry link established',
+      'info:Rod control set to AUTO (pending — applies when the simulation runs)',
+      'info:Rod control set to MANUAL',
+      'info:Rod control set to AUTO (pending — applies when the simulation runs)',
     ])
   })
 
