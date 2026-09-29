@@ -53,21 +53,35 @@ terminal).
 
 What to expect in the dashboard:
 
+- The sticky toolbar keeps the simulation clock, connection/run state, SCRAM
+  latch, effective turbine-trip status, rod mode, and the **SCRAM** and
+  **Pause/Resume** actions visible while the schematic, charts, controls, and
+  readouts scroll.
 - A wireframe schematic of the primary and secondary sides: core, hot/cold
   legs, steam generator, turbine admission path, steam dump branch, feedwater
-  return, pump and pressurizer. It highlights dump flow when the dump opens
-  and labels turbine state, gross electric MW, SG collapsed liquid fraction
-  (4 SGs lumped, no shrink/swell), steam flow and feedwater flow.
+  return, pump and pressurizer. It highlights dump flow when the dump opens,
+  drives pressurizer fill from `pzr_level`, draws the control bank while
+  labelling its numeric position as `% withdrawn`, and shows a persistent
+  shutdown-bank-in indication after Reset Scram. It labels turbine state,
+  gross electric MW, SG collapsed liquid fraction (4 SGs lumped, no
+  shrink/swell; not narrow-range indication), steam flow and feedwater flow.
 - An event log records plant-visible transitions: SCRAM, effective turbine
   trips and their cause, steam dump opened/closed, rod AUTO/MANUAL changes,
   feedwater AUTO/MANUAL, saturation, pauses, speed changes, and illustrative
-  pressure/level band crossings. The bands are dashboard cues, not trip
-  setpoints.
-- Ten live trend charts show the most recent 60 s of simulated time at every
-  speed: power, reactivity, coolant/T_ref, fuel temperature, primary pressure,
-  control-bank position/demand, steam pressure, SG collapsed liquid fraction
-  and setpoint, steam/dump/feedwater flows, and gross electric output. Hover a
-  chart to read values at that moment.
+  pressure/level band crossings. The newest 100 retained events are
+  scrollable; long model-limit halts are summarized on one row because the
+  full explanation is already in the halt notice. Routine slider/setpoint
+  bursts within one second are coalesced to the final value. The bands are
+  dashboard cues, not trip setpoints.
+- Live trend charts have selectable **All**, **Reactor**, and **Secondary**
+  views plus 1-, 5-, and 15-minute simulated-time windows. **All** shows all
+  ten charts: power, reactivity, coolant/T_ref, fuel temperature, primary
+  pressure, control-bank position/demand, steam pressure, SG collapsed liquid
+  fraction and setpoint, steam/dump/feedwater flows, and gross electric
+  output. **Reactor** keeps the six core/primary plots together; **Secondary**
+  keeps power, T_avg/T_ref, steam pressure, SG level, flows, and gross output
+  together for turbine-trip and inventory exercises. Hover a chart to read
+  values at that moment.
 - Readouts group core, primary loop, steam-generator, turbine, feedwater and
   control-bank values. Secondary readouts include steam pressure, saturation
   temperature, SG level and level error, `T_avg − T_ref`, gross electric MW,
@@ -84,20 +98,24 @@ What to expect in the dashboard:
 - **SCRAM** drops both rod banks into the core and trips turbine admission
   through the P-4 interlock. **Reset Scram** returns only the operator's
   control bank and sets turbine admission demand to 0; the shutdown bank
-  stays in and the reactor stays subcritical. **Reset Turbine Trip** also
-  sets admission demand to 0. **Reset Simulation** rebuilds the plant at full
-  power with actual admission initially 100 %, while preserving speed,
-  admission demand, rod AUTO/MANUAL mode and SG level setpoint; if demand is
-  low, actual admission then ramps down.
+  stays in and the reactor stays subcritical. If P-4 has tripped the turbine,
+  Reset Scram leaves that turbine trip latched so the simulated stop valves
+  keep closing. **Reset Turbine Trip** is refused until actual admission is at
+  or below 0.5 % open, then clears the latch and sets admission demand to 0.
+  **Reset Simulation** rebuilds the plant at full power with actual admission
+  initially 100 %, while preserving speed, admission demand, rod AUTO/MANUAL
+  mode and SG level setpoint; if demand is low, actual admission then ramps
+  down.
 
 Two useful secondary-side exercises:
 
 - **Unprotected turbine trip** — reset to design, keep rods MANUAL and
-  turbine admission demand at 100 %, then press **TRIP TURBINE**. Steam
-  pressure rises toward the dump band, the steam dump opens, turbine
-  admission closes, gross electric output falls, and events explain that a
-  real plant would normally trip the reactor above about 50 % power (P-9),
-  which is not modeled here.
+  turbine admission demand at 100 %, select the **Secondary** chart view and a
+  5-minute window, then press **TRIP TURBINE**. Steam pressure rises toward
+  the dump band, the steam dump opens, turbine admission closes, gross
+  electric output falls, and events explain that representative Westinghouse
+  plants would normally trip the reactor above about 50 % power (P-9), which
+  is not modeled here.
 - **10 % admission reduction** — with rods AUTO selected, lower turbine
   admission demand from 100 % to 90 %. Actual admission moves slowly because
   the valve ramps at 5 percentage-points/min; `T_ref` falls, the automatic rod

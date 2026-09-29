@@ -93,9 +93,14 @@ test suite.
 ## End-To-End Tests
 
 The Playwright suite runs browser-level checks against an already-running
-stack. `web/e2e/smoke.spec.ts` verifies keyboard-reachable educational help,
-a SCRAM power drop, an unprotected turbine trip that raises steam pressure and
-opens the dump path, and the rod AUTO/MANUAL bumpless transfer. The same
+stack. `web/e2e/smoke.spec.ts` first drives the persistent backend to a known
+design fixture (running at the requested speed, turbine admission demand
+100 %, rods MANUAL, SG level setpoint 50 %, feedwater AUTO). It verifies
+keyboard-reachable educational help, a SCRAM power drop through the
+operator-controls SCRAM button, an unprotected turbine trip that raises steam
+pressure and opens the dump path, the Reset Turbine Trip guard that waits for
+actual admission to reach the 0.5 % closed-valve tolerance, and the rod
+AUTO/MANUAL bumpless transfer from a real control-bank mismatch. The same
 `npm run e2e` command also runs `web/e2e/schematic-geometry.spec.ts`, which
 drives steady, trip, SCRAM, feedwater-manual and paused-pending states and
 checks that the SVG schematic labels clear strokes at desktop and mobile
@@ -148,10 +153,13 @@ wall-clock second, each advancing simulated time by 0.1 s × `speed`.
 
 #### Telemetry Frame
 
-Each frame is one JSON object. All numeric fields use SI units internally;
-`P_primary_MPa` and `P_steam_MPa` are convenience conversions provided for
-display. Nullable numeric fields are explicitly `null` when not applicable.
-The example is a real frame from the design steady state:
+Each frame is one JSON object. The runtime casts values at this boundary to
+plain Python `float`, `bool`, `None`, or `str` before JSON serialization, so
+the browser never has to handle numpy scalar objects. All numeric fields use
+SI units internally; `P_primary_MPa` and `P_steam_MPa` are convenience
+conversions provided for display. Nullable numeric fields are explicitly
+`null` when not applicable. The example is a real frame from the design
+steady state:
 
 ```json
 {
@@ -489,8 +497,10 @@ demand (`m_fw_demand`) in kg/s.
 
 After every step the runtime checks the new state against the model's
 supported domain (`fission_sim.physics.domain.check_snapshot`; the limits are
-explained in [README.md → Model Limits](README.md#model-limits)). If a step
-leaves the domain, or fails outright, the runtime:
+explained in [README.md → Model Limits](README.md#model-limits)): hot-leg
+boiling, pressurizer dry/water-solid states, primary or steam pressure outside
+the modeled range, and SG collapsed liquid fraction outside 30–95 %. If a
+step leaves the domain, or fails outright, the runtime:
 
 1. puts the engine back at the state before that step (the last valid one),
 2. sets `running = false` and fills `model_limit` with a plain-language
@@ -564,34 +574,61 @@ loopback port when 8000 is occupied.
 Authentication, persistence, multi-user support, and replay are not
 implemented.
 
-A frame's path through the frontend: `wsClient.ts` receives it, the Zustand
-store in `telemetryStore.ts` keeps it as `latest`, appends it to a history
-of up to 600 frames, and carries an explicit event tracker. `plantStatus.ts`
-derives shared one-frame classifications — turbine-trip cause/pending state,
-rod AUTO ACTIVE/AUTO SUSPENDED/MANUAL, feedwater AUTO/MANUAL/saturation, dump
-open, and SG level band — so controls, schematic, readouts and events use the
-same wording. `events.ts` compares consecutive frames plus tracker state to
-log transitions with dump hysteresis and feedwater-saturation debounce.
-`chartData.ts` turns history into chart columns using the series listed in
-`chartSpecs.ts`, and the charts and status readouts render it.
+A frame's path through the frontend:
 
-- Charts show a fixed window of the most recent 60 s of simulated time, at
-  every speed, with every frame in the window drawn.
-- The charts redraw on every display refresh, not only when a frame
-  arrives. One `requestAnimationFrame` loop (`ticker.ts`) drives all charts;
-  their right edge follows `displayClock.ts`, which advances continuously
-  one frame period behind the newest frame, so traces scroll smoothly
-  instead of stepping ten times a second. Each y axis is sticky and eases
-  between ranges (`autoRange.ts`). Data, scales and legend values go to
-  uPlot and the DOM directly, so React does not re-render per frame.
+- `wsClient.ts` receives it, and the Zustand store in `telemetryStore.ts`
+  keeps it as `latest`. History is trimmed by simulated time to
+  `HISTORY_RETENTION_S = 905 s` (the 15-minute chart window plus a 5 s entry
+  margin) and then capped at `HISTORY_MAX_FRAMES = 12_000` for unusual paused
+  command bursts. If simulation time rolls backward, the store treats that as
+  a reset and starts fresh history and events. On disconnect it clears only
+  the event baseline/tracker, so reconnects do not invent transitions across
+  an unobserved gap.
+- The store keeps the newest `EVENTS_CAP = 100` plant events, oldest first in
+  state and newest first in `EventLog.tsx`. `events.ts` compares consecutive
+  frames plus tracker state, and `EventLog.helpers.ts` turns long model-limit
+  halt events into one-line summaries while the full explanation remains in
+  the halt notice.
+- `plantStatus.ts` derives shared one-frame classifications — turbine-trip
+  cause/pending state, rod AUTO ACTIVE/AUTO SUSPENDED/MANUAL, feedwater
+  AUTO/MANUAL/saturation, steam-dump open state, SG level band, and the
+  shutdown-bank-in indication — so controls, toolbar, schematic, readouts and
+  events use the same wording. `admissionStatus.ts` adds turbine-admission
+  demand pending state, actual-admission closed status (`<= 0.005`, 0.5 %
+  open), and the Reset Turbine Trip guard used by the controls and toolbar.
+- Event tracking uses explicit thresholds and dwell times: steam dump opens
+  above 1 kg/s and closes below 0.5 kg/s; feedwater saturation enter/leave
+  events require `FEEDWATER_SATURATION_DWELL_S = 0.3 s`; routine command
+  events carry categories (`plant`, `command`, `alarm`) and same-key slider
+  bursts coalesce only when consecutive and received within
+  `COMMAND_COALESCE_WINDOW_MS = 1000 ms`.
+- `chartData.ts` turns history into chart columns for 60 s, 300 s, and 900 s
+  simulated-time windows (`1 min`, `5 min`, `15 min`). Long windows are
+  decimated to at most `MAX_DISPLAY_POINTS = 1800` points per chart while
+  preserving each bucket's first, last, minimum and maximum samples.
+  `chartSpecs.ts` defines ten charts and the operator views:
+  **All** (all ten), **Reactor** (power, reactivity, coolant, fuel, primary
+  pressure, rods), and **Secondary** (power, coolant/T_ref, steam pressure,
+  SG level, steam/feed flow, gross electrical output). `ChartGrid.tsx`
+  defaults to **All** and the 1-minute window, keeps rows at 15.5 rem, lets
+  the chart column scroll, and gives every chart its own time axis.
+- The charts redraw on every display refresh, not only when a frame arrives.
+  One `requestAnimationFrame` loop (`ticker.ts`) drives all charts; their
+  right edge follows `displayClock.ts`, which advances continuously one frame
+  period behind the newest frame, so traces scroll smoothly instead of
+  stepping ten times a second. Each y axis is sticky and eases between ranges
+  (`autoRange.ts`). Data, scales and legend values go to uPlot and the DOM
+  directly, so React does not re-render per frame.
 - Colours are CSS variables in `index.css`: one palette, a black ground with
   white ink and hairlines, amber for caution and red for alarm. There is no
   light theme. Text is IBM Plex Sans and every number IBM Plex Mono,
   self-hosted from `@fontsource`.
 - `widgets/PlantMimic.tsx` draws the primary/secondary schematic from the
-  latest frame; `widgets/loopState.ts` words its title using the shared
-  status helpers. The store keeps the newest 100 events for
-  `widgets/EventLog.tsx`.
+  latest frame, including pressurizer fill from `pzr_level`, SG collapsed
+  liquid fraction, turbine/dump/feedwater paths, control-bank `% withdrawn`
+  and the shutdown-bank-in cue. `widgets/loopState.ts` words the schematic
+  title using the shared status helpers. `widgets/EventLog.tsx` renders the
+  full retained event history in a scrollable list under the "Now" row.
 - Backend error frames and connection errors go through the store's
   `reportError` and appear as a dismissible notice (`clearError` hides it).
   A `model_limit` in the latest frame appears as a separate, persistent
