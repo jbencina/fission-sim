@@ -101,3 +101,23 @@ def test_terminate_children_stops_descendants_of_an_exited_leader(monkeypatch: p
             os.killpg(pgid, signal.SIGKILL)  # never leak the sleeper, even on failure
         except ProcessLookupError:
             pass
+
+
+def test_backend_port_defaults_to_8000(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(dev.API_PORT_ENV, raising=False)
+    assert dev._api_port() == 8000
+    assert dev._backend_cmd(dev._api_port())[-3:] == ["--port", "8000", "--reload"]
+
+
+def test_backend_port_follows_fission_sim_api_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same variable moves the backend and Vite's proxy target."""
+    monkeypatch.setenv(dev.API_PORT_ENV, "8780")
+    assert dev._api_port() == 8780
+    assert "8780" in dev._backend_cmd(dev._api_port())
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "70000", "-1"])
+def test_backend_port_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch, bad: str) -> None:
+    monkeypatch.setenv(dev.API_PORT_ENV, bad)
+    with pytest.raises(SystemExit, match=dev.API_PORT_ENV):
+        dev._api_port()

@@ -45,7 +45,8 @@ pressure-setpoint command for scripts and experiments.
 
 Starts both the FastAPI/uvicorn backend (port 8000) and the Vite dev server
 (port 5173) concurrently, with colour-prefixed output. Press **Ctrl-C** to
-stop both processes.
+stop both processes. If port 8000 is taken, run
+`FISSION_SIM_API_PORT=8780 make dev` (any free port); Vite proxies to it.
 
 Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready (the Vite line `VITE vX.Y.Z ready` appears in the

@@ -34,16 +34,21 @@ colour-prefixed output. Press **Ctrl-C** to stop both processes.
 
 Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready. During development, Vite proxies `/api` and `/ws` to the
-backend. If port 8000 is already taken on a shared machine, start the backend
-on another port and tell Vite which API port to proxy. You can also give
-Vite an explicit web port and require it to be free:
+backend. If port 8000 is already taken on a shared machine, set
+`FISSION_SIM_API_PORT`: `make dev` then starts the backend on that port and
+Vite proxies to it.
+
+    FISSION_SIM_API_PORT=8780 make dev
+
+To run the two servers separately (for example with an explicit web port that
+must be free):
 
     uv run uvicorn fission_sim.api.app:app --host 127.0.0.1 --port 8767
     FISSION_SIM_API_PORT=8767 npm run dev --prefix web -- --port 5187 --strictPort
 
 With `make dev`, both servers bind `0.0.0.0`, so the dashboard is reachable
 from any host on your network at `http://<your-machine-ip>:5173`. In the
-manual override above, the backend is loopback-only and Vite remains the
+separate-servers example above, the backend is loopback-only and Vite remains the
 network-facing proxy. There is no authentication; only expose this on a
 trusted network.
 

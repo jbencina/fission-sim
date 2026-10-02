@@ -17,6 +17,8 @@ Usage
     uv run python scripts/dev.py
     # or via Make:
     make dev
+    # with the backend on another port (Vite proxies to the same port):
+    FISSION_SIM_API_PORT=8780 make dev
 """
 
 import os
@@ -37,13 +39,41 @@ BOLD = "\033[1m"
 # ---------------------------------------------------------------------------
 # Child-process commands
 # ---------------------------------------------------------------------------
-BACKEND_CMD = [
-    "uv", "run", "uvicorn",
-    "fission_sim.api.app:app",
-    "--host", "0.0.0.0",  # bind all interfaces — accessible on the LAN
-    "--port", "8000",
-    "--reload",
-]
+DEFAULT_API_PORT = 8000
+# Same variable web/vite.config.ts reads for its /api and /ws proxy target.
+# The Vite child inherits this process's environment, so one setting moves both.
+API_PORT_ENV = "FISSION_SIM_API_PORT"
+
+
+def _api_port() -> int:
+    """Backend port from ``FISSION_SIM_API_PORT``, else 8000.
+
+    Raises
+    ------
+    SystemExit
+        If the variable is set but is not an integer in 1-65535.
+    """
+    raw = os.environ.get(API_PORT_ENV)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_API_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise SystemExit(f"{API_PORT_ENV} must be a port number 1-65535, got {raw!r}")
+    return port
+
+
+def _backend_cmd(port: int) -> list[str]:
+    """uvicorn command for the backend on *port*."""
+    return [
+        "uv", "run", "uvicorn",
+        "fission_sim.api.app:app",
+        "--host", "0.0.0.0",  # bind all interfaces — accessible on the LAN
+        "--port", str(port),
+        "--reload",
+    ]
 
 # `npm run dev` calls `vite`; `web/vite.config.ts` sets `server.host: true` so
 # Vite also binds 0.0.0.0 and prints the LAN URL on the "Network:" line.
@@ -152,7 +182,7 @@ def _spawn(cmd: list[str], popen_kwargs: dict) -> subprocess.Popen:
 def _start_children(common_popen_kwargs: dict) -> tuple[subprocess.Popen, subprocess.Popen]:
     """Start backend and frontend children, cleaning up on partial failure."""
     try:
-        backend = _spawn(BACKEND_CMD, common_popen_kwargs)
+        backend = _spawn(_backend_cmd(_api_port()), common_popen_kwargs)
         frontend = _spawn(FRONTEND_CMD, common_popen_kwargs)
     except Exception:
         if _children:
@@ -217,13 +247,14 @@ def _watch_parent(initial_ppid: int) -> None:
             break
 
 
-def _print_banner() -> None:
+def _print_banner(api_port: int) -> None:
     """Print a startup banner with URLs and Ctrl-C hint."""
+    backend = f"Backend  → http://localhost:{api_port}"
     print(
         f"\n{BOLD}╔══════════════════════════════════════════════╗{RESET}\n"
         f"{BOLD}║  fission-sim dev servers                     ║{RESET}\n"
         f"{BOLD}║                                              ║{RESET}\n"
-        f"{BOLD}║  Backend  → http://localhost:8000            ║{RESET}\n"
+        f"{BOLD}║  {backend:<44}║{RESET}\n"
         f"{BOLD}║  Frontend → http://localhost:5173            ║{RESET}\n"
         f"{BOLD}║  Bound to 0.0.0.0 — LAN-reachable.           ║{RESET}\n"
         f"{BOLD}║                                              ║{RESET}\n"
@@ -241,7 +272,8 @@ def main() -> int:
     int
         Exit code: 0 on clean shutdown, or the failing child's exit code.
     """
-    _print_banner()
+    # Validate before printing anything, so a bad value fails fast and clearly.
+    _print_banner(_api_port())
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     initial_ppid = os.getppid()
