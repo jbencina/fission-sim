@@ -18,7 +18,7 @@ Usage
     # or via Make:
     make dev
     # with the backend on another port (Vite proxies to the same port):
-    FISSION_SIM_API_PORT=8780 make dev
+    FISSION_SIM_API_PORT=8781 make dev
 """
 
 import os
@@ -39,14 +39,18 @@ BOLD = "\033[1m"
 # ---------------------------------------------------------------------------
 # Child-process commands
 # ---------------------------------------------------------------------------
-DEFAULT_API_PORT = 8000
+# Backend port. Deliberately not 8000, which many other local services use by
+# default. Must match the default in web/vite.config.ts and
+# src/fission_sim/api/__main__.py.
+DEFAULT_API_PORT = 8780
 # Same variable web/vite.config.ts reads for its /api and /ws proxy target.
-# The Vite child inherits this process's environment, so one setting moves both.
+# The launcher passes the chosen port to the Vite child through it, so the
+# proxy always points at the backend this launcher started.
 API_PORT_ENV = "FISSION_SIM_API_PORT"
 
 
 def _api_port() -> int:
-    """Backend port from ``FISSION_SIM_API_PORT``, else 8000.
+    """Backend port: ``FISSION_SIM_API_PORT`` if set, else 8780.
 
     Raises
     ------
@@ -179,10 +183,12 @@ def _spawn(cmd: list[str], popen_kwargs: dict) -> subprocess.Popen:
     return proc
 
 
-def _start_children(common_popen_kwargs: dict) -> tuple[subprocess.Popen, subprocess.Popen]:
+def _start_children(
+    common_popen_kwargs: dict, api_port: int = DEFAULT_API_PORT
+) -> tuple[subprocess.Popen, subprocess.Popen]:
     """Start backend and frontend children, cleaning up on partial failure."""
     try:
-        backend = _spawn(_backend_cmd(_api_port()), common_popen_kwargs)
+        backend = _spawn(_backend_cmd(api_port), common_popen_kwargs)
         frontend = _spawn(FRONTEND_CMD, common_popen_kwargs)
     except Exception:
         if _children:
@@ -273,7 +279,8 @@ def main() -> int:
         Exit code: 0 on clean shutdown, or the failing child's exit code.
     """
     # Validate before printing anything, so a bad value fails fast and clearly.
-    _print_banner(_api_port())
+    api_port = _api_port()
+    _print_banner(api_port)
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     initial_ppid = os.getppid()
@@ -292,9 +299,11 @@ def main() -> int:
         bufsize=1,               # line-buffered
         cwd=repo_root,
         start_new_session=True,  # child becomes its own process-group leader
+        # Vite reads this to proxy /api and /ws to the backend's actual port.
+        env={**os.environ, API_PORT_ENV: str(api_port)},
     )
 
-    backend, frontend = _start_children(common_popen_kwargs)
+    backend, frontend = _start_children(common_popen_kwargs, api_port)
 
     # One reader thread per child — daemons so they don't block interpreter exit.
     threads = [

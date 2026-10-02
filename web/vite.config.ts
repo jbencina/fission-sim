@@ -1,7 +1,9 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
-const apiPort = process.env.FISSION_SIM_API_PORT ?? '8000'
+// Backend port; must match DEFAULT_API_PORT in scripts/dev.py (8000 is avoided because
+// many other local services use it).
+const apiPort = process.env.FISSION_SIM_API_PORT ?? '8780'
 const apiHttpTarget = `http://127.0.0.1:${apiPort}`
 const apiWsTarget = `ws://127.0.0.1:${apiPort}`
 

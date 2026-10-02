@@ -26,5 +26,5 @@ Run the server with::
 
     uv run python -m fission_sim.api
 
-which starts uvicorn on ``0.0.0.0:8000`` for trusted-LAN development.
+which starts uvicorn on ``0.0.0.0:8780`` for trusted-LAN development.
 """

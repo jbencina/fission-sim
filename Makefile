@@ -17,7 +17,7 @@
 
 .PHONY: dev api web install install-e2e e2e test lint
 
-## Start both the FastAPI backend (port 8000) and the Vite frontend (port 5173)
+## Start both the FastAPI backend (port 8780) and the Vite frontend (port 5173)
 ## concurrently, with coloured prefixed output.  Press Ctrl-C to stop both.
 ##
 ## Implementation note: ``uv sync`` is run first to ensure the virtualenv

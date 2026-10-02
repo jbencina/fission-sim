@@ -29,16 +29,16 @@ Start the FastAPI backend and Vite frontend together:
 
     make dev
 
-This starts the backend on port 8000 and the Vite dev server on port 5173 with
-colour-prefixed output. Press **Ctrl-C** to stop both processes.
+This starts the backend on port 8780 and the Vite dev server on port 5173 with
+colour-prefixed output. Press **Ctrl-C** to stop both processes. (The backend
+deliberately avoids port 8000, which many other local services use.)
 
 Open [http://localhost:5173](http://localhost:5173) in a browser once both
 processes are ready. During development, Vite proxies `/api` and `/ws` to the
-backend. If port 8000 is already taken on a shared machine, set
-`FISSION_SIM_API_PORT`: `make dev` then starts the backend on that port and
-Vite proxies to it.
+backend. If port 8780 is taken, set `FISSION_SIM_API_PORT`: `make dev` then
+starts the backend on that port and Vite proxies to it.
 
-    FISSION_SIM_API_PORT=8780 make dev
+    FISSION_SIM_API_PORT=8781 make dev
 
 To run the two servers separately (for example with an explicit web port that
 must be free):
@@ -55,7 +55,7 @@ trusted network.
 The `make dev` launcher is Unix-only. On Windows, run the two processes in
 separate terminals:
 
-    uv run python -m fission_sim.api   # backend, port 8000
+    uv run python -m fission_sim.api   # backend, port 8780
     npm run dev --prefix web           # frontend, port 5173
 
 ## Run From The CLI
@@ -70,7 +70,7 @@ run with `uv run python examples/<name>.py`.
 |---|---|
 | `make install` | Install Python + Node dependencies |
 | `make dev` | Start backend + frontend together |
-| `make api` | Backend only (`uvicorn` on port 8000) |
+| `make api` | Backend only (`uvicorn` on port 8780, or `FISSION_SIM_API_PORT`) |
 | `make web` | Frontend only (Vite dev server on port 5173) |
 | `make install-e2e` | Install Chromium for the Playwright e2e suite |
 | `make e2e` | Run Playwright e2e specs against an already-running stack |
@@ -554,7 +554,7 @@ Layer rules:
 - `fission_sim.api` is the only package that knows about asyncio, HTTP, or
   WebSocket. `runtime.py` is HTTP-agnostic; `app.py` is physics-agnostic.
 - The Vite frontend is a separate process. During development, the Vite proxy
-  (`/api`, `/ws` to `127.0.0.1:8000` by default, or `FISSION_SIM_API_PORT`)
+  (`/api`, `/ws` to `127.0.0.1:8780` by default, or `FISSION_SIM_API_PORT`)
   removes the need for browser CORS preflights.
 
 ## Frontend Tech Stack
@@ -573,9 +573,9 @@ The browser dashboard is a single-page app in `web/`:
 | Vitest | 4.x | Unit tests for store logic and utilities |
 
 During development, Vite forwards `/api/*` and `/ws/*` to
-`http://127.0.0.1:8000` and `ws://127.0.0.1:8000`, respectively. Set
+`http://127.0.0.1:8780` and `ws://127.0.0.1:8780`, respectively. Set
 `FISSION_SIM_API_PORT` before starting Vite to proxy both paths to a different
-loopback port when 8000 is occupied.
+loopback port.
 Authentication, persistence, multi-user support, and replay are not
 implemented.
 

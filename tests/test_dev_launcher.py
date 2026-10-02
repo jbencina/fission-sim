@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -103,17 +104,23 @@ def test_terminate_children_stops_descendants_of_an_exited_leader(monkeypatch: p
             pass
 
 
-def test_backend_port_defaults_to_8000(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_backend_port_defaults_to_8780(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default avoids 8000, which many other local services use."""
     monkeypatch.delenv(dev.API_PORT_ENV, raising=False)
-    assert dev._api_port() == 8000
-    assert dev._backend_cmd(dev._api_port())[-3:] == ["--port", "8000", "--reload"]
+    assert dev._api_port() == 8780
+    assert dev._backend_cmd(8780)[-3:] == ["--port", "8780", "--reload"]
+
+
+def test_default_port_matches_vite_proxy_default() -> None:
+    vite_config = (Path(__file__).resolve().parents[1] / "web" / "vite.config.ts").read_text()
+    assert f"FISSION_SIM_API_PORT ?? '{dev.DEFAULT_API_PORT}'" in vite_config
 
 
 def test_backend_port_follows_fission_sim_api_port(monkeypatch: pytest.MonkeyPatch) -> None:
     """The same variable moves the backend and Vite's proxy target."""
-    monkeypatch.setenv(dev.API_PORT_ENV, "8780")
-    assert dev._api_port() == 8780
-    assert "8780" in dev._backend_cmd(dev._api_port())
+    monkeypatch.setenv(dev.API_PORT_ENV, "8781")
+    assert dev._api_port() == 8781
+    assert "8781" in dev._backend_cmd(8781)
 
 
 @pytest.mark.parametrize("bad", ["abc", "0", "70000", "-1"])

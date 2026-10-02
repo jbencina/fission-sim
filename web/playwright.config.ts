@@ -5,7 +5,7 @@
  *   - The dev stack is already running (started via `make dev` or equivalent).
  *   - The frontend is served at E2E_BASE_URL (default http://127.0.0.1:5173).
  *   - Vite proxies the backend WebSocket; use FISSION_SIM_API_PORT when the
- *     backend is not on port 8000.
+ *     backend is not on its default port 8780.
  *
  * Run: npm run e2e (from web/)
  * Pre-condition: `make dev` must be running in a separate terminal.

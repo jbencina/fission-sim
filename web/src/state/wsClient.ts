@@ -2,7 +2,7 @@
  * WebSocket client for the fission-sim telemetry stream.
  *
  * Connects to `ws://<host>/ws/telemetry` (the Vite dev proxy forwards this
- * to the FastAPI backend at localhost:8000 during development; in production
+ * to the FastAPI backend at localhost:8780 during development; in production
  * the same origin serves both). Receives JSON telemetry frames and pushes
  * them to the store via the provided callbacks.
  *
