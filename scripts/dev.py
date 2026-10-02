@@ -69,6 +69,38 @@ def _api_port() -> int:
     return port
 
 
+# Compiled copies of web/vite.config.ts that older `npm run build` runs wrote
+# next to it (git-ignored). Vite loads vite.config.js before vite.config.ts,
+# so a stale copy silently replaces the real config, e.g. proxying to an old
+# backend port. web/tsconfig.node.json now builds elsewhere; this removes
+# leftovers in existing checkouts.
+STALE_VITE_CONFIG_FILES = ("vite.config.js", "vite.config.d.ts")
+
+
+def _remove_stale_vite_config(repo_root: str) -> list[str]:
+    """Delete stale compiled Vite configs in ``web/`` and return their names.
+
+    Only runs when the real ``web/vite.config.ts`` exists, so it never removes
+    the only config a checkout has.
+    """
+    web = os.path.join(repo_root, "web")
+    if not os.path.isfile(os.path.join(web, "vite.config.ts")):
+        return []
+    removed = []
+    for name in STALE_VITE_CONFIG_FILES:
+        path = os.path.join(web, name)
+        if os.path.isfile(path):
+            os.remove(path)
+            removed.append(name)
+    if removed:
+        print(
+            f"{BOLD}[dev] Removed stale web/{', web/'.join(removed)} "
+            f"(old build output that overrides web/vite.config.ts).{RESET}",
+            flush=True,
+        )
+    return removed
+
+
 def _backend_cmd(port: int) -> list[str]:
     """uvicorn command for the backend on *port*."""
     return [
@@ -283,6 +315,7 @@ def main() -> int:
     _print_banner(api_port)
 
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _remove_stale_vite_config(repo_root)
     initial_ppid = os.getppid()
 
     # Install signal handlers *before* spawning children so we never orphan them.

@@ -5,6 +5,11 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "composite": true,
+    /* tsc -b must not write vite.config.js next to vite.config.ts: Vite loads
+       vite.config.js first, so a stale compiled copy silently shadows the real
+       config (e.g. an old backend proxy port). Build output goes here instead. */
+    "outDir": "./node_modules/.tmp/tsconfig.node",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
 
     /* Bundler mode */
     "moduleResolution": "Bundler",

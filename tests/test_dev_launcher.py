@@ -128,3 +128,24 @@ def test_backend_port_rejects_invalid_values(monkeypatch: pytest.MonkeyPatch, ba
     monkeypatch.setenv(dev.API_PORT_ENV, bad)
     with pytest.raises(SystemExit, match=dev.API_PORT_ENV):
         dev._api_port()
+
+
+def test_stale_compiled_vite_config_is_removed(tmp_path: Path) -> None:
+    """A leftover vite.config.js would shadow vite.config.ts (Vite loads .js first)."""
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "vite.config.ts").write_text("// real config\n")
+    (web / "vite.config.js").write_text("// stale build output\n")
+    (web / "vite.config.d.ts").write_text("// stale build output\n")
+
+    assert dev._remove_stale_vite_config(str(tmp_path)) == ["vite.config.js", "vite.config.d.ts"]
+    assert sorted(p.name for p in web.iterdir()) == ["vite.config.ts"]
+
+
+def test_compiled_vite_config_kept_when_it_is_the_only_config(tmp_path: Path) -> None:
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "vite.config.js").write_text("// the only config\n")
+
+    assert dev._remove_stale_vite_config(str(tmp_path)) == []
+    assert (web / "vite.config.js").exists()
